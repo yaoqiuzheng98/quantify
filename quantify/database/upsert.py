@@ -64,6 +64,11 @@ def upsert_dataframe(
     if not records:
         return 0
 
+    # Drop records where any PK column is None - MySQL rejects NULL PKs.
+    records = [r for r in records if all(r.get(pk) is not None for pk in pk_cols)]
+    if not records:
+        return 0
+
     if update_keys is None:
         update_cols = [c for c in all_cols if c not in pk_cols and c != "updated_at"]
     else:

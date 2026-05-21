@@ -210,7 +210,7 @@ class EtfFetcher:
         log.info(f"Fetching {api} for {n} ETFs (incremental={incremental}) ...")
         for i, code in enumerate(codes, start=1):
             start_str = starts.get(code, self.DEFAULT_START_DATE)
-            if start_str > end_str:
+            if start_str >= end_str:
                 continue  # already up-to-date
             try:
                 df = self.client.call(
