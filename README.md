@@ -218,6 +218,7 @@ quantify fetch etf basic
 quantify fetch etf all
 
 # 想强制全量回填（忽略本地已存在的最大日期）
+# --full 是 --incremental/--full 布尔开关对中的一个，二者互斥
 quantify fetch etf all --full
 ```
 
