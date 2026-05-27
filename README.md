@@ -73,6 +73,65 @@ Quantify 是一个使用 **Python** 构建的中低频量化研究框架。它�
 - 操作系统：Linux / macOS / Windows
 - 推荐内存：**16GB+**（全市场因子计算时）
 
+### 0. Ubuntu 安装 pyenv 与 Python（可选）
+
+如果你的 Ubuntu 系统没有合适的 Python 版本，推荐通过 **pyenv** 管理多版本 Python。
+
+#### 0.1 安装系统依赖
+
+```bash
+sudo apt update && sudo apt install -y \
+    make build-essential libssl-dev zlib1g-dev \
+    libbz2-dev libreadline-dev libsqlite3-dev wget curl llvm \
+    libncursesw5-dev xz-utils tk-dev libxml2-dev libxmlsec1-dev \
+    libffi-dev liblzma-dev git
+```
+
+#### 0.2 安装 pyenv
+
+```bash
+curl https://pyenv.run | bash
+```
+
+#### 0.3 配置 Shell
+
+将以下内容追加到 `~/.bashrc`（使用 zsh 则改为 `~/.zshrc`）：
+
+```bash
+export PYENV_ROOT="$HOME/.pyenv"
+[[ -d $PYENV_ROOT/bin ]] && export PATH="$PYENV_ROOT/bin:$PATH"
+eval "$(pyenv init -)"
+eval "$(pyenv virtualenv-init -)"
+```
+
+使配置立即生效：
+
+```bash
+source ~/.bashrc
+```
+
+#### 0.4 安装 Python 3.11
+
+```bash
+pyenv install 3.11.9
+```
+
+> 安装过程会从源码编译，通常需要 3–5 分钟。运行 `pyenv install --list | grep "3\.11"` 可查看可用的 3.11.x 版本，选最新的即可。
+
+#### 0.5 设置项目 Python 版本
+
+```bash
+# 进入项目目录后，设置本目录专用的 Python 版本
+pyenv local 3.11.9
+
+# 验证
+python --version   # 应输出 Python 3.11.9
+```
+
+> 也可以用 `pyenv global 3.11.9` 全局生效，但推荐按项目隔离。
+
+---
+
 ### 1. 克隆与安装
 
 ```bash
