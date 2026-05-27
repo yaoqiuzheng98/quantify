@@ -223,14 +223,12 @@ class EtfFetcher:
                 log.error(f"{api} failed for {code}: {e}")
                 continue
             if df is None or df.empty:
-                if i % 100 == 0:
-                    log.info(f"  {api} progress {i}/{n}")
+                log.info(f"  {api} [{i}/{n}] {code} empty")
                 continue
             df = _normalize_dates(df)
             written = upsert_dataframe(model, df)
             total += written
-            if i % 50 == 0 or i == n:
-                log.info(f"  {api} progress {i}/{n}, accumulated rows={total}")
+            log.info(f"  {api} [{i}/{n}] {code} +{written} rows (total={total})")
         log.info(f"{api} done. total rows={total}")
         return total
 
