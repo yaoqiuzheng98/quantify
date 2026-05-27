@@ -70,7 +70,11 @@ def upsert_dataframe(
         return 0
 
     if update_keys is None:
-        update_cols = [c for c in all_cols if c not in pk_cols and c != "updated_at"]
+        record_cols = set(records[0].keys()) if records else set()
+        update_cols = [
+            c for c in all_cols
+            if c not in pk_cols and c != "updated_at" and c in record_cols
+        ]
     else:
         update_cols = list(update_keys)
 
