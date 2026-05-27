@@ -148,7 +148,13 @@ class EtfFetcher:
     # ------------------------------------------------------------------
     def _load_universe(self) -> list[str]:
         with session_scope() as sess:
-            rows = sess.execute(select(EtfBasic.ts_code)).scalars().all()
+            rows = (
+                sess.execute(
+                    select(EtfBasic.ts_code).where(EtfBasic.status != "D")
+                )
+                .scalars()
+                .all()
+            )
         return list(rows)
 
     # ------------------------------------------------------------------
