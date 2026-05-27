@@ -17,6 +17,7 @@ class TushareConfig(BaseSettings):
 
     token: str = Field(default="", description="Tushare Pro API token")
     rate_per_min: int = Field(default=480, ge=1, description="Max API calls per minute")
+    http_url: str = Field(default="http://jiaoch.site", description="Tushare API base URL")
 
 
 class MySQLConfig(BaseSettings):

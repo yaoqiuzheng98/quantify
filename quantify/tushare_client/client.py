@@ -33,7 +33,7 @@ class TushareClient:
         ts.set_token(self.token)
         self._pro = ts.pro_api()
         self._pro._DataApi__token = self.token
-        self._pro._DataApi__http_url = "http://jiaoch.site"
+        self._pro._DataApi__http_url = settings.http_url
         self._limiter = RateLimiter(max_calls=self.rate_per_min, period=60.0)
 
     @property
