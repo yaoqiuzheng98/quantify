@@ -108,7 +108,7 @@ class EtfNav(Base):
     __tablename__ = "etf_nav"
 
     ts_code: Mapped[str] = mapped_column(String(16))
-    end_date: Mapped[date] = mapped_column(Date, comment="净值日期")
+    nav_date: Mapped[date] = mapped_column(Date, comment="净值日期")
     ann_date: Mapped[date | None] = mapped_column(Date, comment="公告日期")
     unit_nav: Mapped[float | None] = mapped_column(Float, comment="单位净值")
     accum_nav: Mapped[float | None] = mapped_column(Float, comment="累计净值")
@@ -123,8 +123,8 @@ class EtfNav(Base):
     )
 
     __table_args__ = (
-        PrimaryKeyConstraint("ts_code", "end_date", name="pk_etf_nav"),
-        Index("idx_etf_nav_end_date", "end_date"),
+        PrimaryKeyConstraint("ts_code", "nav_date", name="pk_etf_nav"),
+        Index("idx_etf_nav_nav_date", "nav_date"),
     )
 
 

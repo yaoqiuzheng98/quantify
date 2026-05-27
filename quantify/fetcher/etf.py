@@ -41,6 +41,7 @@ from quantify.utils.logger import log
 DATE_COLUMNS = {
     "trade_date",
     "end_date",
+    "nav_date",
     "ann_date",
     "found_date",
     "due_date",
@@ -254,11 +255,10 @@ class EtfFetcher:
     # 3) fund_nav
     # ------------------------------------------------------------------
     def fetch_nav(self, *, ts_codes: Iterable[str], incremental: bool = True) -> int:
-        # fund_nav uses (start_date / end_date) keyed on end_date in API params.
         return self._fetch_per_code_timeseries(
             api="fund_nav",
             model=EtfNav,
-            date_field_in_db="end_date",
+            date_field_in_db="nav_date",
             ts_codes=ts_codes,
             incremental=incremental,
         )
