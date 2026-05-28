@@ -360,8 +360,9 @@ class EtfFetcher:
     def fetch_manager(self, *, ts_codes: Iterable[str], incremental: bool = True) -> int:
         del incremental
         codes = list(ts_codes)
+        n = len(codes)
         total = 0
-        log.info(f"Fetching fund_manager for {len(codes)} ETFs ...")
+        log.info(f"Fetching fund_manager for {n} ETFs ...")
         for i, code in enumerate(codes, start=1):
             try:
                 df = self.client.call("fund_manager", ts_code=code)
@@ -369,12 +370,13 @@ class EtfFetcher:
                 log.error(f"fund_manager failed for {code}: {e}")
                 continue
             if df is None or df.empty:
+                log.info(f"  fund_manager [{i}/{n}] {code} empty")
                 continue
             if "ts_code" not in df.columns:
                 df["ts_code"] = code
             df = _normalize_dates(df)
-            total += upsert_dataframe(EtfManager, df)
-            if i % 100 == 0 or i == len(codes):
-                log.info(f"  fund_manager progress {i}/{len(codes)}, rows={total}")
+            written = upsert_dataframe(EtfManager, df)
+            total += written
+            log.info(f"  fund_manager [{i}/{n}] {code} +{written} rows (total={total})")
         log.info(f"fund_manager done. total rows={total}")
         return total
