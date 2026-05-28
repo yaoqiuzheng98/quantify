@@ -12,6 +12,8 @@ Usage
 
 from __future__ import annotations
 
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Iterable
@@ -85,6 +87,7 @@ class EtfFetcher:
     """Pull every ETF-related dataset from Tushare into MySQL."""
 
     DEFAULT_START_DATE = "20000101"
+    MAX_WORKERS = 5
 
     def __init__(self, client: TushareClient | None = None) -> None:
         self.client = client or get_client()
@@ -211,14 +214,20 @@ class EtfFetcher:
                 next_day = mx + timedelta(days=1)
                 starts[code] = next_day.strftime("%Y%m%d")
 
-        total = 0
         codes = list(ts_codes)
         n = len(codes)
         log.info(f"Fetching {api} for {n} ETFs (incremental={incremental}) ...")
-        for i, code in enumerate(codes, start=1):
+
+        counter_lock = threading.Lock()
+        total = 0
+        done = 0
+
+        def _fetch_one(idx_code: tuple[int, str]) -> int:
+            nonlocal total, done
+            i, code = idx_code
             start_str = starts.get(code, self.DEFAULT_START_DATE)
             if start_str >= end_str:
-                continue  # already up-to-date
+                return 0
             try:
                 df = self.client.call(
                     api,
@@ -228,14 +237,21 @@ class EtfFetcher:
                 )
             except Exception as e:  # noqa: BLE001
                 log.error(f"{api} failed for {code}: {e}")
-                continue
+                return 0
             if df is None or df.empty:
                 log.info(f"  {api} [{i}/{n}] {code} empty")
-                continue
+                return 0
             df = _normalize_dates(df)
             written = upsert_dataframe(model, df)
-            total += written
-            log.info(f"  {api} [{i}/{n}] {code} +{written} rows (total={total})")
+            with counter_lock:
+                total += written
+                done += 1
+                log.info(f"  {api} [{i}/{n}] {code} +{written} rows (total={total})")
+            return written
+
+        with ThreadPoolExecutor(max_workers=self.MAX_WORKERS) as executor:
+            list(executor.map(_fetch_one, enumerate(codes, start=1)))
+
         log.info(f"{api} done. total rows={total}")
         return total
 
@@ -275,41 +291,64 @@ class EtfFetcher:
             incremental=incremental,
         )
 
+    def _fetch_per_code_full(
+        self,
+        *,
+        api: str,
+        model,
+        ts_codes: Iterable[str],
+        pk_dropna: list[str] | None = None,
+    ) -> int:
+        """Full-pull (no incremental) concurrent fetcher for per-code APIs."""
+        codes = list(ts_codes)
+        n = len(codes)
+        log.info(f"Fetching {api} for {n} ETFs ...")
+
+        counter_lock = threading.Lock()
+        total = 0
+
+        def _fetch_one(idx_code: tuple[int, str]) -> int:
+            nonlocal total
+            i, code = idx_code
+            try:
+                df = self.client.call(api, ts_code=code)
+            except Exception as e:  # noqa: BLE001
+                log.error(f"{api} failed for {code}: {e}")
+                return 0
+            if df is None or df.empty:
+                log.info(f"  {api} [{i}/{n}] {code} empty")
+                return 0
+            if "ts_code" not in df.columns:
+                df["ts_code"] = code
+            df = _normalize_dates(df)
+            if pk_dropna:
+                df = df.dropna(subset=pk_dropna, how="any")
+                if df.empty:
+                    log.info(f"  {api} [{i}/{n}] {code} empty (after pk filter)")
+                    return 0
+            written = upsert_dataframe(model, df)
+            with counter_lock:
+                total += written
+                log.info(f"  {api} [{i}/{n}] {code} +{written} rows (total={total})")
+            return written
+
+        with ThreadPoolExecutor(max_workers=self.MAX_WORKERS) as executor:
+            list(executor.map(_fetch_one, enumerate(codes, start=1)))
+
+        log.info(f"{api} done. total rows={total}")
+        return total
+
     # ------------------------------------------------------------------
     # 5) fund_div
     # ------------------------------------------------------------------
     def fetch_dividend(self, *, ts_codes: Iterable[str], incremental: bool = True) -> int:
-        # fund_div doesn't strictly support start/end_date in older versions; the
-        # generic helper still works because Tushare ignores unknown args.
-        # Dividend records are sparse; full pull is cheap, so we always full-pull.
         del incremental
-        codes = list(ts_codes)
-        n = len(codes)
-        total = 0
-        log.info(f"Fetching fund_div for {n} ETFs ...")
-        for i, code in enumerate(codes, start=1):
-            try:
-                df = self.client.call("fund_div", ts_code=code)
-            except Exception as e:  # noqa: BLE001
-                log.error(f"fund_div failed for {code}: {e}")
-                continue
-            if df is None or df.empty:
-                log.info(f"  fund_div [{i}/{n}] {code} empty")
-                continue
-            # ts_code might be missing in response - inject it.
-            if "ts_code" not in df.columns:
-                df["ts_code"] = code
-            df = _normalize_dates(df)
-            # PK requires non-null base_date - drop offending rows.
-            df = df.dropna(subset=["base_date"], how="any")
-            if df.empty:
-                log.info(f"  fund_div [{i}/{n}] {code} empty (after pk filter)")
-                continue
-            written = upsert_dataframe(EtfDividend, df)
-            total += written
-            log.info(f"  fund_div [{i}/{n}] {code} +{written} rows (total={total})")
-        log.info(f"fund_div done. total rows={total}")
-        return total
+        return self._fetch_per_code_full(
+            api="fund_div",
+            model=EtfDividend,
+            ts_codes=ts_codes,
+            pk_dropna=["base_date"],
+        )
 
     # ------------------------------------------------------------------
     # 6) fund_share
@@ -328,55 +367,20 @@ class EtfFetcher:
     # ------------------------------------------------------------------
     def fetch_portfolio(self, *, ts_codes: Iterable[str], incremental: bool = True) -> int:
         del incremental  # portfolio is reported quarterly; full pull each time.
-        codes = list(ts_codes)
-        n = len(codes)
-        total = 0
-        log.info(f"Fetching fund_portfolio for {n} ETFs ...")
-        for i, code in enumerate(codes, start=1):
-            try:
-                df = self.client.call("fund_portfolio", ts_code=code)
-            except Exception as e:  # noqa: BLE001
-                log.error(f"fund_portfolio failed for {code}: {e}")
-                continue
-            if df is None or df.empty:
-                log.info(f"  fund_portfolio [{i}/{n}] {code} empty")
-                continue
-            if "ts_code" not in df.columns:
-                df["ts_code"] = code
-            df = _normalize_dates(df)
-            df = df.dropna(subset=["end_date", "symbol"], how="any")
-            if df.empty:
-                log.info(f"  fund_portfolio [{i}/{n}] {code} empty (after pk filter)")
-                continue
-            written = upsert_dataframe(EtfPortfolio, df)
-            total += written
-            log.info(f"  fund_portfolio [{i}/{n}] {code} +{written} rows (total={total})")
-        log.info(f"fund_portfolio done. total rows={total}")
-        return total
+        return self._fetch_per_code_full(
+            api="fund_portfolio",
+            model=EtfPortfolio,
+            ts_codes=ts_codes,
+            pk_dropna=["end_date", "symbol"],
+        )
 
     # ------------------------------------------------------------------
     # 8) fund_manager
     # ------------------------------------------------------------------
     def fetch_manager(self, *, ts_codes: Iterable[str], incremental: bool = True) -> int:
         del incremental
-        codes = list(ts_codes)
-        n = len(codes)
-        total = 0
-        log.info(f"Fetching fund_manager for {n} ETFs ...")
-        for i, code in enumerate(codes, start=1):
-            try:
-                df = self.client.call("fund_manager", ts_code=code)
-            except Exception as e:  # noqa: BLE001
-                log.error(f"fund_manager failed for {code}: {e}")
-                continue
-            if df is None or df.empty:
-                log.info(f"  fund_manager [{i}/{n}] {code} empty")
-                continue
-            if "ts_code" not in df.columns:
-                df["ts_code"] = code
-            df = _normalize_dates(df)
-            written = upsert_dataframe(EtfManager, df)
-            total += written
-            log.info(f"  fund_manager [{i}/{n}] {code} +{written} rows (total={total})")
-        log.info(f"fund_manager done. total rows={total}")
-        return total
+        return self._fetch_per_code_full(
+            api="fund_manager",
+            model=EtfManager,
+            ts_codes=ts_codes,
+        )
