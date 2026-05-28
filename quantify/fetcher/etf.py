@@ -329,8 +329,9 @@ class EtfFetcher:
     def fetch_portfolio(self, *, ts_codes: Iterable[str], incremental: bool = True) -> int:
         del incremental  # portfolio is reported quarterly; full pull each time.
         codes = list(ts_codes)
+        n = len(codes)
         total = 0
-        log.info(f"Fetching fund_portfolio for {len(codes)} ETFs ...")
+        log.info(f"Fetching fund_portfolio for {n} ETFs ...")
         for i, code in enumerate(codes, start=1):
             try:
                 df = self.client.call("fund_portfolio", ts_code=code)
@@ -338,16 +339,18 @@ class EtfFetcher:
                 log.error(f"fund_portfolio failed for {code}: {e}")
                 continue
             if df is None or df.empty:
+                log.info(f"  fund_portfolio [{i}/{n}] {code} empty")
                 continue
             if "ts_code" not in df.columns:
                 df["ts_code"] = code
             df = _normalize_dates(df)
             df = df.dropna(subset=["end_date", "symbol"], how="any")
             if df.empty:
+                log.info(f"  fund_portfolio [{i}/{n}] {code} empty (after pk filter)")
                 continue
-            total += upsert_dataframe(EtfPortfolio, df)
-            if i % 100 == 0 or i == len(codes):
-                log.info(f"  fund_portfolio progress {i}/{len(codes)}, rows={total}")
+            written = upsert_dataframe(EtfPortfolio, df)
+            total += written
+            log.info(f"  fund_portfolio [{i}/{n}] {code} +{written} rows (total={total})")
         log.info(f"fund_portfolio done. total rows={total}")
         return total
 
