@@ -174,10 +174,8 @@ class EtfDividend(Base):
     )
 
     __table_args__ = (
-        # ann_date / ex_date may be NULL in source data -> use COALESCE-like
-        # composite key with safe fallbacks. ex_date is the most reliable.
-        PrimaryKeyConstraint("ts_code", "ex_date", "base_date", name="pk_etf_div"),
-        Index("idx_etf_div_ann", "ts_code", "ann_date"),
+        PrimaryKeyConstraint("ts_code", "ann_date", "base_date", name="pk_etf_div"),
+        Index("idx_etf_div_ex_date", "ex_date"),
     )
 
 
