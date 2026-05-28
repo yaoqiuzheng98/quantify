@@ -300,8 +300,8 @@ class EtfFetcher:
             if "ts_code" not in df.columns:
                 df["ts_code"] = code
             df = _normalize_dates(df)
-            # PK requires non-null ann_date / base_date - drop offending rows.
-            df = df.dropna(subset=["ann_date", "base_date"], how="any")
+            # PK requires non-null base_date - drop offending rows.
+            df = df.dropna(subset=["base_date"], how="any")
             if df.empty:
                 log.info(f"  fund_div [{i}/{n}] {code} empty (after pk filter)")
                 continue

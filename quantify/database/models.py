@@ -174,7 +174,7 @@ class EtfDividend(Base):
     )
 
     __table_args__ = (
-        PrimaryKeyConstraint("ts_code", "ann_date", "base_date", name="pk_etf_div"),
+        PrimaryKeyConstraint("ts_code", "base_date", name="pk_etf_div"),
         Index("idx_etf_div_ex_date", "ex_date"),
     )
 
