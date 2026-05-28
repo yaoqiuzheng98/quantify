@@ -57,15 +57,19 @@ def upsert_dataframe(
         return 0
 
     table = model.__table__
-    pk_cols = {c.name for c in table.primary_key.columns}
     all_cols = [c.name for c in table.columns]
+    all_pk_cols = {c.name for c in table.primary_key.columns}
+    # Auto-increment PKs are assigned by MySQL - don't require them to be non-null.
+    required_pk_cols = {
+        c.name for c in table.primary_key.columns if c.autoincrement is not True
+    }
 
     records = _clean_records(df, all_cols)
     if not records:
         return 0
 
-    # Drop records where any PK column is None - MySQL rejects NULL PKs.
-    records = [r for r in records if all(r.get(pk) is not None for pk in pk_cols)]
+    # Drop records where any non-autoincrement PK column is None.
+    records = [r for r in records if all(r.get(pk) is not None for pk in required_pk_cols)]
     if not records:
         return 0
 
@@ -73,7 +77,7 @@ def upsert_dataframe(
         record_cols = set(records[0].keys()) if records else set()
         update_cols = [
             c for c in all_cols
-            if c not in pk_cols and c != "updated_at" and c in record_cols
+            if c not in all_pk_cols and c != "updated_at" and c in record_cols
         ]
     else:
         update_cols = list(update_keys)
