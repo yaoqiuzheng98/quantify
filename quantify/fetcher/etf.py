@@ -284,8 +284,9 @@ class EtfFetcher:
         # Dividend records are sparse; full pull is cheap, so we always full-pull.
         del incremental
         codes = list(ts_codes)
+        n = len(codes)
         total = 0
-        log.info(f"Fetching fund_div for {len(codes)} ETFs ...")
+        log.info(f"Fetching fund_div for {n} ETFs ...")
         for i, code in enumerate(codes, start=1):
             try:
                 df = self.client.call("fund_div", ts_code=code)
@@ -293,6 +294,7 @@ class EtfFetcher:
                 log.error(f"fund_div failed for {code}: {e}")
                 continue
             if df is None or df.empty:
+                log.info(f"  fund_div [{i}/{n}] {code} empty")
                 continue
             # ts_code might be missing in response - inject it.
             if "ts_code" not in df.columns:
@@ -301,10 +303,11 @@ class EtfFetcher:
             # PK requires non-null ex_date / base_date - drop offending rows.
             df = df.dropna(subset=["ex_date", "base_date"], how="any")
             if df.empty:
+                log.info(f"  fund_div [{i}/{n}] {code} empty (after pk filter)")
                 continue
-            total += upsert_dataframe(EtfDividend, df)
-            if i % 100 == 0 or i == len(codes):
-                log.info(f"  fund_div progress {i}/{len(codes)}, rows={total}")
+            written = upsert_dataframe(EtfDividend, df)
+            total += written
+            log.info(f"  fund_div [{i}/{n}] {code} +{written} rows (total={total})")
         log.info(f"fund_div done. total rows={total}")
         return total
 
