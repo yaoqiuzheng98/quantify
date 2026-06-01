@@ -13,6 +13,7 @@ Usage
 from __future__ import annotations
 
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -197,11 +198,13 @@ class EtfFetcher:
         def _run_one(idx_code: tuple[int, str]) -> int:
             nonlocal total
             i, code = idx_code
-            try:
-                df = fetch_one(i, code)
-            except Exception as e:  # noqa: BLE001
-                log.error(f"{api} failed for {code}: {e}")
-                return 0
+            while True:
+                try:
+                    df = fetch_one(i, code)
+                    break
+                except Exception as e:  # noqa: BLE001
+                    log.error(f"{api} failed for {code}: {e}, retrying in 5s ...")
+                    time.sleep(5)
             if df is None or df.empty:
                 log.info(f"  {api} [{i}/{n}] {code} empty")
                 return 0
