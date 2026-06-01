@@ -16,7 +16,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Iterable
+from typing import Callable, Iterable
 
 import pandas as pd
 from sqlalchemy import func, select
@@ -152,13 +152,7 @@ class EtfFetcher:
     # ------------------------------------------------------------------
     def _load_universe(self) -> list[str]:
         with session_scope() as sess:
-            rows = (
-                sess.execute(
-                    select(EtfBasic.ts_code).where(EtfBasic.status != "D")
-                )
-                .scalars()
-                .all()
-            )
+            rows = sess.execute(select(EtfBasic.ts_code).where(EtfBasic.status != "D")).scalars().all()
         return list(rows)
 
     # ------------------------------------------------------------------
@@ -182,6 +176,49 @@ class EtfFetcher:
         return upsert_dataframe(EtfBasic, df)
 
     # ------------------------------------------------------------------
+    # Shared concurrent fetch helper
+    # ------------------------------------------------------------------
+    def _fetch_concurrent(
+        self,
+        *,
+        api: str,
+        model,
+        ts_codes: Iterable[str],
+        fetch_one: Callable[[int, str], pd.DataFrame | None],
+        log_extra: str = "",
+    ) -> int:
+        codes = list(ts_codes)
+        n = len(codes)
+        log.info(f"Fetching {api} for {n} ETFs{log_extra} ...")
+
+        counter_lock = threading.Lock()
+        total = 0
+
+        def _run_one(idx_code: tuple[int, str]) -> int:
+            nonlocal total
+            i, code = idx_code
+            try:
+                df = fetch_one(i, code)
+            except Exception as e:  # noqa: BLE001
+                log.error(f"{api} failed for {code}: {e}")
+                return 0
+            if df is None or df.empty:
+                log.info(f"  {api} [{i}/{n}] {code} empty")
+                return 0
+            df = _normalize_dates(df)
+            written = upsert_dataframe(model, df)
+            with counter_lock:
+                total += written
+                log.info(f"  {api} [{i}/{n}] {code} +{written} rows (total={total})")
+            return written
+
+        with ThreadPoolExecutor(max_workers=self.MAX_WORKERS) as executor:
+            list(executor.map(_run_one, enumerate(codes, start=1)))
+
+        log.info(f"{api} done. total rows={total}")
+        return total
+
+    # ------------------------------------------------------------------
     # Generic per-code time-series helper
     # ------------------------------------------------------------------
     def _fetch_per_code_timeseries(
@@ -196,64 +233,39 @@ class EtfFetcher:
         end_param: str = "end_date",
         api_extra: dict | None = None,
     ) -> int:
-        """Loop over ts_codes, call ``api`` for each and upsert."""
         api_extra = api_extra or {}
         end_str = _today_str()
 
-        # Pre-compute per-ts_code start_date for incremental mode.
         starts: dict[str, str] = {}
         if incremental:
             db_col = getattr(model, date_field_in_db)
             with session_scope() as sess:
-                rows = sess.execute(
-                    select(model.ts_code, func.max(db_col)).group_by(model.ts_code)
-                ).all()
+                rows = sess.execute(select(model.ts_code, func.max(db_col)).group_by(model.ts_code)).all()
             for code, mx in rows:
                 if mx is None:
                     continue
                 next_day = mx + timedelta(days=1)
                 starts[code] = next_day.strftime("%Y%m%d")
 
-        codes = list(ts_codes)
-        n = len(codes)
-        log.info(f"Fetching {api} for {n} ETFs (incremental={incremental}) ...")
-
-        counter_lock = threading.Lock()
-        total = 0
-        done = 0
-
-        def _fetch_one(idx_code: tuple[int, str]) -> int:
-            nonlocal total, done
-            i, code = idx_code
+        def fetch_one(i: int, code: str) -> pd.DataFrame | None:
+            del i
             start_str = starts.get(code, self.DEFAULT_START_DATE)
             if start_str >= end_str:
-                return 0
-            try:
-                df = self.client.call(
-                    api,
-                    ts_code=code,
-                    **{start_param: start_str, end_param: end_str},
-                    **api_extra,
-                )
-            except Exception as e:  # noqa: BLE001
-                log.error(f"{api} failed for {code}: {e}")
-                return 0
-            if df is None or df.empty:
-                log.info(f"  {api} [{i}/{n}] {code} empty")
-                return 0
-            df = _normalize_dates(df)
-            written = upsert_dataframe(model, df)
-            with counter_lock:
-                total += written
-                done += 1
-                log.info(f"  {api} [{i}/{n}] {code} +{written} rows (total={total})")
-            return written
+                return None
+            return self.client.call(
+                api,
+                ts_code=code,
+                **{start_param: start_str, end_param: end_str},
+                **api_extra,
+            )
 
-        with ThreadPoolExecutor(max_workers=self.MAX_WORKERS) as executor:
-            list(executor.map(_fetch_one, enumerate(codes, start=1)))
-
-        log.info(f"{api} done. total rows={total}")
-        return total
+        return self._fetch_concurrent(
+            api=api,
+            model=model,
+            ts_codes=ts_codes,
+            fetch_one=fetch_one,
+            log_extra=f" (incremental={incremental})",
+        )
 
     # ------------------------------------------------------------------
     # 2) fund_daily
@@ -299,44 +311,28 @@ class EtfFetcher:
         ts_codes: Iterable[str],
         pk_dropna: list[str] | None = None,
     ) -> int:
-        """Full-pull (no incremental) concurrent fetcher for per-code APIs."""
-        codes = list(ts_codes)
-        n = len(codes)
-        log.info(f"Fetching {api} for {n} ETFs ...")
-
-        counter_lock = threading.Lock()
-        total = 0
-
-        def _fetch_one(idx_code: tuple[int, str]) -> int:
-            nonlocal total
-            i, code = idx_code
-            try:
-                df = self.client.call(api, ts_code=code)
-            except Exception as e:  # noqa: BLE001
-                log.error(f"{api} failed for {code}: {e}")
-                return 0
-            if df is None or df.empty:
-                log.info(f"  {api} [{i}/{n}] {code} empty")
-                return 0
+        def fetch_one(i: int, code: str) -> pd.DataFrame | None:
+            df = self.client.call(api, ts_code=code)
+            if df is None:
+                return None
             if "ts_code" not in df.columns:
                 df["ts_code"] = code
-            df = _normalize_dates(df)
             if pk_dropna:
+                missing = [c for c in pk_dropna if c not in df.columns]
+                if missing:
+                    log.warning(f"  {api} [{i}/?] {code} missing pk column(s): {missing}")
+                    return None
                 df = df.dropna(subset=pk_dropna, how="any")
                 if df.empty:
-                    log.info(f"  {api} [{i}/{n}] {code} empty (after pk filter)")
-                    return 0
-            written = upsert_dataframe(model, df)
-            with counter_lock:
-                total += written
-                log.info(f"  {api} [{i}/{n}] {code} +{written} rows (total={total})")
-            return written
+                    return None
+            return df
 
-        with ThreadPoolExecutor(max_workers=self.MAX_WORKERS) as executor:
-            list(executor.map(_fetch_one, enumerate(codes, start=1)))
-
-        log.info(f"{api} done. total rows={total}")
-        return total
+        return self._fetch_concurrent(
+            api=api,
+            model=model,
+            ts_codes=ts_codes,
+            fetch_one=fetch_one,
+        )
 
     # ------------------------------------------------------------------
     # 5) fund_div
