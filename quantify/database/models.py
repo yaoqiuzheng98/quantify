@@ -68,9 +68,7 @@ class EtfBasic(Base):
     redm_startdate: Mapped[date | None] = mapped_column(Date, comment="日常赎回起始日")
     market: Mapped[str | None] = mapped_column(String(4), comment="E场内 O场外")
 
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime, server_default=func.now(), onupdate=func.now()
-    )
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
 
 # ---------------------------------------------------------------------------
@@ -91,9 +89,7 @@ class EtfDaily(Base):
     vol: Mapped[float | None] = mapped_column(Float, comment="成交量(手)")
     amount: Mapped[float | None] = mapped_column(Float, comment="成交额(千元)")
 
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime, server_default=func.now(), onupdate=func.now()
-    )
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
     __table_args__ = (
         PrimaryKeyConstraint("ts_code", "trade_date", name="pk_etf_daily"),
@@ -118,9 +114,7 @@ class EtfNav(Base):
     adj_nav: Mapped[float | None] = mapped_column(Float, comment="复权净值")
     update_flag: Mapped[str | None] = mapped_column(String(4), comment="更新标识")
 
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime, server_default=func.now(), onupdate=func.now()
-    )
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
     __table_args__ = (
         PrimaryKeyConstraint("ts_code", "nav_date", name="pk_etf_nav"),
@@ -142,13 +136,9 @@ class EtfAdjFactor(Base):
     trade_date: Mapped[date] = mapped_column(Date, comment="交易日期")
     adj_factor: Mapped[float | None] = mapped_column(Float, comment="复权因子")
 
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime, server_default=func.now(), onupdate=func.now()
-    )
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
-    __table_args__ = (
-        PrimaryKeyConstraint("ts_code", "trade_date", name="pk_etf_adj"),
-    )
+    __table_args__ = (PrimaryKeyConstraint("ts_code", "trade_date", name="pk_etf_adj"),)
 
 
 # ---------------------------------------------------------------------------
@@ -159,19 +149,22 @@ class EtfDividend(Base):
 
     ts_code: Mapped[str] = mapped_column(String(16), comment="基金代码")
     ann_date: Mapped[date | None] = mapped_column(Date, comment="公告日")
-    ex_date: Mapped[date | None] = mapped_column(Date, comment="除息日")
-    pay_date: Mapped[date | None] = mapped_column(Date, comment="派息日")
-    record_date: Mapped[date | None] = mapped_column(Date, comment="登记日")
+    imp_anndate: Mapped[date | None] = mapped_column(Date, comment="信息披露日")
     base_date: Mapped[date | None] = mapped_column(Date, comment="基准日")
     div_proc: Mapped[str | None] = mapped_column(String(32), comment="分红方案进度")
-    base_share: Mapped[float | None] = mapped_column(Float, comment="基准份额(万份)")
-    net_asset: Mapped[float | None] = mapped_column(Float, comment="净资产")
-    total_netasset: Mapped[float | None] = mapped_column(Float, comment="合计净资产")
+    record_date: Mapped[date | None] = mapped_column(Date, comment="登记日")
+    ex_date: Mapped[date | None] = mapped_column(Date, comment="除息日")
+    pay_date: Mapped[date | None] = mapped_column(Date, comment="派息日")
+    earpay_date: Mapped[date | None] = mapped_column(Date, comment="收益支付日")
+    net_ex_date: Mapped[date | None] = mapped_column(Date, comment="净值除权日")
     div_cash: Mapped[float | None] = mapped_column(Float, comment="每份派息(元)")
+    base_unit: Mapped[float | None] = mapped_column(Float, comment="基准份额")
+    ear_distr: Mapped[float | None] = mapped_column(Float, comment="收益分配金额")
+    ear_amount: Mapped[float | None] = mapped_column(Float, comment="可分配收益")
+    account_date: Mapped[date | None] = mapped_column(Date, comment="会计日期")
+    base_year: Mapped[str | None] = mapped_column(String(8), comment="基准年份")
 
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime, server_default=func.now(), onupdate=func.now()
-    )
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
     __table_args__ = (
         PrimaryKeyConstraint("ts_code", "base_date", name="pk_etf_div"),
@@ -188,10 +181,10 @@ class EtfShare(Base):
     ts_code: Mapped[str] = mapped_column(String(16), comment="基金代码")
     trade_date: Mapped[date] = mapped_column(Date, comment="变动日期")
     fd_share: Mapped[float | None] = mapped_column(Float, comment="基金份额(万份)")
+    fund_type: Mapped[str | None] = mapped_column(String(64), comment="基金类型")
+    market: Mapped[str | None] = mapped_column(String(4), comment="E场内 O场外")
 
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime, server_default=func.now(), onupdate=func.now()
-    )
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
     __table_args__ = (PrimaryKeyConstraint("ts_code", "trade_date", name="pk_etf_share"),)
 
@@ -211,9 +204,7 @@ class EtfPortfolio(Base):
     stk_mkv_ratio: Mapped[float | None] = mapped_column(Float, comment="占股票市值比")
     stk_float_ratio: Mapped[float | None] = mapped_column(Float, comment="占流通股本比")
 
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime, server_default=func.now(), onupdate=func.now()
-    )
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
     __table_args__ = (
         PrimaryKeyConstraint("ts_code", "end_date", "symbol", name="pk_etf_portfolio"),
@@ -239,10 +230,6 @@ class EtfManager(Base):
     end_date: Mapped[date | None] = mapped_column(Date, comment="离任日期")
     resume: Mapped[str | None] = mapped_column(Text, comment="简历摘要")
 
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime, server_default=func.now(), onupdate=func.now()
-    )
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
-    __table_args__ = (
-        Index("uq_etf_manager", "ts_code", "name", "begin_date", unique=True),
-    )
+    __table_args__ = (Index("uq_etf_manager", "ts_code", "name", "begin_date", unique=True),)

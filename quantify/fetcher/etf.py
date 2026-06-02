@@ -58,6 +58,10 @@ DATE_COLUMNS = {
     "record_date",
     "base_date",
     "begin_date",
+    "account_date",
+    "earpay_date",
+    "imp_anndate",
+    "net_ex_date",
 }
 
 
