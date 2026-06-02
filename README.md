@@ -52,7 +52,7 @@ Quantify 是一个使用 **Python** 构建的中低频量化研究框架。它�
                            ↓
 ┌─────────────────────────────────────────────────────────────┐
 │                  回测层 (Backtest Engine)                    │
-│   vectorbt 向量化 · Walk-forward · 多重检验校正               │
+│   逐 bar 事件驱动 · 佣金/滑点模型 · 指标 + 图表 + LLM 报告    │
 └──────────────────────────┬──────────────────────────────────┘
                            ↓
 ┌─────────────────────────────────────────────────────────────┐
@@ -338,6 +338,121 @@ CREATE INDEX idx_factor_factor_date_code ON factor_value(factor_name, trade_date
 
 ---
 
+## 📈 回测引擎
+
+回测引擎采用**事件驱动逐 bar 模拟**，策略 API 对齐聚宽（JoinQuant）风格，熟悉 `initialize` / `handle_data` 模式的用户可以零学习成本上手。
+
+### 策略写法
+
+编写一个包含 `initialize(context)` 和 `handle_data(context)` 的 Python 代码段即可：
+
+```python
+def initialize(context):
+    context.set_benchmark("510300.SH")
+    context.short_window = 5
+    context.long_window = 20
+
+def handle_data(context):
+    code = "510300.SH"
+    closes = context.data.history(code, count=context.long_window + 1, field="close")
+    if len(closes) < context.long_window + 1:
+        return
+
+    short_ma = sum(closes[-context.short_window:]) / context.short_window
+    long_ma = sum(closes[-context.long_window:]) / context.long_window
+
+    # 金叉买入，死叉卖出
+    if short_ma > long_ma:
+        context.order_target_percent(code, 0.95)
+    else:
+        context.order_target_percent(code, 0)
+```
+
+### Context API 一览
+
+| 方法 | 说明 |
+|------|------|
+| `context.set_benchmark(ts_code)` | 设置基准标的 |
+| `context.order(ts_code, amount)` | 按股数下单（正=买，负=卖） |
+| `context.order_value(ts_code, value)` | 按金额下单 |
+| `context.order_target_value(ts_code, target)` | 调仓至目标市值 |
+| `context.order_target_percent(ts_code, pct)` | 调仓至目标仓位比例 |
+| `context.data.current(ts_code)` | 获取当前 bar（返回 Bar 对象） |
+| `context.data.history(ts_code, count, field)` | 获取历史 N 根 bar 的字段序列 |
+| `context.portfolio.cash` | 当前现金 |
+| `context.portfolio.total_value` | 当前总资产 |
+| `context.portfolio.positions[code]` | 持仓对象（`.amount`, `.avg_cost`, `.market_value`, `.pnl`） |
+
+### 在代码中调用引擎
+
+```python
+from quantify.backtest import BacktestEngine
+
+engine = BacktestEngine(
+    strategy_source=open("my_strategy.py").read(),   # 或直接传字符串
+    ts_codes=["510300.SH", "510050.SH"],
+    start_date="2022-01-01",
+    end_date="2025-12-31",
+    initial_cash=100000,
+    benchmark_code="510300.SH",
+    commission_rate=0.0005,    # 万五
+    commission_min=0.5,        # 最低 0.5 元
+)
+
+result = engine.run()
+```
+
+### 结果输出
+
+引擎提供**两种格式**的输出：
+
+```python
+# 1) 人类可读 — 格式化文本指标
+print(result.metrics.to_llm_prompt())
+
+# 2) LLM 分析 — 结构化字典（归一化净值曲线 + 交易记录）
+lm_dict = result.to_llm_dict()
+# lm_dict["metrics"]      → {sharpe_ratio, max_drawdown_pct, win_rate_pct, ...}
+# lm_dict["equity_curve"] → [{date, value}, ...]
+# lm_dict["benchmark"]    → [{date, value}, ...]   # 已归一化对齐
+# lm_dict["trades"]       → [{ts_code, amount, filled_price, ...}]
+
+# 3) 图表 — 保存到磁盘
+result.save_charts("./output/")
+# → output/equity_curve.png       (净值曲线 + 回撤)
+# → output/returns_hist.png       (日收益分布)
+# → output/rolling_sharpe.png     (滚动夏普比率)
+```
+
+### 指标清单
+
+| 类别 | 指标 |
+|------|------|
+| 收益 | 总收益率、年化收益率 |
+| 风险 | 最大回撤 (含持续天数)、年化波动率 |
+| 风险调整 | Sharpe 比率、Calmar 比率 |
+| 交易 | 胜率、平均盈亏比、Profit Factor、交易次数 |
+| 成本 | 累计佣金、累计滑点 |
+
+### 佣金与滑点
+
+佣金通过 `commission_rate` + `commission_min` 参数自由配置，`commission_rate=0, commission_min=0` 即为零佣金：
+
+```python
+engine = BacktestEngine(
+    ...,
+    commission_rate=0.0005,    # 费率（如万五 = 0.05%）
+    commission_min=0.5,        # 最低佣金（0 表示无下限）
+    slippage_rate=0.0001,      # 滑点比例（可选，默认 0）
+)
+```
+
+也支持传入完全自定义的函数：`make_commission(rate, minimum)` / `make_slippage(rate)` 或自定义 `callable`。
+
+> 💡 目前仅回测 ETF 日线数据。数据源来自 `etf_daily` 表（OHLCV），读取逻辑在 `engine.py` 的 `_load_data()` 中，可方便扩展至股票 → 期货等资产。
+
+---
+
 ## 🤖 LLM Agent 工作流
 
 Agent 与回测引擎遵循"**LLM 提假设 + 引擎做计算 + LLM 读报告**"的黄金分工：
@@ -438,10 +553,12 @@ quantify/
 │   │   ├── barra.py
 │   │   ├── neutralize.py
 │   │   └── registry.py
-│   ├── backtest/                 # 回测引擎 (vectorbt 封装)
-│   │   ├── engine.py
-│   │   ├── walk_forward.py
-│   │   └── metrics.py
+│   ├── backtest/                 # 回测引擎 (事件驱动)
+│   │   ├── engine.py             # 核心引擎：加载 → 逐bar执行 → 输出
+│   │   ├── context.py            # Context / Portfolio / DataProxy
+│   │   ├── broker.py             # 订单执行 / 佣金 / 滑点
+│   │   ├── metrics.py            # Sharpe / 最大回撤 / 年化 / 胜率
+│   │   └── charting.py           # matplotlib 图表 (净值曲线/回撤/夏普)
 │   ├── agent/                    # LLM Agent 编排
 │   │   ├── proposer.py           # 策略生成
 │   │   ├── analyzer.py           # 报告解读
@@ -475,7 +592,7 @@ quantify/
 | ORM | **SQLAlchemy 2.0** | 模型映射 + 类型安全 |
 | 迁移 | **Alembic** | 数据库版本管理 |
 | 数据处理 | **pandas / polars / numpy** | polars 用于大面板加速 |
-| 因子/回测 | **qlib / vectorbt** | 业界主流，避免重复造轮子 |
+| 可视化 | **matplotlib** | 回测净值曲线、收益分布等图表 |
 | CLI | **Typer** | 现代化命令行框架 |
 | 配置 | **Pydantic Settings** | 类型安全的配置加载 |
 | 日志 | **loguru** | 开箱即用的结构化日志 |
@@ -488,9 +605,9 @@ quantify/
 ## 🗺️ 路线图
 
 - [x] 项目骨架与配置系统
-- [ ] **M1 – 数据层**：Tushare 客户端 + 全量数据入库 MySQL
+- [x] **M1 – 数据层**：Tushare 客户端 + ETF 全量数据入库 MySQL
 - [ ] **M2 – 因子层**：实现 20 个经典因子 + 中性化工具
-- [ ] **M3 – 回测层**：vectorbt 封装 + Walk-forward 框架
+- [x] **M3 – 回测层**：事件驱动回测引擎 + 指标/图表/LLM 报告
 - [ ] **M4 – Agent 层**：LLM 策略生成器 + 报告解读器
 - [ ] **M5 – 分析层**：行业稳健性诊断 + 策略池管理
 - [ ] **M6 – 实盘联调**：QMT / Ptrade 模拟盘对接
