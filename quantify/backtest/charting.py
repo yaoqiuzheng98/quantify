@@ -5,11 +5,12 @@ from __future__ import annotations
 import io
 
 import matplotlib
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
 matplotlib.use("Agg")
+
+import matplotlib.pyplot as plt
 
 
 def _cn_font_setup() -> None:
@@ -110,7 +111,8 @@ def plot_equity_curve(
     ax2.fill_between(dates, 0, drawdown, color="#ff7f0e", alpha=0.3, label="Drawdown %")
     ax2.set_ylabel("Drawdown %", color="#ff7f0e")
     ax2.tick_params(axis="y", labelcolor="#ff7f0e")
-    ax2.set_ylim(max(drawdown) * 1.2, 0)
+    min_drawdown = float(np.min(drawdown))
+    ax2.set_ylim(min_drawdown * 1.2 if min_drawdown < 0 else -1, 0)
 
     ax1.set_title(title)
     ax1.grid(True, alpha=0.3)
