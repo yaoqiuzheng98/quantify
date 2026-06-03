@@ -53,10 +53,10 @@ def plot_equity_curve(
     equity_df: pd.DataFrame,
     benchmark_df: pd.DataFrame | None = None,
     title: str = "Equity Curve",
-    figsize: tuple[int, int] = (16, 6),
+    figsize: tuple[int, int] = (16, 8),
     save_path: str | None = None,
 ) -> bytes:
-    """Plot the cumulative portfolio equity curve, optionally with a benchmark.
+    """Plot a JoinQuant-style single report chart with equity and drawdown.
 
     Parameters
     ----------
@@ -77,22 +77,26 @@ def plot_equity_curve(
     bytes
         PNG-encoded image.
     """
-    fig, ax1 = plt.subplots(figsize=figsize)
+    fig, (ax_equity, ax_drawdown) = plt.subplots(
+        nrows=2,
+        figsize=figsize,
+        sharex=True,
+        gridspec_kw={"height_ratios": [3, 1], "hspace": 0.05},
+    )
 
     dates = pd.to_datetime(equity_df["date"])
     values = equity_df["value"].values
     initial = values[0]
 
-    ax1.plot(dates, values / initial, color="#1f77b4", linewidth=1.5, label="Portfolio")
-    ax1.set_ylabel("Cumulative Return", color="#1f77b4")
-    ax1.tick_params(axis="y", labelcolor="#1f77b4")
+    ax_equity.plot(dates, values / initial, color="#1f77b4", linewidth=1.5, label="Portfolio")
+    ax_equity.set_ylabel("Cumulative Return")
 
     if benchmark_df is not None and not benchmark_df.empty:
         bench_dates = pd.to_datetime(benchmark_df["date"])
         bench_vals = benchmark_df["value"].values
         bench_init = bench_vals[0]
         if bench_init > 0:
-            ax1.plot(
+            ax_equity.plot(
                 bench_dates,
                 bench_vals / bench_init,
                 color="#d62728",
@@ -101,23 +105,21 @@ def plot_equity_curve(
                 label="Benchmark",
             )
 
-    ax1.axhline(y=1, color="gray", linestyle=":", alpha=0.5)
-    ax1.legend(loc="upper left")
+    ax_equity.axhline(y=1, color="gray", linestyle=":", alpha=0.5)
+    ax_equity.legend(loc="upper left")
+    ax_equity.set_title(title)
+    ax_equity.grid(True, alpha=0.3)
 
-    # drawdown sub-axis
     peak = np.maximum.accumulate(values)
     drawdown = (values - peak) / peak * 100
-    ax2 = ax1.twinx()
-    ax2.fill_between(dates, 0, drawdown, color="#ff7f0e", alpha=0.3, label="Drawdown %")
-    ax2.set_ylabel("Drawdown %", color="#ff7f0e")
-    ax2.tick_params(axis="y", labelcolor="#ff7f0e")
+    ax_drawdown.fill_between(dates, 0, drawdown, color="#ff7f0e", alpha=0.35)
+    ax_drawdown.plot(dates, drawdown, color="#ff7f0e", linewidth=0.8)
+    ax_drawdown.set_ylabel("Drawdown %")
     min_drawdown = float(np.min(drawdown))
-    ax2.set_ylim(min_drawdown * 1.2 if min_drawdown < 0 else -1, 0)
+    ax_drawdown.set_ylim(min_drawdown * 1.2 if min_drawdown < 0 else -1, 0)
+    ax_drawdown.grid(True, alpha=0.3)
 
-    ax1.set_title(title)
-    ax1.grid(True, alpha=0.3)
-
-    fig.tight_layout()
+    fig.subplots_adjust(top=0.92, bottom=0.08)
 
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=100, bbox_inches="tight")
@@ -216,7 +218,7 @@ def generate_report_charts(
     benchmark_df: pd.DataFrame | None = None,
     save_dir: str | None = None,
 ) -> dict[str, bytes]:
-    """Generate a full chart report suite.
+    """Generate the default single-chart backtest report.
 
     Returns a dict mapping chart names to PNG bytes.
     """
@@ -230,13 +232,5 @@ def generate_report_charts(
         equity_df,
         benchmark_df=benchmark_df,
         save_path=f"{save_dir}/equity_curve.png" if save_dir else None,
-    )
-    charts["returns_hist"] = plot_returns_histogram(
-        equity_df,
-        save_path=f"{save_dir}/returns_hist.png" if save_dir else None,
-    )
-    charts["rolling_sharpe"] = plot_rolling_sharpe(
-        equity_df,
-        save_path=f"{save_dir}/rolling_sharpe.png" if save_dir else None,
     )
     return charts
