@@ -6,7 +6,7 @@ from datetime import date
 
 from quantify.utils.logger import log
 
-from .context import DataProxy, Order, ORDER_STATUS_FILLED
+from .context import Bar, DataProxy, Order, ORDER_STATUS_FILLED, ORDER_STATUS_REJECTED
 
 
 # ---------------------------------------------------------------------------
@@ -76,7 +76,7 @@ class Broker:
 
     def current_price(self, ts_code: str) -> float | None:
         bar = self._data.current(ts_code)
-        if bar is None:
+        if not isinstance(bar, Bar):
             return None
         return bar.close
 
@@ -103,67 +103,98 @@ class Broker:
         For simplicity, executes at the *current* bar close for buy orders
         (liquidity assumption). This can be tuned later.
         """
+        remaining_orders: list[Order] = []
         for order in self._pending_orders:
-            order.status = ORDER_STATUS_FILLED
-            order.filled_date = self._data.today
             bar = self._data.current(order.ts_code)
-            if bar is None:
-                order.status = "rejected"
+            if not isinstance(bar, Bar):
+                remaining_orders.append(order)
                 continue
             exec_price = bar.close
-            slippage_cost = self._slippage_fn(exec_price, order.amount)
-            order.filled_price = exec_price
-            order.filled_amount = order.amount
-            order.slippage = slippage_cost
+            if self._apply_fill(order, portfolio, exec_price):
+                order.status = ORDER_STATUS_FILLED
+                order.filled_date = bar.date
+                order.filled_price = exec_price
+                self._trades.append(order)
+            else:
+                order.status = ORDER_STATUS_REJECTED
 
-            trade_value = abs(order.amount) * exec_price
-            commission = self._commission_fn(trade_value)
-            order.commission = commission
+        self._pending_orders = remaining_orders
 
-            self._apply_fill(order, portfolio, exec_price, commission)
-            self._trades.append(order)
-
+    def cancel_pending(self) -> int:
+        """Cancel orders that cannot be executed because no next bar exists."""
+        count = len(self._pending_orders)
+        for order in self._pending_orders:
+            order.status = ORDER_STATUS_REJECTED
         self._pending_orders.clear()
+        return count
 
-    @staticmethod
-    def _apply_fill(order: Order, portfolio, price: float, commission: float) -> None:
+    def _buy_total_cost(self, price: float, amount: int) -> tuple[float, float, float]:
+        trade_value = amount * price
+        commission = float(self._commission_fn(trade_value))
+        slippage = abs(float(self._slippage_fn(price, amount)))
+        return trade_value + commission + slippage, commission, slippage
+
+    def _max_affordable_buy_amount(self, requested: int, cash: float, price: float) -> int:
+        if price <= 0:
+            return 0
+
+        low = 0
+        high = min(requested, int(cash / price))
+        while low < high:
+            mid = (low + high + 1) // 2
+            total_cost, _, _ = self._buy_total_cost(price, mid)
+            if total_cost <= cash:
+                low = mid
+            else:
+                high = mid - 1
+        return low
+
+    def _apply_fill(self, order: Order, portfolio, price: float) -> bool:
         pos = portfolio.get_position(order.ts_code)
         if order.amount > 0:  # buy
-            total_cost = order.amount * price + commission
-            if portfolio.cash < total_cost:
-                affordable = int((portfolio.cash - commission) / price)
-                if affordable <= 0:
-                    log.debug(
-                        f"Insufficient cash for {order.ts_code}: need {total_cost:.2f}, have {portfolio.cash:.2f}"
-                    )
-                    return
-                log.debug(f"Partial fill {order.ts_code}: {order.amount} -> {affordable}")
-                order.amount = affordable
-                order.filled_amount = affordable
-                total_cost = order.amount * price + commission
+            fill_amount = self._max_affordable_buy_amount(order.amount, portfolio.cash, price)
+            if fill_amount <= 0:
+                log.debug(f"Insufficient cash for {order.ts_code}: have {portfolio.cash:.2f}")
+                return False
+            if fill_amount != order.amount:
+                log.debug(f"Partial fill {order.ts_code}: {order.amount} -> {fill_amount}")
+
+            total_cost, commission, slippage = self._buy_total_cost(price, fill_amount)
 
             old_val = pos.amount * pos.avg_cost
             pos.avg_cost = (
-                (old_val + order.amount * price) / (pos.amount + order.amount)
-                if (pos.amount + order.amount) > 0
+                (old_val + fill_amount * price) / (pos.amount + fill_amount)
+                if (pos.amount + fill_amount) > 0
                 else 0
             )
-            pos.amount += order.amount
+            pos.amount += fill_amount
             portfolio.cash -= total_cost
             portfolio.total_commission += commission
-            portfolio.total_slippage += order.slippage
+            portfolio.total_slippage += slippage
             portfolio.trade_count += 1
+            order.amount = fill_amount
+            order.filled_amount = fill_amount
+            order.commission = commission
+            order.slippage = slippage
+            return True
         else:  # sell
             sell_amount = min(pos.amount, -order.amount)
             if sell_amount <= 0:
-                return
+                return False
+            filled_amount = -sell_amount
+            trade_value = sell_amount * price
+            commission = float(self._commission_fn(trade_value))
+            slippage = abs(float(self._slippage_fn(price, filled_amount)))
             order.amount = -sell_amount
-            order.filled_amount = -sell_amount
-            revenue = sell_amount * price - commission
+            order.filled_amount = filled_amount
+            order.commission = commission
+            order.slippage = slippage
+            revenue = trade_value - commission - slippage
             pos.amount -= sell_amount
             if pos.amount == 0:
                 pos.avg_cost = 0.0
             portfolio.cash += revenue
             portfolio.total_commission += commission
-            portfolio.total_slippage += order.slippage
+            portfolio.total_slippage += slippage
             portfolio.trade_count += 1
+            return True

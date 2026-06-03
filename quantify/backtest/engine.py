@@ -239,20 +239,21 @@ class BacktestEngine:
         # 7. Main event loop — bar by bar
         equity_records: list[dict] = []
         benchmark_records: list[dict] = []
+        next_indices = {code: 0 for code in all_bars}
 
         log.info(f"Running {len(unified_dates)} trading days ...")
 
         for bar_date in unified_dates:
             # Advance data proxy to this date
-            for code in all_bars:
-                bars = all_bars[code]
-                idx = data_proxy._current_idx.get(code, 0)  # noqa: SLF001
-                # Advance the index forward until we hit this date (or pass it)
+            for code, bars in all_bars.items():
+                idx = next_indices[code]
                 while idx < len(bars) and bars[idx].date < bar_date:
                     idx += 1
-                # If the bar at this index matches the date, set it
+                next_indices[code] = idx
                 if idx < len(bars) and bars[idx].date == bar_date:
                     data_proxy._current_idx[code] = idx  # noqa: SLF001
+                else:
+                    data_proxy._current_idx[code] = -1  # noqa: SLF001
 
             # Execute pending orders first (from previous bar's signals)
             broker.execute_pending(portfolio)
@@ -263,7 +264,7 @@ class BacktestEngine:
             # Update position prices
             for code, pos in list(portfolio.positions.items()):
                 bar = data_proxy.current(code)
-                if bar is not None:
+                if isinstance(bar, Bar):
                     pos.current_price = bar.close
 
             # Record daily snapshot
@@ -277,7 +278,7 @@ class BacktestEngine:
             # Benchmark tracking
             if context.benchmark_code:
                 bm_bar = data_proxy.current(context.benchmark_code)
-                if bm_bar is not None:
+                if isinstance(bm_bar, Bar):
                     benchmark_records.append(
                         {
                             "date": bar_date,
@@ -285,8 +286,9 @@ class BacktestEngine:
                         }
                     )
 
-        # Execute any remaining orders
-        broker.execute_pending(portfolio)
+        cancelled = broker.cancel_pending()
+        if cancelled:
+            log.info(f"Cancelled {cancelled} unfilled order(s) after final bar")
 
         # 8. Build results
         equity_df = pd.DataFrame(equity_records)

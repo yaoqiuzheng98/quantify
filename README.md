@@ -383,6 +383,13 @@ def handle_data(context):
 | `context.portfolio.total_value` | 当前总资产 |
 | `context.portfolio.positions[code]` | 持仓对象（`.amount`, `.avg_cost`, `.market_value`, `.pnl`） |
 
+### 撮合与数据对齐
+
+- 时间轴使用所有 `ts_codes` 的交易日期并集推进；某标的当天没有 bar 时，`context.data.current()` 返回 `None`，不会复用上一交易日价格，也不会读到未来价格。
+- `handle_data()` 中提交的订单先进入挂单队列，在该标的下一根可交易 bar 到达时按当前实现的收盘价撮合；最后一个 bar 后仍未成交的挂单会取消。
+- 买入现金不足时会按可负担数量部分成交；完全不可成交或无持仓卖出会标记为拒单，不计入 `trades`。
+- 佣金与滑点都会实际扣减现金，并计入结果指标中的 `total_commission` 与 `total_slippage`。
+
 ### 在代码中调用引擎
 
 ```python

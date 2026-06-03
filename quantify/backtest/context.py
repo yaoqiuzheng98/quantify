@@ -125,7 +125,7 @@ class DataProxy:
 
     def _load(self, ts_code: str, bars: list[Bar]) -> None:
         self._bars[ts_code] = bars
-        self._current_idx[ts_code] = 0
+        self._current_idx[ts_code] = -1
 
     def _advance(self, ts_code: str) -> None:
         if ts_code in self._current_idx:
