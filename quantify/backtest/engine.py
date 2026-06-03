@@ -303,7 +303,7 @@ class BacktestEngine:
         )
 
         # Generate charts
-        charts = generate_report_charts(equity_df, benchmark_df=bm_df)
+        charts = generate_report_charts(equity_df, benchmark_df=bm_df, metrics=metrics, trades=broker.trades)
 
         log.info("Backtest complete.")
         log.info(f"\n{metrics.to_llm_prompt()}")

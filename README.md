@@ -426,7 +426,7 @@ lm_dict = result.to_llm_dict()
 
 # 3) 图表 — 保存到磁盘
 result.save_charts("./output/")
-# → output/equity_curve.png       (净值曲线 + 基准 + 回撤)
+# → output/equity_curve.png       (聚宽风格单张报告：指标面板 + 收益曲线 + 每日盈亏 + 每日成交)
 ```
 
 ### 指标清单
