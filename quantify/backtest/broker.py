@@ -63,10 +63,12 @@ class Broker:
         data: DataProxy,
         commission_fn=default_etf_commission,
         slippage_fn=zero_slippage,
+        lot_size: int = 100,
     ) -> None:
         self._data = data
         self._commission_fn = commission_fn
         self._slippage_fn = slippage_fn
+        self._lot_size = lot_size
         self._pending_orders: list[Order] = []
         self._trades: list[Order] = []
 
@@ -78,9 +80,10 @@ class Broker:
         bar = self._data.current(ts_code)
         if not isinstance(bar, Bar):
             return None
-        return bar.close
+        return bar.open
 
     def submit_order(self, ts_code: str, amount: int) -> Order | None:
+        amount = self._round_to_lot(amount)
         if amount == 0:
             return None
         price = self.current_price(ts_code)
@@ -97,19 +100,22 @@ class Broker:
         self._pending_orders.append(order)
         return order
 
-    def execute_pending(self, portfolio) -> None:
-        """Execute all pending orders at next bar's open price.
+    def _round_to_lot(self, amount: int) -> int:
+        if self._lot_size <= 1:
+            return amount
+        sign = 1 if amount > 0 else -1
+        lots = abs(amount) // self._lot_size
+        return sign * lots * self._lot_size
 
-        For simplicity, executes at the *current* bar close for buy orders
-        (liquidity assumption). This can be tuned later.
-        """
+    def execute_pending(self, portfolio) -> None:
+        """Execute all pending orders at the current bar's open price."""
         remaining_orders: list[Order] = []
         for order in self._pending_orders:
             bar = self._data.current(order.ts_code)
             if not isinstance(bar, Bar):
                 remaining_orders.append(order)
                 continue
-            exec_price = bar.close
+            exec_price = bar.open
             if self._apply_fill(order, portfolio, exec_price):
                 order.status = ORDER_STATUS_FILLED
                 order.filled_date = bar.date
@@ -147,7 +153,7 @@ class Broker:
                 low = mid
             else:
                 high = mid - 1
-        return low
+        return self._round_to_lot(low)
 
     def _apply_fill(self, order: Order, portfolio, price: float) -> bool:
         pos = portfolio.get_position(order.ts_code)

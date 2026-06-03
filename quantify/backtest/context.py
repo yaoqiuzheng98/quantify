@@ -137,17 +137,33 @@ class DataProxy:
         if idx < 0 or idx >= len(bars):
             return None
         bar = bars[idx]
+        # Strategy code runs at the open: only the open price is known for the current bar.
+        visible_bar = Bar(
+            ts_code=bar.ts_code,
+            date=bar.date,
+            open=bar.open,
+            high=bar.open,
+            low=bar.open,
+            close=bar.open,
+            volume=0.0,
+            amount=0.0,
+            pre_close=bar.pre_close,
+            pct_chg=0.0,
+        )
         if field is None:
-            return bar
-        return getattr(bar, field, None)
+            return visible_bar
+        return getattr(visible_bar, field, None)
 
     def history(self, ts_code: str, count: int, field: str = "close") -> list[float]:
         bars = self._bars.get(ts_code, [])
         idx = self._current_idx.get(ts_code, -1)
         if idx < 0 or idx >= len(bars):
             return []
-        start = max(0, idx - count + 1)
-        return [getattr(bars[i], field, 0.0) for i in range(start, idx + 1)]
+        end = idx - 1
+        if end < 0:
+            return []
+        start = max(0, end - count + 1)
+        return [getattr(bars[i], field, 0.0) for i in range(start, end + 1)]
 
     @property
     def today(self) -> date | None:
