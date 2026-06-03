@@ -5,16 +5,18 @@
 
 注：
 1. 聚宽基金代码格式为 '510300.XSHG'（自研引擎使用 '510300.SH'）。
-2. 聚宽日线模式下 order_target_percent 在当日收盘价成交；自研引擎在**下一根 bar
-   收盘价**成交（引擎事件循环是先执行昨日挂单再调用 handle_data 生成今日订单）。
-   这一天的时序差对缓慢移动的均线策略影响有限，但仍会造成指标不完全一致。
-3. 聚宽默认使用 250 个交易日年化；自研引擎图表已改为 250。
+2. 本策略在每日开盘运行：用上一交易日及以前的 close 计算信号，当日开盘成交。
+3. 聚宽默认一手 100 份，order_target_percent 会按交易单位取整；自研引擎同样按
+   100 份取整。
+4. 聚宽默认使用 250 个交易日年化；自研引擎图表已改为 250。
 """
 
 from jqdata import *
 
 
 def initialize(context):
+    set_option("use_real_price", True)
+    set_option("avoid_future_data", True)
     set_benchmark("510300.XSHG")
 
     set_order_cost(
@@ -28,18 +30,19 @@ def initialize(context):
         type="fund",
     )
 
-    set_slippage(FixedSlippage(0))
+    set_slippage(PriceRelatedSlippage(0.002))
 
     context.short_window = 5
     context.long_window = 20
 
-    run_daily(handle_data, time="close")
-    run_daily(_record, time="after_close")
+    run_daily(handle_data, time="open")
 
 
 def handle_data(context):
     code = "510300.XSHG"
 
+    # 开盘时 attribute_history 返回上一交易日及以前的完整日线数据，
+    # 与自研引擎 history() 不包含当天收盘价的规则一致。
     closes = attribute_history(code, context.long_window + 1, "1d", ["close"])["close"]
     if len(closes) < context.long_window + 1:
         return
@@ -51,11 +54,3 @@ def handle_data(context):
         order_target_percent(code, 0.95)
     else:
         order_target_percent(code, 0)
-
-
-def _record(context):
-    """记录每日净值供比对."""
-    g.daily_values.append(context.portfolio.total_value)
-
-
-g.daily_values = []

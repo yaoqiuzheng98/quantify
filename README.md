@@ -406,6 +406,7 @@ engine = BacktestEngine(
     benchmark_code="510300.SH",
     commission_rate=0.0005,    # 万五
     commission_min=0.5,        # 最低 0.5 元
+    slippage_rate=0.002,       # 滑点比例 0.2%
 )
 
 result = engine.run()
@@ -450,7 +451,7 @@ engine = BacktestEngine(
     ...,
     commission_rate=0.0005,    # 费率（如万五 = 0.05%）
     commission_min=0.5,        # 最低佣金（0 表示无下限）
-    slippage_rate=0.0001,      # 滑点比例（可选，默认 0）
+    slippage_rate=0.002,       # 滑点比例（可选，默认 0）
 )
 ```
 
