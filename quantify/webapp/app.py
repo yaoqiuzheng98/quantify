@@ -255,11 +255,10 @@ def _render_result(result: BacktestResult) -> None:
     returns = _returns_frame(result)
     st.plotly_chart(_line_chart(returns), use_container_width=True)
 
-    pnl_col, turnover_col = st.columns(2)
-    pnl_col.plotly_chart(
+    st.plotly_chart(
         _bar_chart(_daily_pnl_frame(result), "daily_pnl", "每日盈亏", "金额"), use_container_width=True
     )
-    turnover_col.plotly_chart(
+    st.plotly_chart(
         _bar_chart(_turnover_frame(result), "turnover", "每日成交", "成交额"), use_container_width=True
     )
     st.plotly_chart(_drawdown_chart(_drawdown_frame(result)), use_container_width=True)
