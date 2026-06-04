@@ -138,7 +138,10 @@ class EtfAdjFactor(Base):
 
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
-    __table_args__ = (PrimaryKeyConstraint("ts_code", "trade_date", name="pk_etf_adj"),)
+    __table_args__ = (
+        PrimaryKeyConstraint("ts_code", "trade_date", name="pk_etf_adj"),
+        Index("idx_etf_adj_trade_date", "trade_date"),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -186,7 +189,10 @@ class EtfShare(Base):
 
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
-    __table_args__ = (PrimaryKeyConstraint("ts_code", "trade_date", name="pk_etf_share"),)
+    __table_args__ = (
+        PrimaryKeyConstraint("ts_code", "trade_date", name="pk_etf_share"),
+        Index("idx_etf_share_trade_date", "trade_date"),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -209,6 +215,7 @@ class EtfPortfolio(Base):
     __table_args__ = (
         PrimaryKeyConstraint("ts_code", "end_date", "symbol", name="pk_etf_portfolio"),
         Index("idx_etf_portfolio_symbol", "symbol", "end_date"),
+        Index("idx_etf_portfolio_end_date", "end_date"),
     )
 
 

@@ -172,6 +172,7 @@ class BacktestEngine:
         commission_rate: float = 0.00015,
         commission_min: float = 5.0,
         slippage_rate: float = 0.0,
+        generate_charts: bool = True,
     ) -> None:
         self.strategy_source = strategy_source
         self.ts_codes = list(ts_codes)
@@ -181,6 +182,7 @@ class BacktestEngine:
         self.benchmark_code = benchmark_code
         self.commission_fn = make_commission(rate=commission_rate, minimum=commission_min)
         self.slippage_fn = make_slippage(rate=slippage_rate) if slippage_rate > 0 else zero_slippage
+        self.generate_charts = generate_charts
 
     # ------------------------------------------------------------------
     def run(self) -> BacktestResult:
@@ -308,8 +310,11 @@ class BacktestEngine:
             trade_count=portfolio.trade_count,
         )
 
-        # Generate charts
-        charts = generate_report_charts(equity_df, benchmark_df=bm_df, metrics=metrics, trades=broker.trades)
+        charts = (
+            generate_report_charts(equity_df, benchmark_df=bm_df, metrics=metrics, trades=broker.trades)
+            if self.generate_charts
+            else {}
+        )
 
         log.info("Backtest complete.")
         log.info(f"\n{metrics.to_llm_prompt()}")

@@ -66,6 +66,7 @@ def _run_backtest(
         commission_rate=commission_rate,
         commission_min=commission_min,
         slippage_rate=slippage_rate,
+        generate_charts=False,
     )
     return engine.run()
 
