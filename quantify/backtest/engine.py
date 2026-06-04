@@ -13,7 +13,6 @@ from quantify.database.models import EtfDaily
 from quantify.utils.logger import log
 
 from .broker import Broker, make_commission, make_slippage, zero_slippage
-from .charting import generate_report_charts
 from .context import Bar, Context, DataProxy, Portfolio
 from .metrics import BacktestMetrics, compute_metrics
 
@@ -143,7 +142,7 @@ def _load_strategy(source: str) -> tuple[Callable, Callable]:
 
 
 class BacktestEngine:
-    """Run a strategy against historical data and produce metrics + charts.
+    """Run a strategy against historical data and produce metrics + daily series.
 
     Typical usage::
 
@@ -158,7 +157,6 @@ class BacktestEngine:
         )
         result = engine.run()
         print(result.metrics.to_llm_prompt())
-        # result.charts["equity_curve"] is bytes
     """
 
     def __init__(
@@ -172,7 +170,6 @@ class BacktestEngine:
         commission_rate: float = 0.00015,
         commission_min: float = 5.0,
         slippage_rate: float = 0.0,
-        generate_charts: bool = True,
     ) -> None:
         self.strategy_source = strategy_source
         self.ts_codes = list(ts_codes)
@@ -182,7 +179,6 @@ class BacktestEngine:
         self.benchmark_code = benchmark_code
         self.commission_fn = make_commission(rate=commission_rate, minimum=commission_min)
         self.slippage_fn = make_slippage(rate=slippage_rate) if slippage_rate > 0 else zero_slippage
-        self.generate_charts = generate_charts
 
     # ------------------------------------------------------------------
     def run(self) -> BacktestResult:
@@ -310,12 +306,6 @@ class BacktestEngine:
             trade_count=portfolio.trade_count,
         )
 
-        charts = (
-            generate_report_charts(equity_df, benchmark_df=bm_df, metrics=metrics, trades=broker.trades)
-            if self.generate_charts
-            else {}
-        )
-
         log.info("Backtest complete.")
         log.info(f"\n{metrics.to_llm_prompt()}")
 
@@ -324,7 +314,6 @@ class BacktestEngine:
             equity_df=equity_df,
             benchmark_df=bm_df,
             trades=broker.trades,
-            charts=charts,
         )
 
 
@@ -337,13 +326,11 @@ class BacktestResult:
         equity_df: pd.DataFrame,
         benchmark_df: pd.DataFrame | None,
         trades: list,
-        charts: dict[str, bytes],
     ) -> None:
         self.metrics = metrics
         self.equity_df = equity_df
         self.benchmark_df = benchmark_df
         self.trades = trades
-        self.charts = charts
 
     def to_llm_dict(self) -> dict:
         """Return a compact, LLM-friendly dict with metrics + daily series.
@@ -383,17 +370,6 @@ class BacktestResult:
             ],
         }
 
-    def save_charts(self, output_dir: str) -> None:
-        """Persist all chart images to *output_dir*."""
-        import os
-
-        os.makedirs(output_dir, exist_ok=True)
-        for name, data in self.charts.items():
-            path = os.path.join(output_dir, f"{name}.png")
-            with open(path, "wb") as f:
-                f.write(data)
-        log.info(f"Charts saved to {output_dir}")
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -415,5 +391,4 @@ def _empty_result(initial_cash: float) -> BacktestResult:
         equity_df=pd.DataFrame(),
         benchmark_df=None,
         trades=[],
-        charts={},
     )

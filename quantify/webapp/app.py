@@ -11,7 +11,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from quantify.backtest import BacktestEngine, BacktestResult
-from quantify.backtest.charting import build_report_items, benchmark_return_series, trade_turnover_series
+from quantify.backtest.reporting import build_report_items, benchmark_return_series, trade_turnover_series
 
 try:
     from streamlit_ace import st_ace
@@ -66,7 +66,6 @@ def _run_backtest(
         commission_rate=commission_rate,
         commission_min=commission_min,
         slippage_rate=slippage_rate,
-        generate_charts=False,
     )
     return engine.run()
 

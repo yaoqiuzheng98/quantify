@@ -52,7 +52,7 @@ Quantify 是一个使用 **Python** 构建的中低频量化研究框架。它�
                            ↓
 ┌─────────────────────────────────────────────────────────────┐
 │                  回测层 (Backtest Engine)                    │
-│   逐 bar 事件驱动 · 佣金/滑点模型 · 指标 + 图表 + LLM 报告    │
+│   逐 bar 事件驱动 · 佣金/滑点模型 · 指标 + LLM 报告           │
 └──────────────────────────┬──────────────────────────────────┘
                            ↓
 ┌─────────────────────────────────────────────────────────────┐
@@ -429,10 +429,6 @@ lm_dict = result.to_llm_dict()
 # lm_dict["equity_curve"] → [{date, value}, ...]
 # lm_dict["benchmark"]    → [{date, value}, ...]   # 已归一化对齐
 # lm_dict["trades"]       → [{ts_code, amount, filled_price, ...}]
-
-# 3) 图表 — 保存到磁盘
-result.save_charts("./output/")
-# → output/equity_curve.png       (聚宽风格单张报告：指标面板 + 收益曲线 + 每日盈亏 + 每日成交)
 ```
 
 ### 指标清单
@@ -582,7 +578,7 @@ quantify/
 │   │   ├── context.py            # Context / Portfolio / DataProxy
 │   │   ├── broker.py             # 订单执行 / 佣金 / 滑点
 │   │   ├── metrics.py            # Sharpe / 最大回撤 / 年化 / 胜率
-│   │   └── charting.py           # matplotlib 图表 (净值曲线/回撤/夏普)
+│   │   └── reporting.py          # 报表指标 / 基准收益 / 成交序列
 │   ├── agent/                    # LLM Agent 编排
 │   │   ├── proposer.py           # 策略生成
 │   │   ├── analyzer.py           # 报告解读
@@ -616,7 +612,7 @@ quantify/
 | ORM | **SQLAlchemy 2.0** | 模型映射 + 类型安全 |
 | 迁移 | **Alembic** | 数据库版本管理 |
 | 数据处理 | **pandas / polars / numpy** | polars 用于大面板加速 |
-| 可视化 | **matplotlib / Streamlit / Plotly** | 静态报告、交互式回测工作台与悬浮图表 |
+| 可视化 | **Streamlit / Plotly** | 交互式回测工作台与悬浮图表 |
 | CLI | **Typer** | 现代化命令行框架 |
 | 配置 | **Pydantic Settings** | 类型安全的配置加载 |
 | 日志 | **loguru** | 开箱即用的结构化日志 |
@@ -631,7 +627,7 @@ quantify/
 - [x] 项目骨架与配置系统
 - [x] **M1 – 数据层**：Tushare 客户端 + ETF 全量数据入库 MySQL
 - [ ] **M2 – 因子层**：实现 20 个经典因子 + 中性化工具
-- [x] **M3 – 回测层**：事件驱动回测引擎 + 指标/图表/LLM 报告
+- [x] **M3 – 回测层**：事件驱动回测引擎 + 指标/LLM 报告
 - [ ] **M4 – Agent 层**：LLM 策略生成器 + 报告解读器
 - [ ] **M5 – 分析层**：行业稳健性诊断 + 策略池管理
 - [ ] **M6 – 实盘联调**：QMT / Ptrade 模拟盘对接
