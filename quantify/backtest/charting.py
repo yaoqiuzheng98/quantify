@@ -355,6 +355,29 @@ def _report_metrics(
     ]
 
 
+def build_report_items(
+    equity_df: pd.DataFrame,
+    benchmark_df: pd.DataFrame | None = None,
+    metrics: Any | None = None,
+    trades: list[Any] | None = None,
+) -> list[tuple[str, str, float | None]]:
+    """Return JoinQuant-style metrics used by static charts and web views."""
+    return _report_metrics(equity_df, benchmark_df, metrics, trades)
+
+
+def benchmark_return_series(
+    dates: pd.DatetimeIndex,
+    benchmark_df: pd.DataFrame | None,
+) -> pd.Series | None:
+    """Return benchmark cumulative return aligned to the supplied dates."""
+    return _benchmark_return_series(dates, benchmark_df)
+
+
+def trade_turnover_series(equity_dates: pd.DatetimeIndex, trades: list[Any] | None) -> pd.Series:
+    """Return signed daily traded value for filled orders."""
+    return _trade_turnover_series(equity_dates, trades)
+
+
 def _plot_metric_panel(ax, report_items: list[tuple[str, str, float | None]]) -> None:
     ax.set_axis_off()
     ax.axhline(0.02, color="#e6e6e6", linewidth=1)
@@ -445,7 +468,7 @@ def plot_equity_curve(
     ax_pnl = fig.add_subplot(grid[2], sharex=ax_equity)
     ax_turnover = fig.add_subplot(grid[3], sharex=ax_equity)
 
-    _plot_metric_panel(ax_metrics, _report_metrics(equity_df, benchmark_df, metrics, trades))
+    _plot_metric_panel(ax_metrics, build_report_items(equity_df, benchmark_df, metrics, trades))
 
     dates = pd.to_datetime(equity_df["date"])
     values = equity_df["value"].astype(float).values

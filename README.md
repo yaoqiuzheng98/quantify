@@ -149,6 +149,9 @@ source .venv/bin/activate
 # 升级 pip 并安装项目（开发模式）
 python -m pip install --upgrade pip
 pip install -e ".[dev]"
+
+# 如需使用 Streamlit 回测工作台，再安装 Web 依赖
+pip install -e ".[web]"
 ```
 
 安装完成后，命令行入口 `quantify` 会自动注册到当前虚拟环境，运行 `quantify --help` 即可看到全部子命令。
@@ -459,6 +462,19 @@ engine = BacktestEngine(
 
 > 💡 目前仅回测 ETF 日线数据。数据源来自 `etf_daily` 表（OHLCV），读取逻辑在 `engine.py` 的 `_load_data()` 中，可方便扩展至股票 → 期货等资产。
 
+### Streamlit 回测工作台
+
+安装 Web 依赖后，可以启动交互式回测工作台：
+
+```bash
+pip install -e ".[web]"
+quantify dashboard
+```
+
+工作台提供策略代码编辑器、回测参数面板、聚宽风格指标卡片，以及支持鼠标悬浮查看明细的收益曲线、每日盈亏、每日成交和回撤图。默认使用 `etf_daily` 表数据，因此需要先执行 `quantify fetch etf basic` 和 `quantify fetch etf all` 完成 ETF 日线入库。
+
+默认端口为 `8501`；如果端口已被占用，CLI 会自动尝试后续端口，也可以手动指定：`quantify dashboard --port 8502`。
+
 ---
 
 ## 🤖 LLM Agent 工作流
@@ -600,7 +616,7 @@ quantify/
 | ORM | **SQLAlchemy 2.0** | 模型映射 + 类型安全 |
 | 迁移 | **Alembic** | 数据库版本管理 |
 | 数据处理 | **pandas / polars / numpy** | polars 用于大面板加速 |
-| 可视化 | **matplotlib** | 回测净值曲线、收益分布等图表 |
+| 可视化 | **matplotlib / Streamlit / Plotly** | 静态报告、交互式回测工作台与悬浮图表 |
 | CLI | **Typer** | 现代化命令行框架 |
 | 配置 | **Pydantic Settings** | 类型安全的配置加载 |
 | 日志 | **loguru** | 开箱即用的结构化日志 |
@@ -619,7 +635,7 @@ quantify/
 - [ ] **M4 – Agent 层**：LLM 策略生成器 + 报告解读器
 - [ ] **M5 – 分析层**：行业稳健性诊断 + 策略池管理
 - [ ] **M6 – 实盘联调**：QMT / Ptrade 模拟盘对接
-- [ ] **M7 – Web Dashboard**：Streamlit 策略可视化与监控
+- [ ] **M7 – Web Dashboard**：Streamlit 策略可视化与监控（回测工作台已实现）
 
 ---
 

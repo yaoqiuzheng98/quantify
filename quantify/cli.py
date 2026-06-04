@@ -21,6 +21,56 @@ app.add_typer(db_app, name="db")
 app.add_typer(fetch_app, name="fetch")
 
 
+@app.command("dashboard")
+def dashboard(
+    port: int = typer.Option(8501, "--port", help="Streamlit server port"),
+    address: str = typer.Option("localhost", "--address", help="Streamlit server address"),
+) -> None:
+    """Launch the Streamlit backtest dashboard."""
+    import os
+    import socket
+    import sys
+    from pathlib import Path
+
+    os.environ.setdefault("STREAMLIT_BROWSER_GATHER_USAGE_STATS", "false")
+    os.environ.setdefault("STREAMLIT_SERVER_HEADLESS", "true")
+
+    try:
+        from streamlit.web import cli as streamlit_cli
+    except ModuleNotFoundError:
+        typer.echo("Streamlit is not installed. Run `pip install -e '.[web]'` first.", err=True)
+        raise typer.Exit(code=1) from None
+
+    actual_port = port
+    for candidate_port in range(port, port + 100):
+        try:
+            with socket.create_server((address, candidate_port), reuse_port=False):
+                actual_port = candidate_port
+                break
+        except OSError:
+            continue
+    else:
+        typer.echo(f"No free port found from {port} to {port + 99}.", err=True)
+        raise typer.Exit(code=1)
+
+    if actual_port != port:
+        typer.echo(f"Port {port} is busy; using {actual_port} instead.")
+
+    app_path = Path(__file__).resolve().parent / "webapp" / "app.py"
+    sys.argv = [
+        "streamlit",
+        "run",
+        str(app_path),
+        "--server.port",
+        str(actual_port),
+        "--server.address",
+        address,
+        "--server.headless",
+        "true",
+    ]
+    streamlit_cli.main()
+
+
 # ---------------------------------------------------------------------------
 # db
 # ---------------------------------------------------------------------------

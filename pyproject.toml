@@ -28,6 +28,11 @@ dev = [
     "ruff>=0.4.0",
     "ipython>=8.24.0",
 ]
+web = [
+    "streamlit>=1.36.0",
+    "plotly>=5.22.0",
+    "streamlit-ace>=0.1.1",
+]
 
 [project.scripts]
 quantify = "quantify.cli:app"
