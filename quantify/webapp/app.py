@@ -47,6 +47,7 @@ def _run_backtest(
         commission_rate=commission_rate,
         commission_min=commission_min,
         slippage_rate=slippage_rate,
+        override_strategy_costs=True,
     )
     return engine.run()
 

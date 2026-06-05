@@ -350,28 +350,67 @@ CREATE INDEX idx_factor_factor_date_code ON factor_value(factor_name, trade_date
 编写一个包含 `initialize(context)` 和 `handle_data(context)` 的 Python 代码段即可：
 
 ```python
+from jqdata import *
+
+
 def initialize(context):
-    context.set_benchmark("510300.SH")
+    set_option("use_real_price", True)
+    set_option("avoid_future_data", True)
+    set_benchmark("510300.XSHG")
+
+    set_order_cost(
+        OrderCost(
+            open_tax=0,
+            close_tax=0,
+            open_commission=0.0005,
+            close_commission=0.0005,
+            min_commission=0.5,
+        ),
+        type="fund",
+    )
+    set_slippage(PriceRelatedSlippage(0.002))
+
     context.short_window = 5
     context.long_window = 20
 
+    run_daily(handle_data, time="open")
+
 def handle_data(context):
-    code = "510300.SH"
-    closes = context.data.history(code, count=context.long_window + 1, field="close")
+    code = "510300.XSHG"
+    closes = attribute_history(code, context.long_window + 1, "1d", ["close"])["close"]
     if len(closes) < context.long_window + 1:
         return
 
-    short_ma = sum(closes[-context.short_window:]) / context.short_window
-    long_ma = sum(closes[-context.long_window:]) / context.long_window
+    short_ma = closes[-context.short_window:].mean()
+    long_ma = closes[-context.long_window:].mean()
 
     # 金叉买入，死叉卖出
     if short_ma > long_ma:
-        context.order_target_percent(code, 0.95)
+        order_target_percent(code, 0.95)
     else:
-        context.order_target_percent(code, 0)
+        order_target_percent(code, 0)
 ```
 
 Streamlit 回测工作台默认加载同一段示例策略。
+
+本地引擎内置轻量 `jqdata` 兼容层，支持示例策略中的 `set_benchmark`、`run_daily(..., time="open")`、`attribute_history`、`order_target_percent`、`set_order_cost`、`set_slippage` 等常用聚宽 API；未覆盖聚宽全量 API。
+
+#### `jqdata` 兼容范围
+
+| API | 本地行为 |
+|-----|----------|
+| `from jqdata import *` | 生效；本地注入轻量兼容模块，供策略源码导入。 |
+| `set_benchmark(security)` | 生效；设置本地回测基准，并自动把 `.XSHG/.XSHE` 转为 `.SH/.SZ`。 |
+| `run_daily(func, time="open")` | 生效；注册每日开盘执行函数。目前只支持 `time="open"`。 |
+| `attribute_history(security, count, "1d", fields)` | 生效；读取本地日线历史，且不包含当天收盘价。目前只支持 `unit="1d"`。 |
+| `order` / `order_value` / `order_target_value` / `order_target_percent` | 生效；走本地 Broker 下单、整手取整、开盘撮合。 |
+| `set_order_cost(OrderCost(...), type="fund")` | 生效但部分支持；使用 `open_commission`、`close_commission` 的较大值和 `min_commission`，暂不处理印花税等字段。 |
+| `set_slippage(PriceRelatedSlippage(rate))` | 生效；设置本地比例滑点。 |
+| `set_option("avoid_future_data", True)` | 仅兼容语法；本地引擎默认已按无未来数据规则执行。 |
+| `set_option("use_real_price", True)` | 仅兼容语法；当前不改变本地行情或撮合口径。 |
+| 其他 `set_option(...)` | 仅记录参数，不驱动本地行为。 |
+
+因此，当前目标是支持常见的日频 ETF 聚宽策略在本地与聚宽之间复制运行，而不是完整复刻聚宽所有 API、撮合细节和市场边界规则。
 
 ### Context API 一览
 
@@ -470,7 +509,7 @@ pip install -e ".[web]"
 quantify dashboard
 ```
 
-工作台提供策略代码编辑器、回测参数面板、聚宽风格指标卡片，以及支持鼠标悬浮查看明细的收益曲线、每日盈亏、每日成交和回撤图。Web 图表和 `to_llm_dict()` 使用同一个 `to_report_dict()` 标准结构，避免两套输出口径分叉。默认使用 `etf_daily` 表数据，因此需要先执行 `quantify fetch etf basic` 和 `quantify fetch etf all` 完成 ETF 日线入库。
+工作台提供策略代码编辑器、回测参数面板、聚宽风格指标卡片，以及支持鼠标悬浮查看明细的收益曲线、每日盈亏、每日成交和回撤图。Web 图表和 `to_llm_dict()` 使用同一个 `to_report_dict()` 标准结构，避免两套输出口径分叉。Web 运行时会用侧边栏的基准、佣金、滑点参数覆盖策略代码中的默认设置。默认使用 `etf_daily` 表数据，因此需要先执行 `quantify fetch etf basic` 和 `quantify fetch etf all` 完成 ETF 日线入库。
 
 默认端口为 `8501`；如果端口已被占用，CLI 会自动尝试后续端口，也可以手动指定：`quantify dashboard --port 8502`。
 

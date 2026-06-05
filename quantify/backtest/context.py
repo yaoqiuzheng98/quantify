@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
 
+from .codes import to_tushare_code
+
 # ---------------------------------------------------------------------------
 # Portfolio
 # ---------------------------------------------------------------------------
@@ -124,14 +126,17 @@ class DataProxy:
         self._current_idx: dict[str, int] = {}
 
     def _load(self, ts_code: str, bars: list[Bar]) -> None:
+        ts_code = to_tushare_code(ts_code)
         self._bars[ts_code] = bars
         self._current_idx[ts_code] = -1
 
     def _advance(self, ts_code: str) -> None:
+        ts_code = to_tushare_code(ts_code)
         if ts_code in self._current_idx:
             self._current_idx[ts_code] += 1
 
     def current(self, ts_code: str, field: str | None = None) -> float | Bar | None:
+        ts_code = to_tushare_code(ts_code)
         bars = self._bars.get(ts_code, [])
         idx = self._current_idx.get(ts_code, -1)
         if idx < 0 or idx >= len(bars):
@@ -155,6 +160,7 @@ class DataProxy:
         return getattr(visible_bar, field, None)
 
     def history(self, ts_code: str, count: int, field: str = "close") -> list[float]:
+        ts_code = to_tushare_code(ts_code)
         bars = self._bars.get(ts_code, [])
         idx = self._current_idx.get(ts_code, -1)
         if idx < 0 or idx >= len(bars):
@@ -224,9 +230,10 @@ class Context:
     # -- strategy API helpers -------------------------------------------------
 
     def set_benchmark(self, ts_code: str) -> None:
-        self.benchmark_code = ts_code
+        self.benchmark_code = to_tushare_code(ts_code)
 
     def order_value(self, ts_code: str, value: float) -> Order | None:
+        ts_code = to_tushare_code(ts_code)
         price = self._broker.current_price(ts_code)
         if price is None or price <= 0:
             return None
@@ -234,6 +241,7 @@ class Context:
         return self.order(ts_code, amount)
 
     def order_target_value(self, ts_code: str, target_value: float) -> Order | None:
+        ts_code = to_tushare_code(ts_code)
         current_value = self.portfolio.get_position(ts_code).market_value
         diff = target_value - current_value
         if abs(diff) < 1:
@@ -241,8 +249,10 @@ class Context:
         return self.order_value(ts_code, diff)
 
     def order_target_percent(self, ts_code: str, pct: float) -> Order | None:
+        ts_code = to_tushare_code(ts_code)
         target_value = self.portfolio.total_value * pct
         return self.order_target_value(ts_code, target_value)
 
     def order(self, ts_code: str, amount: int) -> Order | None:
+        ts_code = to_tushare_code(ts_code)
         return self._broker.submit_order(ts_code, amount)

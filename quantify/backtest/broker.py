@@ -6,6 +6,7 @@ from datetime import date
 
 from quantify.utils.logger import log
 
+from .codes import to_tushare_code
 from .context import Bar, DataProxy, Order, ORDER_STATUS_FILLED, ORDER_STATUS_REJECTED
 
 
@@ -76,13 +77,21 @@ class Broker:
     def trades(self) -> list[Order]:
         return list(self._trades)
 
+    def set_commission_fn(self, commission_fn) -> None:
+        self._commission_fn = commission_fn
+
+    def set_slippage_fn(self, slippage_fn) -> None:
+        self._slippage_fn = slippage_fn
+
     def current_price(self, ts_code: str) -> float | None:
+        ts_code = to_tushare_code(ts_code)
         bar = self._data.current(ts_code)
         if not isinstance(bar, Bar):
             return None
         return bar.open
 
     def submit_order(self, ts_code: str, amount: int) -> Order | None:
+        ts_code = to_tushare_code(ts_code)
         amount = self._round_to_lot(amount)
         if amount == 0:
             return None

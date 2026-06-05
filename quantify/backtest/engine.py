@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sys
+from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Callable
 
@@ -13,7 +15,9 @@ from quantify.database.models import EtfDaily
 from quantify.utils.logger import log
 
 from .broker import Broker, make_commission, make_slippage, zero_slippage
+from .codes import normalize_codes, to_tushare_code
 from .context import Bar, Context, DataProxy, Portfolio
+from .joinquant import JoinQuantCompat, make_jqdata_module
 from .metrics import BacktestMetrics, compute_metrics
 from .reporting import build_report_payload
 
@@ -109,7 +113,19 @@ def _group_to_bars(df: pd.DataFrame) -> dict[str, list[Bar]]:
     return bars
 
 
-def _load_strategy(source: str) -> tuple[Callable, Callable]:
+@dataclass
+class StrategyRuntime:
+    initialize: Callable
+    handle_data: Callable | None
+    compat: JoinQuantCompat
+
+    def handle_functions(self) -> list[Callable]:
+        if self.compat.daily_functions:
+            return list(self.compat.daily_functions)
+        return [self.handle_data] if self.handle_data is not None else []
+
+
+def _load_strategy(source: str) -> StrategyRuntime:
     """Parse a strategy source string and extract initialize & handle_data.
 
     Parameters
@@ -119,22 +135,29 @@ def _load_strategy(source: str) -> tuple[Callable, Callable]:
         ``handle_data(context)`` function definitions.  May also contain
         imports, helper functions, and global variables.
 
-    Returns
-    -------
-    (initialize, handle_data) callables.
+    Returns the initialize function, optional handle_data function, and the
+    JoinQuant compatibility layer bound to this strategy namespace.
     """
-    ns: dict = {}
-    exec(source, ns)
+    compat = JoinQuantCompat()
+    ns: dict = compat.namespace()
+    jqdata_module = make_jqdata_module(compat)
+    previous_jqdata = sys.modules.get("jqdata")
+    sys.modules["jqdata"] = jqdata_module
+    try:
+        exec(source, ns)
+    finally:
+        if previous_jqdata is None:
+            sys.modules.pop("jqdata", None)
+        else:
+            sys.modules["jqdata"] = previous_jqdata
 
     init_fn = ns.get("initialize")
     handle_fn = ns.get("handle_data")
 
-    if init_fn is None or handle_fn is None:
-        raise ValueError(
-            "Strategy source must define both initialize(context) and handle_data(context) functions"
-        )
+    if init_fn is None:
+        raise ValueError("Strategy source must define initialize(context)")
 
-    return init_fn, handle_fn
+    return StrategyRuntime(initialize=init_fn, handle_data=handle_fn, compat=compat)
 
 
 # ---------------------------------------------------------------------------
@@ -171,15 +194,17 @@ class BacktestEngine:
         commission_rate: float = 0.00015,
         commission_min: float = 5.0,
         slippage_rate: float = 0.0,
+        override_strategy_costs: bool = False,
     ) -> None:
         self.strategy_source = strategy_source
-        self.ts_codes = list(ts_codes)
+        self.ts_codes = normalize_codes(ts_codes)
         self.start_date = _parse_date(start_date)
         self.end_date = _parse_date(end_date)
         self.initial_cash = initial_cash
-        self.benchmark_code = benchmark_code
+        self.benchmark_code = to_tushare_code(benchmark_code) if benchmark_code else None
         self.commission_fn = make_commission(rate=commission_rate, minimum=commission_min)
         self.slippage_fn = make_slippage(rate=slippage_rate) if slippage_rate > 0 else zero_slippage
+        self.override_strategy_costs = override_strategy_costs
 
     # ------------------------------------------------------------------
     def run(self) -> BacktestResult:
@@ -191,7 +216,7 @@ class BacktestEngine:
         )
 
         # 1. Load strategy
-        initialize_fn, handle_data_fn = _load_strategy(self.strategy_source)
+        runtime = _load_strategy(self.strategy_source)
         log.info("Strategy loaded successfully")
 
         # 2. Load market data
@@ -233,9 +258,19 @@ class BacktestEngine:
         context._broker = broker  # noqa: SLF001
 
         # 6. Run initialize
-        initialize_fn(context)
+        runtime.compat.bind(context)
+        runtime.initialize(context)
         if self.benchmark_code:
             context.set_benchmark(self.benchmark_code)
+        if self.override_strategy_costs:
+            broker.set_commission_fn(self.commission_fn)
+            broker.set_slippage_fn(self.slippage_fn)
+
+        handle_functions = runtime.handle_functions()
+        if not handle_functions:
+            raise ValueError(
+                "Strategy must define handle_data(context) or register run_daily(..., time='open')"
+            )
 
         # 7. Main event loop — bar by bar
         equity_records: list[dict] = []
@@ -263,7 +298,8 @@ class BacktestEngine:
                     pos.current_price = bar.open
 
             # Call user strategy with today's open + completed history only.
-            handle_data_fn(context)
+            for handle_fn in handle_functions:
+                handle_fn(context)
 
             # Execute orders generated by today's strategy at today's open.
             broker.execute_pending(portfolio)
