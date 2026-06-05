@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date
+from html import escape
 from typing import Any
 
 import numpy as np
@@ -205,12 +206,71 @@ def _drawdown_chart(frame: pd.DataFrame) -> go.Figure:
     return fig
 
 
+def _metric_value_class(value: Any) -> str:
+    if isinstance(value, int | float | np.integer | np.floating) and np.isfinite(value):
+        if value > 0:
+            return "positive"
+        if value < 0:
+            return "negative"
+    return "neutral"
+
+
 def _render_metrics(report: dict[str, Any]) -> None:
     report_items = report.get("report_items", [])
-    for start in range(0, len(report_items), 5):
-        columns = st.columns(5)
-        for column, item in zip(columns, report_items[start : start + 5]):
-            column.metric(item["label"], item["value"])
+    cards = []
+    for item in report_items:
+        label = escape(str(item.get("label", "")))
+        value = escape(str(item.get("value", "--")))
+        value_class = _metric_value_class(item.get("numeric_value"))
+        cards.append(
+            f'<div class="q-metric-card"><div class="q-metric-label">{label}</div>'
+            f'<div class="q-metric-value {value_class}" title="{value}">{value}</div></div>'
+        )
+
+    st.markdown(
+        """
+        <style>
+        .q-metric-grid {
+            display: grid;
+            grid-template-columns: repeat(11, minmax(78px, 1fr));
+            gap: 8px 10px;
+            margin: 0.25rem 0 1.1rem 0;
+        }
+        .q-metric-card {
+            min-height: 48px;
+            padding: 7px 8px;
+            border: 1px solid #e6eaf0;
+            border-radius: 8px;
+            background: #ffffff;
+        }
+        .q-metric-label {
+            color: #6b7280;
+            font-size: 11px;
+            line-height: 1.2;
+            margin-bottom: 4px;
+            white-space: nowrap;
+        }
+        .q-metric-value {
+            color: #111827;
+            font-size: 14px;
+            font-weight: 600;
+            line-height: 1.25;
+            overflow-wrap: anywhere;
+            white-space: normal;
+        }
+        .q-metric-value.positive { color: #d62728; }
+        .q-metric-value.negative { color: #2ca02c; }
+        @media (max-width: 1200px) {
+            .q-metric-grid { grid-template-columns: repeat(6, minmax(80px, 1fr)); }
+        }
+        @media (max-width: 760px) {
+            .q-metric-grid { grid-template-columns: repeat(2, minmax(120px, 1fr)); }
+        }
+        </style>
+        """
+        + f'<div class="q-metric-grid">{"".join(cards)}</div>',
+        unsafe_allow_html=True,
+    )
 
 
 def _render_result(result: BacktestResult) -> None:
@@ -267,8 +327,8 @@ def main() -> None:
         st.header("回测参数")
         raw_codes = st.text_input("标的代码", value="510300.SH", help="多个代码用英文逗号分隔")
         benchmark_code = st.text_input("基准代码", value="510300.SH", help="仅用于收益对比，会自动加载行情")
-        start_date = st.date_input("开始日期", value=date(2022, 1, 1))
-        end_date = st.date_input("结束日期", value=date.today())
+        start_date = st.date_input("开始日期", value=date(2019, 1, 1))
+        end_date = st.date_input("结束日期", value=date(2019, 6, 30))
         initial_cash = st.number_input("初始资金", min_value=1_000.0, value=100_000.0, step=10_000.0)
 
         st.header("交易成本")
