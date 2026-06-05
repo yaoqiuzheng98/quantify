@@ -10,7 +10,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from quantify.backtest import BacktestEngine, BacktestResult
+from quantify.backtest import BacktestEngine, BacktestResult, DEFAULT_STRATEGY_SOURCE
 
 try:
     from streamlit_ace import st_ace
@@ -18,25 +18,7 @@ except ModuleNotFoundError:  # pragma: no cover - optional UI enhancement
     st_ace = None
 
 
-DEFAULT_STRATEGY = """def initialize(context):
-    context.short_window = 5
-    context.long_window = 20
-
-
-def handle_data(context):
-    code = "510300.SH"
-    closes = context.data.history(code, count=context.long_window + 1, field="close")
-    if len(closes) < context.long_window + 1:
-        return
-
-    short_ma = sum(closes[-context.short_window:]) / context.short_window
-    long_ma = sum(closes[-context.long_window:]) / context.long_window
-
-    if short_ma > long_ma:
-        context.order_target_percent(code, 0.95)
-    else:
-        context.order_target_percent(code, 0)
-"""
+DEFAULT_STRATEGY = DEFAULT_STRATEGY_SOURCE
 
 
 def _parse_codes(raw_codes: str) -> list[str]:

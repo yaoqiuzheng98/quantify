@@ -9,5 +9,6 @@ from __future__ import annotations
 
 from .broker import make_commission, make_slippage
 from .engine import BacktestEngine, BacktestResult
+from .examples import DEFAULT_STRATEGY_SOURCE
 
-__all__ = ["BacktestEngine", "BacktestResult", "make_commission", "make_slippage"]
+__all__ = ["BacktestEngine", "BacktestResult", "DEFAULT_STRATEGY_SOURCE", "make_commission", "make_slippage"]

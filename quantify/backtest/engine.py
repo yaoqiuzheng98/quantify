@@ -234,6 +234,8 @@ class BacktestEngine:
 
         # 6. Run initialize
         initialize_fn(context)
+        if self.benchmark_code:
+            context.set_benchmark(self.benchmark_code)
 
         # 7. Main event loop — bar by bar
         equity_records: list[dict] = []

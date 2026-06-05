@@ -371,6 +371,8 @@ def handle_data(context):
         context.order_target_percent(code, 0)
 ```
 
+Streamlit 回测工作台默认加载同一段示例策略。
+
 ### Context API 一览
 
 | 方法 | 说明 |
