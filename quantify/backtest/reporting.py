@@ -122,11 +122,10 @@ def _realized_trade_stats(trades: list[Any] | None) -> tuple[int, int, float | N
             continue
 
         commission = float(getattr(trade, "commission", 0.0) or 0.0)
-        slippage = float(getattr(trade, "slippage", 0.0) or 0.0)
         current_amount, avg_cost = positions.get(code, (0, 0.0))
 
         if amount > 0:
-            total_cost = amount * float(price) + commission + slippage
+            total_cost = amount * float(price) + commission
             new_amount = current_amount + amount
             new_avg_cost = (current_amount * avg_cost + total_cost) / new_amount if new_amount > 0 else 0.0
             positions[code] = (new_amount, new_avg_cost)
@@ -136,7 +135,7 @@ def _realized_trade_stats(trades: list[Any] | None) -> tuple[int, int, float | N
         if sell_amount <= 0:
             continue
 
-        proceeds = sell_amount * float(price) - commission - slippage
+        proceeds = sell_amount * float(price) - commission
         pnl = proceeds - sell_amount * avg_cost
         if pnl > 0:
             profits.append(pnl)

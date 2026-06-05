@@ -36,17 +36,22 @@ default_etf_commission = make_commission(rate=0.00015, minimum=5.0)
 
 
 def zero_slippage(_price: float, _amount: int) -> float:
-    return 0.0
+    return _price
 
 
 def make_slippage(rate: float = 0.0):
-    """Build a slippage function that applies a proportional spread.
+    """Build a JoinQuant-style price-related slippage function.
 
-    ``cost = abs(price * amount) * rate``
+    ``PriceRelatedSlippage(0.002)`` moves the executable price by half the
+    spread: buy at ``price * 1.001`` and sell at ``price * 0.999``.
     """
 
     def _fn(price: float, amount: int) -> float:
-        return abs(price * amount) * rate
+        if amount > 0:
+            return price * (1 + rate / 2)
+        if amount < 0:
+            return price * (1 - rate / 2)
+        return price
 
     return _fn
 
@@ -65,11 +70,13 @@ class Broker:
         commission_fn=default_etf_commission,
         slippage_fn=zero_slippage,
         lot_size: int = 100,
+        price_tick: float = 0.001,
     ) -> None:
         self._data = data
         self._commission_fn = commission_fn
         self._slippage_fn = slippage_fn
         self._lot_size = lot_size
+        self._price_tick = price_tick
         self._pending_orders: list[Order] = []
         self._trades: list[Order] = []
 
@@ -116,6 +123,14 @@ class Broker:
         lots = abs(amount) // self._lot_size
         return sign * lots * self._lot_size
 
+    def _round_price(self, price: float) -> float:
+        if self._price_tick <= 0:
+            return price
+        return round(round(price / self._price_tick) * self._price_tick, 10)
+
+    def _execution_price(self, price: float, amount: int) -> float:
+        return self._round_price(float(self._slippage_fn(price, amount)))
+
     def execute_pending(self, portfolio) -> None:
         """Execute all pending orders at the current bar's open price."""
         remaining_orders: list[Order] = []
@@ -124,8 +139,9 @@ class Broker:
             if not isinstance(bar, Bar):
                 remaining_orders.append(order)
                 continue
-            exec_price = bar.open
-            if self._apply_fill(order, portfolio, exec_price):
+            base_price = bar.open
+            exec_price = self._execution_price(base_price, order.amount)
+            if self._apply_fill(order, portfolio, base_price, exec_price):
                 order.status = ORDER_STATUS_FILLED
                 order.filled_date = bar.date
                 order.filled_price = exec_price
@@ -143,11 +159,12 @@ class Broker:
         self._pending_orders.clear()
         return count
 
-    def _buy_total_cost(self, price: float, amount: int) -> tuple[float, float, float]:
-        trade_value = amount * price
+    def _buy_total_cost(self, price: float, amount: int) -> tuple[float, float, float, float]:
+        exec_price = self._execution_price(price, amount)
+        trade_value = amount * exec_price
         commission = float(self._commission_fn(trade_value))
-        slippage = abs(float(self._slippage_fn(price, amount)))
-        return trade_value + commission + slippage, commission, slippage
+        slippage = abs((exec_price - price) * amount)
+        return trade_value + commission, commission, slippage, exec_price
 
     def _max_affordable_buy_amount(self, requested: int, cash: float, price: float) -> int:
         if price <= 0:
@@ -157,28 +174,28 @@ class Broker:
         high = min(requested, int(cash / price))
         while low < high:
             mid = (low + high + 1) // 2
-            total_cost, _, _ = self._buy_total_cost(price, mid)
+            total_cost, _, _, _ = self._buy_total_cost(price, mid)
             if total_cost <= cash:
                 low = mid
             else:
                 high = mid - 1
         return self._round_to_lot(low)
 
-    def _apply_fill(self, order: Order, portfolio, price: float) -> bool:
+    def _apply_fill(self, order: Order, portfolio, base_price: float, price: float) -> bool:
         pos = portfolio.get_position(order.ts_code)
         if order.amount > 0:  # buy
-            fill_amount = self._max_affordable_buy_amount(order.amount, portfolio.cash, price)
+            fill_amount = self._max_affordable_buy_amount(order.amount, portfolio.cash, base_price)
             if fill_amount <= 0:
                 log.debug(f"Insufficient cash for {order.ts_code}: have {portfolio.cash:.2f}")
                 return False
             if fill_amount != order.amount:
                 log.debug(f"Partial fill {order.ts_code}: {order.amount} -> {fill_amount}")
 
-            total_cost, commission, slippage = self._buy_total_cost(price, fill_amount)
+            total_cost, commission, slippage, exec_price = self._buy_total_cost(base_price, fill_amount)
 
             old_val = pos.amount * pos.avg_cost
             pos.avg_cost = (
-                (old_val + fill_amount * price) / (pos.amount + fill_amount)
+                (old_val + fill_amount * exec_price) / (pos.amount + fill_amount)
                 if (pos.amount + fill_amount) > 0
                 else 0
             )
@@ -199,12 +216,12 @@ class Broker:
             filled_amount = -sell_amount
             trade_value = sell_amount * price
             commission = float(self._commission_fn(trade_value))
-            slippage = abs(float(self._slippage_fn(price, filled_amount)))
+            slippage = abs((price - base_price) * sell_amount)
             order.amount = -sell_amount
             order.filled_amount = filled_amount
             order.commission = commission
             order.slippage = slippage
-            revenue = trade_value - commission - slippage
+            revenue = trade_value - commission
             pos.amount -= sell_amount
             if pos.amount == 0:
                 pos.avg_cost = 0.0

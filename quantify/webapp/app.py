@@ -222,8 +222,9 @@ def _render_metrics(report: dict[str, Any]) -> None:
         label = escape(str(item.get("label", "")))
         value = escape(str(item.get("value", "--")))
         value_class = _metric_value_class(item.get("numeric_value"))
+        wide_class = " wide" if item.get("label") == "最大回撤区间" else ""
         cards.append(
-            f'<div class="q-metric-card"><div class="q-metric-label">{label}</div>'
+            f'<div class="q-metric-card{wide_class}"><div class="q-metric-label">{label}</div>'
             f'<div class="q-metric-value {value_class}" title="{value}">{value}</div></div>'
         )
 
@@ -232,16 +233,20 @@ def _render_metrics(report: dict[str, Any]) -> None:
         <style>
         .q-metric-grid {
             display: grid;
-            grid-template-columns: repeat(11, minmax(78px, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(118px, 1fr));
             gap: 8px 10px;
             margin: 0.25rem 0 1.1rem 0;
         }
         .q-metric-card {
             min-height: 48px;
+            min-width: 0;
             padding: 7px 8px;
             border: 1px solid #e6eaf0;
             border-radius: 8px;
             background: #ffffff;
+        }
+        .q-metric-card.wide {
+            grid-column: span 2;
         }
         .q-metric-label {
             color: #6b7280;
@@ -249,6 +254,8 @@ def _render_metrics(report: dict[str, Any]) -> None:
             line-height: 1.2;
             margin-bottom: 4px;
             white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }
         .q-metric-value {
             color: #111827;
@@ -261,7 +268,7 @@ def _render_metrics(report: dict[str, Any]) -> None:
         .q-metric-value.positive { color: #d62728; }
         .q-metric-value.negative { color: #2ca02c; }
         @media (max-width: 1200px) {
-            .q-metric-grid { grid-template-columns: repeat(6, minmax(80px, 1fr)); }
+            .q-metric-grid { grid-template-columns: repeat(auto-fit, minmax(132px, 1fr)); }
         }
         @media (max-width: 760px) {
             .q-metric-grid { grid-template-columns: repeat(2, minmax(120px, 1fr)); }

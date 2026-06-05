@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import sys
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Callable
 
 import pandas as pd
 from sqlalchemy import select
 
 from quantify.database.engine import session_scope
-from quantify.database.models import EtfDaily
+from quantify.database.models import EtfDaily, EtfDividend
 from quantify.utils.logger import log
 
 from .broker import Broker, make_commission, make_slippage, zero_slippage
@@ -89,6 +89,43 @@ def _load_data(
     df["date"] = pd.to_datetime(df["date"])
     df = df.sort_values(["ts_code", "date"]).reset_index(drop=True)
     return df
+
+
+@dataclass(frozen=True)
+class DividendEvent:
+    ts_code: str
+    record_date: date
+    pay_date: date
+    div_cash: float
+
+
+def _load_dividends(ts_codes: list[str], start_date: date, end_date: date) -> list[DividendEvent]:
+    with session_scope() as sess:
+        rows = sess.execute(
+            select(
+                EtfDividend.ts_code,
+                EtfDividend.record_date,
+                EtfDividend.pay_date,
+                EtfDividend.div_cash,
+            )
+            .where(EtfDividend.ts_code.in_(ts_codes))
+            .where(EtfDividend.record_date >= start_date)
+            .where(EtfDividend.record_date <= end_date)
+            .where(EtfDividend.pay_date >= start_date)
+            .where(EtfDividend.pay_date <= end_date)
+            .order_by(EtfDividend.record_date, EtfDividend.pay_date, EtfDividend.ts_code)
+        ).all()
+
+    return [
+        DividendEvent(
+            ts_code=row.ts_code,
+            record_date=row.record_date,
+            pay_date=row.pay_date,
+            div_cash=float(row.div_cash),
+        )
+        for row in rows
+        if row.ts_code and row.record_date and row.pay_date and row.div_cash
+    ]
 
 
 def _group_to_bars(df: pd.DataFrame) -> dict[str, list[Bar]]:
@@ -195,6 +232,7 @@ class BacktestEngine:
         commission_min: float = 5.0,
         slippage_rate: float = 0.0,
         override_strategy_costs: bool = False,
+        history_lookback_days: int = 365,
     ) -> None:
         self.strategy_source = strategy_source
         self.ts_codes = normalize_codes(ts_codes)
@@ -205,6 +243,7 @@ class BacktestEngine:
         self.commission_fn = make_commission(rate=commission_rate, minimum=commission_min)
         self.slippage_fn = make_slippage(rate=slippage_rate) if slippage_rate > 0 else zero_slippage
         self.override_strategy_costs = override_strategy_costs
+        self.history_lookback_days = history_lookback_days
 
     # ------------------------------------------------------------------
     def run(self) -> BacktestResult:
@@ -220,7 +259,8 @@ class BacktestEngine:
         log.info("Strategy loaded successfully")
 
         # 2. Load market data
-        raw_df = _load_data(self.ts_codes, self.start_date, self.end_date)
+        data_start_date = self.start_date - timedelta(days=self.history_lookback_days)
+        raw_df = _load_data(self.ts_codes, data_start_date, self.end_date)
         if raw_df.empty:
             log.warning("No market data found for the given date range")
             return _empty_result(self.initial_cash)
@@ -231,8 +271,22 @@ class BacktestEngine:
         all_bars = _group_to_bars(raw_df)
         log.info(f"  {len(all_bars)} codes with bar data")
 
+        dividend_events = _load_dividends(self.ts_codes, self.start_date, self.end_date)
+        dividends_by_record: dict[date, list[DividendEvent]] = {}
+        dividends_by_pay: dict[date, list[DividendEvent]] = {}
+        for event in dividend_events:
+            dividends_by_record.setdefault(event.record_date, []).append(event)
+            dividends_by_pay.setdefault(event.pay_date, []).append(event)
+
         # 4. Build unified date index (sorted union of all bar dates)
-        unified_dates = sorted(set(b.date for bars in all_bars.values() for b in bars))
+        unified_dates = sorted(
+            {
+                bar.date
+                for bars in all_bars.values()
+                for bar in bars
+                if self.start_date <= bar.date <= self.end_date
+            }
+        )
 
         # 5. Set up backtest context
         data_proxy = DataProxy()
@@ -276,6 +330,7 @@ class BacktestEngine:
         equity_records: list[dict] = []
         benchmark_records: list[dict] = []
         next_indices = {code: 0 for code in all_bars}
+        dividend_entitlements: dict[DividendEvent, int] = {}
 
         log.info(f"Running {len(unified_dates)} trading days ...")
 
@@ -297,6 +352,11 @@ class BacktestEngine:
                 if isinstance(bar, Bar):
                     pos.current_price = bar.open
 
+            for event in dividends_by_pay.get(bar_date, []):
+                entitled_amount = dividend_entitlements.pop(event, 0)
+                if entitled_amount > 0:
+                    portfolio.cash += entitled_amount * event.div_cash
+
             # Call user strategy with today's open + completed history only.
             for handle_fn in handle_functions:
                 handle_fn(context)
@@ -309,6 +369,11 @@ class BacktestEngine:
                 bar = data_proxy.current(code)
                 if isinstance(bar, Bar):
                     pos.current_price = bar.open
+
+            for event in dividends_by_record.get(bar_date, []):
+                position = portfolio.positions.get(event.ts_code)
+                if position is not None and position.amount > 0:
+                    dividend_entitlements[event] = position.amount
 
             # Record daily snapshot
             equity_records.append(

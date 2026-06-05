@@ -406,10 +406,10 @@ Streamlit 回测工作台默认加载同一段示例策略。
 | `from jqdata import *` | 生效；本地注入轻量兼容模块，供策略源码导入。 |
 | `set_benchmark(security)` | 生效；设置本地回测基准，并自动把 `.XSHG/.XSHE` 转为 `.SH/.SZ`。 |
 | `run_daily(func, time="open")` | 生效；注册每日开盘执行函数。目前只支持 `time="open"`。 |
-| `attribute_history(security, count, "1d", fields)` | 生效；读取本地日线历史，且不包含当天收盘价。目前只支持 `unit="1d"`。 |
-| `order` / `order_value` / `order_target_value` / `order_target_percent` | 生效；走本地 Broker 下单、整手取整、开盘撮合。 |
+| `attribute_history(security, count, "1d", fields)` | 生效；读取本地日线历史，且不包含当天收盘价；默认可读取回测开始日前 365 天历史。目前只支持 `unit="1d"`。 |
+| `order` / `order_value` / `order_target_value` / `order_target_percent` | 生效；走本地 Broker 下单、整手取整、开盘加滑点撮合。 |
 | `set_order_cost(OrderCost(...), type="fund")` | 生效但部分支持；使用 `open_commission`、`close_commission` 的较大值和 `min_commission`，暂不处理印花税等字段。 |
-| `set_slippage(PriceRelatedSlippage(rate))` | 生效；设置本地比例滑点。 |
+| `set_slippage(PriceRelatedSlippage(rate))` | 生效；按聚宽风格调整成交价，`0.002` 表示买入价上移 `0.001`、卖出价下移 `0.001`，ETF 成交价按 `0.001` tick 四舍五入。 |
 | `set_option("avoid_future_data", True)` | 仅兼容语法；本地引擎默认已按无未来数据规则执行。 |
 | `set_option("use_real_price", True)` | 仅兼容语法；当前不改变本地行情或撮合口径。 |
 | 其他 `set_option(...)` | 仅记录参数，不驱动本地行为。 |
@@ -434,11 +434,12 @@ Streamlit 回测工作台默认加载同一段示例策略。
 ### 撮合与数据对齐
 
 - 时间轴使用所有 `ts_codes` 的交易日期并集推进；某标的当天没有 bar 时，`context.data.current()` 返回 `None`，不会复用上一交易日价格，也不会读到未来价格。
-- 策略在每日开盘时运行：`context.data.current()` 只暴露当天开盘可知信息，`history()` 只返回上一交易日及以前的完整历史数据，不包含当天收盘价。
-- `handle_data()` 中提交的订单会在当天按开盘价撮合；如果当天无可交易 bar 则不会生成订单。
+- 策略在每日开盘时运行：`context.data.current()` 只暴露当天开盘可知信息，`history()` 只返回上一交易日及以前的完整历史数据，不包含当天收盘价；引擎默认额外预加载回测开始日前 `365` 天历史供均线等信号使用。
+- `handle_data()` 中提交的订单会在当天按开盘价加滑点后撮合；如果当天无可交易 bar 则不会生成订单。
 - 订单数量按一手 `100` 份取整；不足一手的买卖请求会被忽略，现金不足时也只会按可负担的整手数量部分成交。
 - 买入现金不足时会按可负担数量部分成交；完全不可成交或无持仓卖出会标记为拒单，不计入 `trades`。
-- 佣金与滑点都会实际扣减现金，并计入结果指标中的 `total_commission` 与 `total_slippage`。
+- ETF 分红按 `etf_dividend` 的登记日锁定持仓、派息日现金入账；这会影响后续可用现金与仓位数量。
+- 佣金会直接扣减现金；滑点通过更差成交价影响现金，并计入结果指标中的 `total_slippage`。
 
 ### 在代码中调用引擎
 
@@ -454,7 +455,7 @@ engine = BacktestEngine(
     benchmark_code="510300.SH",
     commission_rate=0.0005,    # 万五
     commission_min=0.5,        # 最低 0.5 元
-    slippage_rate=0.002,       # 滑点比例 0.2%
+    slippage_rate=0.002,       # 聚宽 PriceRelatedSlippage 风格滑点
 )
 
 result = engine.run()
@@ -496,11 +497,11 @@ engine = BacktestEngine(
     ...,
     commission_rate=0.0005,    # 费率（如万五 = 0.05%）
     commission_min=0.5,        # 最低佣金（0 表示无下限）
-    slippage_rate=0.002,       # 滑点比例（可选，默认 0）
+    slippage_rate=0.002,       # 聚宽 PriceRelatedSlippage 风格滑点（可选，默认 0）
 )
 ```
 
-也支持传入完全自定义的函数：`make_commission(rate, minimum)` / `make_slippage(rate)` 或自定义 `callable`。
+也支持在更底层的 Broker 中使用 `make_commission(rate, minimum)` / `make_slippage(rate)` 或自定义 `callable`。
 
 > 💡 目前仅回测 ETF 日线数据。数据源来自 `etf_daily` 表（OHLCV），读取逻辑在 `engine.py` 的 `_load_data()` 中，可方便扩展至股票 → 期货等资产。
 
