@@ -27,6 +27,10 @@ class Position:
         return self.amount * self.current_price
 
     @property
+    def total_amount(self) -> int:
+        return self.amount
+
+    @property
     def pnl(self) -> float:
         return self.amount * (self.current_price - self.avg_cost)
 
@@ -37,13 +41,31 @@ class Position:
         return (self.current_price / self.avg_cost - 1) * 100
 
 
+class PositionBook(dict[str, Position]):
+    """Position mapping that accepts both JoinQuant and Tushare codes."""
+
+    def __contains__(self, key: object) -> bool:
+        if isinstance(key, str):
+            key = to_tushare_code(key)
+        return super().__contains__(key)
+
+    def __getitem__(self, key: str) -> Position:
+        return super().__getitem__(to_tushare_code(key))
+
+    def __setitem__(self, key: str, value: Position) -> None:
+        super().__setitem__(to_tushare_code(key), value)
+
+    def get(self, key: str, default: Position | None = None) -> Position | None:  # type: ignore[override]
+        return super().get(to_tushare_code(key), default)
+
+
 @dataclass
 class Portfolio:
     """Tracks cash, positions, and total value throughout the backtest."""
 
     initial_cash: float
     cash: float
-    positions: dict[str, Position] = field(default_factory=dict)
+    positions: PositionBook = field(default_factory=PositionBook)
     total_commission: float = 0.0
     total_slippage: float = 0.0
     trade_count: int = 0
@@ -64,6 +86,7 @@ class Portfolio:
         return (self.total_value / self.initial_cash - 1) * 100
 
     def get_position(self, ts_code: str) -> Position:
+        ts_code = to_tushare_code(ts_code)
         if ts_code not in self.positions:
             self.positions[ts_code] = Position(ts_code=ts_code)
         return self.positions[ts_code]

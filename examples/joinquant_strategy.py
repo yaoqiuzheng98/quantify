@@ -51,8 +51,12 @@ def rebalance(context):
 
     short_ma = closes[-context.short_window :].mean()
     long_ma = closes[-context.long_window :].mean()
+    position_amount = (
+        context.portfolio.positions[code].total_amount if code in context.portfolio.positions else 0
+    )
 
     if short_ma > long_ma:
-        order_target_value(code, context.portfolio.total_value * 0.95)
-    else:
+        if position_amount == 0:
+            order_target_value(code, context.portfolio.total_value * 0.95)
+    elif position_amount > 0:
         order_target_value(code, 0)
