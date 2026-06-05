@@ -15,6 +15,7 @@ from quantify.utils.logger import log
 from .broker import Broker, make_commission, make_slippage, zero_slippage
 from .context import Bar, Context, DataProxy, Portfolio
 from .metrics import BacktestMetrics, compute_metrics
+from .reporting import build_report_payload
 
 
 def _load_data(
@@ -332,43 +333,13 @@ class BacktestResult:
         self.benchmark_df = benchmark_df
         self.trades = trades
 
+    def to_report_dict(self) -> dict:
+        """Return the canonical report payload shared by Web and LLM outputs."""
+        return build_report_payload(self.equity_df, self.benchmark_df, self.metrics, self.trades)
+
     def to_llm_dict(self) -> dict:
-        """Return a compact, LLM-friendly dict with metrics + daily series.
-
-        Benchmark values are normalized so they start at the same baseline
-        as the portfolio, making return comparisons easier for an LLM.
-        """
-        initial = float(self.equity_df["value"].iloc[0]) if not self.equity_df.empty else 1.0
-
-        equity = [
-            {"date": str(d), "value": float(round(float(v), 2))}
-            for d, v in zip(self.equity_df["date"].values, self.equity_df["value"].values)
-        ]
-
-        bench: list[dict] = []
-        if self.benchmark_df is not None and not self.benchmark_df.empty:
-            bm_init = float(self.benchmark_df["value"].iloc[0])
-            if bm_init > 0:
-                bench = [
-                    {"date": str(d), "value": float(round(float(v) / bm_init * initial, 2))}
-                    for d, v in zip(self.benchmark_df["date"].values, self.benchmark_df["value"].values)
-                ]
-
-        return {
-            "metrics": self.metrics.to_dict(),
-            "equity_curve": equity,
-            "benchmark": bench,
-            "trades": [
-                {
-                    "ts_code": t.ts_code,
-                    "amount": t.amount,
-                    "filled_price": float(t.filled_price) if t.filled_price else None,
-                    "filled_date": str(t.filled_date) if t.filled_date else None,
-                    "commission": round(t.commission, 2),
-                }
-                for t in self.trades
-            ],
-        }
+        """Return the same canonical payload consumed by the Web dashboard."""
+        return self.to_report_dict()
 
 
 # ---------------------------------------------------------------------------

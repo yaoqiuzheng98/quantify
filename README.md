@@ -423,12 +423,13 @@ result = engine.run()
 # 1) 人类可读 — 格式化文本指标
 print(result.metrics.to_llm_prompt())
 
-# 2) LLM 分析 — 结构化字典（归一化净值曲线 + 交易记录）
-lm_dict = result.to_llm_dict()
-# lm_dict["metrics"]      → {sharpe_ratio, max_drawdown_pct, win_rate_pct, ...}
-# lm_dict["equity_curve"] → [{date, value}, ...]
-# lm_dict["benchmark"]    → [{date, value}, ...]   # 已归一化对齐
-# lm_dict["trades"]       → [{ts_code, amount, filled_price, ...}]
+# 2) LLM / Web 同源结构 — 指标 + 曲线 + 交易记录
+report = result.to_report_dict()
+llm_dict = result.to_llm_dict()  # 与 report 完全同源
+# report["metrics"]      → {sharpe_ratio, max_drawdown_pct, win_rate_pct, ...}
+# report["report_items"] → [{label, value, numeric_value}, ...]
+# report["curves"]       → [{date, equity, strategy_return_pct, benchmark_return_pct, ...}]
+# report["trades"]       → [{date, ts_code, direction, amount, price, commission, ...}]
 ```
 
 ### 指标清单
@@ -467,7 +468,7 @@ pip install -e ".[web]"
 quantify dashboard
 ```
 
-工作台提供策略代码编辑器、回测参数面板、聚宽风格指标卡片，以及支持鼠标悬浮查看明细的收益曲线、每日盈亏、每日成交和回撤图。默认使用 `etf_daily` 表数据，因此需要先执行 `quantify fetch etf basic` 和 `quantify fetch etf all` 完成 ETF 日线入库。
+工作台提供策略代码编辑器、回测参数面板、聚宽风格指标卡片，以及支持鼠标悬浮查看明细的收益曲线、每日盈亏、每日成交和回撤图。Web 图表和 `to_llm_dict()` 使用同一个 `to_report_dict()` 标准结构，避免两套输出口径分叉。默认使用 `etf_daily` 表数据，因此需要先执行 `quantify fetch etf basic` 和 `quantify fetch etf all` 完成 ETF 日线入库。
 
 默认端口为 `8501`；如果端口已被占用，CLI 会自动尝试后续端口，也可以手动指定：`quantify dashboard --port 8502`。
 

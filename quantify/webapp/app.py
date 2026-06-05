@@ -11,7 +11,6 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from quantify.backtest import BacktestEngine, BacktestResult
-from quantify.backtest.reporting import build_report_items, benchmark_return_series, trade_turnover_series
 
 try:
     from streamlit_ace import st_ace
@@ -70,80 +69,67 @@ def _run_backtest(
     return engine.run()
 
 
-def _returns_frame(result: BacktestResult) -> pd.DataFrame:
-    equity_df = result.equity_df.copy()
-    if equity_df.empty:
-        return pd.DataFrame(columns=["date", "strategy_return"])
-
-    dates = pd.to_datetime(equity_df["date"])
-    values = equity_df["value"].astype(float)
-    strategy_return = values / values.iloc[0] - 1
-    frame = pd.DataFrame(
-        {
-            "date": dates,
-            "strategy_return": strategy_return * 100,
-            "equity": values,
-        }
-    )
-
-    benchmark_return = benchmark_return_series(pd.DatetimeIndex(dates), result.benchmark_df)
-    if benchmark_return is not None:
-        benchmark_return = benchmark_return.reindex(dates).ffill()
-        frame["benchmark_return"] = benchmark_return.to_numpy(dtype=float) * 100
-        frame["excess_return"] = frame["strategy_return"] - frame["benchmark_return"]
+def _payload_frame(report: dict[str, Any]) -> pd.DataFrame:
+    frame = pd.DataFrame(report.get("curves", []))
+    if not frame.empty:
+        frame["date"] = pd.to_datetime(frame["date"])
     return frame
 
 
-def _drawdown_frame(result: BacktestResult) -> pd.DataFrame:
-    equity_df = result.equity_df.copy()
-    if equity_df.empty:
-        return pd.DataFrame(columns=["date", "drawdown"])
+def _returns_frame(report: dict[str, Any]) -> pd.DataFrame:
+    frame = _payload_frame(report)
+    if frame.empty:
+        return pd.DataFrame(columns=["date", "strategy_return"])
 
-    values = equity_df["value"].astype(float)
-    wealth = values / values.iloc[0]
-    drawdown = wealth / wealth.cummax() - 1
-    return pd.DataFrame({"date": pd.to_datetime(equity_df["date"]), "drawdown": drawdown * 100})
-
-
-def _daily_pnl_frame(result: BacktestResult) -> pd.DataFrame:
-    equity_df = result.equity_df.copy()
-    if equity_df.empty:
-        return pd.DataFrame(columns=["date", "daily_pnl"])
-
-    values = equity_df["value"].astype(float)
-    return pd.DataFrame(
+    returns = pd.DataFrame(
         {
-            "date": pd.to_datetime(equity_df["date"]),
-            "daily_pnl": values.diff().fillna(0.0),
+            "date": frame["date"],
+            "equity": frame["equity"],
+            "strategy_return": frame["strategy_return_pct"],
         }
     )
+    if "benchmark_return_pct" in frame.columns:
+        returns["benchmark_return"] = frame["benchmark_return_pct"]
+    if "excess_return_pct" in frame.columns:
+        returns["excess_return"] = frame["excess_return_pct"]
+    return returns
 
 
-def _turnover_frame(result: BacktestResult) -> pd.DataFrame:
-    if result.equity_df.empty:
+def _drawdown_frame(report: dict[str, Any]) -> pd.DataFrame:
+    frame = _payload_frame(report)
+    if frame.empty:
+        return pd.DataFrame(columns=["date", "drawdown"])
+    return pd.DataFrame({"date": frame["date"], "drawdown": frame["drawdown_pct"]})
+
+
+def _daily_pnl_frame(report: dict[str, Any]) -> pd.DataFrame:
+    frame = _payload_frame(report)
+    if frame.empty:
+        return pd.DataFrame(columns=["date", "daily_pnl"])
+    return frame.loc[:, ["date", "daily_pnl"]].copy()
+
+
+def _turnover_frame(report: dict[str, Any]) -> pd.DataFrame:
+    frame = _payload_frame(report)
+    if frame.empty:
         return pd.DataFrame(columns=["date", "turnover"])
-    dates = pd.DatetimeIndex(pd.to_datetime(result.equity_df["date"]))
-    turnover = trade_turnover_series(dates, result.trades)
-    return pd.DataFrame({"date": turnover.index, "turnover": turnover.values})
+    return frame.loc[:, ["date", "turnover"]].copy()
 
 
-def _trades_frame(trades: list[Any]) -> pd.DataFrame:
-    records = []
-    for trade in trades:
-        amount = int(getattr(trade, "filled_amount", 0) or getattr(trade, "amount", 0) or 0)
-        price = getattr(trade, "filled_price", None)
-        records.append(
-            {
-                "成交日": getattr(trade, "filled_date", None),
-                "代码": getattr(trade, "ts_code", ""),
-                "方向": "买入" if amount > 0 else "卖出",
-                "数量": amount,
-                "价格": float(price) if price is not None else np.nan,
-                "成交额": abs(amount) * float(price) if price is not None else np.nan,
-                "佣金": float(getattr(trade, "commission", 0.0) or 0.0),
-                "滑点": float(getattr(trade, "slippage", 0.0) or 0.0),
-            }
-        )
+def _trades_frame(report: dict[str, Any]) -> pd.DataFrame:
+    records = [
+        {
+            "成交日": trade["date"],
+            "代码": trade["ts_code"],
+            "方向": "买入" if trade["direction"] == "buy" else "卖出",
+            "数量": trade["amount"],
+            "价格": trade["price"],
+            "成交额": trade["value"],
+            "佣金": trade["commission"],
+            "滑点": trade["slippage"],
+        }
+        for trade in report.get("trades", [])
+    ]
     return pd.DataFrame(records)
 
 
@@ -159,7 +145,7 @@ def _line_chart(frame: pd.DataFrame) -> go.Figure:
             hovertemplate="%{x|%Y-%m-%d}<br>策略收益 %{y:.2f}%<extra></extra>",
         )
     )
-    if "benchmark_return" in frame:
+    if "benchmark_return" in frame.columns and bool(frame["benchmark_return"].notna().any()):
         fig.add_trace(
             go.Scatter(
                 x=frame["date"],
@@ -170,7 +156,7 @@ def _line_chart(frame: pd.DataFrame) -> go.Figure:
                 hovertemplate="%{x|%Y-%m-%d}<br>基准收益 %{y:.2f}%<extra></extra>",
             )
         )
-    if "excess_return" in frame:
+    if "excess_return" in frame.columns and bool(frame["excess_return"].notna().any()):
         fig.add_trace(
             go.Scatter(
                 x=frame["date"],
@@ -236,33 +222,34 @@ def _drawdown_chart(frame: pd.DataFrame) -> go.Figure:
     return fig
 
 
-def _render_metrics(result: BacktestResult) -> None:
-    report_items = build_report_items(result.equity_df, result.benchmark_df, result.metrics, result.trades)
+def _render_metrics(report: dict[str, Any]) -> None:
+    report_items = report.get("report_items", [])
     for start in range(0, len(report_items), 5):
         columns = st.columns(5)
-        for column, (label, value, _numeric_value) in zip(columns, report_items[start : start + 5]):
-            column.metric(label, value)
+        for column, item in zip(columns, report_items[start : start + 5]):
+            column.metric(item["label"], item["value"])
 
 
 def _render_result(result: BacktestResult) -> None:
-    if result.equity_df.empty:
+    report = result.to_report_dict()
+    if not report["curves"]:
         st.warning("没有读取到行情数据，请先确认 `etf_daily` 已入库且日期范围有效。")
         return
 
-    _render_metrics(result)
+    _render_metrics(report)
 
-    returns = _returns_frame(result)
+    returns = _returns_frame(report)
     st.plotly_chart(_line_chart(returns), use_container_width=True)
 
     st.plotly_chart(
-        _bar_chart(_daily_pnl_frame(result), "daily_pnl", "每日盈亏", "金额"), use_container_width=True
+        _bar_chart(_daily_pnl_frame(report), "daily_pnl", "每日盈亏", "金额"), use_container_width=True
     )
     st.plotly_chart(
-        _bar_chart(_turnover_frame(result), "turnover", "每日成交", "成交额"), use_container_width=True
+        _bar_chart(_turnover_frame(report), "turnover", "每日成交", "成交额"), use_container_width=True
     )
-    st.plotly_chart(_drawdown_chart(_drawdown_frame(result)), use_container_width=True)
+    st.plotly_chart(_drawdown_chart(_drawdown_frame(report)), use_container_width=True)
 
-    trades_df = _trades_frame(result.trades)
+    trades_df = _trades_frame(report)
     st.subheader("交易明细")
     if trades_df.empty:
         st.info("本次回测没有成交记录。")

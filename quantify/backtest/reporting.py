@@ -8,6 +8,33 @@ import numpy as np
 import pandas as pd
 
 
+def _clean_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: _clean_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_clean_value(item) for item in value]
+    if isinstance(value, np.integer):
+        return int(value)
+    if isinstance(value, np.floating):
+        return float(value) if np.isfinite(value) else None
+    if isinstance(value, float):
+        return value if np.isfinite(value) else None
+    return value
+
+
+def _as_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    number = float(value)
+    return number if np.isfinite(number) else None
+
+
+def _as_date(value: Any) -> str | None:
+    if value is None or pd.isna(value):
+        return None
+    return pd.Timestamp(value).strftime("%Y-%m-%d")
+
+
 def _format_pct(value: float | None, digits: int = 2) -> str:
     if value is None or not np.isfinite(value):
         return "--"
@@ -272,3 +299,93 @@ def trade_turnover_series(equity_dates: pd.DatetimeIndex, trades: list[Any] | No
         if trade_date in turnover.index:
             turnover.loc[trade_date] += amount * float(filled_price)
     return turnover
+
+
+def _trade_records(trades: list[Any] | None) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    for trade in trades or []:
+        amount = int(getattr(trade, "filled_amount", 0) or getattr(trade, "amount", 0) or 0)
+        price = _as_float(getattr(trade, "filled_price", None))
+        trade_value = abs(amount) * price if price is not None else None
+        records.append(
+            {
+                "date": _as_date(getattr(trade, "filled_date", None)),
+                "ts_code": getattr(trade, "ts_code", ""),
+                "direction": "buy" if amount > 0 else "sell" if amount < 0 else "flat",
+                "amount": amount,
+                "price": price,
+                "value": trade_value,
+                "commission": _as_float(getattr(trade, "commission", 0.0)),
+                "slippage": _as_float(getattr(trade, "slippage", 0.0)),
+            }
+        )
+    return records
+
+
+def build_report_payload(
+    equity_df: pd.DataFrame,
+    benchmark_df: pd.DataFrame | None = None,
+    metrics: Any | None = None,
+    trades: list[Any] | None = None,
+) -> dict[str, Any]:
+    """Build the canonical report payload shared by Web and LLM outputs."""
+    metric_values = _clean_value(metrics.to_dict()) if metrics is not None else {}
+    report_items = [
+        {"label": label, "value": value, "numeric_value": _clean_value(numeric_value)}
+        for label, value, numeric_value in build_report_items(equity_df, benchmark_df, metrics, trades)
+    ]
+    trade_records = _trade_records(trades)
+
+    if equity_df.empty:
+        return {
+            "metrics": metric_values,
+            "report_items": report_items,
+            "curves": [],
+            "trades": trade_records,
+        }
+
+    dates = pd.DatetimeIndex(pd.to_datetime(equity_df["date"]))
+    values = equity_df["value"].astype(float).to_numpy()
+    initial_value = float(values[0])
+    strategy_return = values / initial_value - 1
+    daily_pnl = np.diff(values, prepend=values[0])
+    wealth = values / initial_value
+    drawdown = wealth / np.maximum.accumulate(wealth) - 1
+    turnover = trade_turnover_series(dates, trades)
+
+    benchmark_return = pd.Series(np.nan, index=dates)
+    benchmark_curve = benchmark_return_series(dates, benchmark_df)
+    if benchmark_curve is not None:
+        benchmark_return.loc[benchmark_curve.index] = benchmark_curve.to_numpy(dtype=float)
+
+    curves: list[dict[str, Any]] = []
+    for index, curve_date in enumerate(dates):
+        benchmark_value = _as_float(benchmark_return.iloc[index])
+        excess_return = strategy_return[index] - benchmark_value if benchmark_value is not None else None
+        benchmark_equity = initial_value * (1 + benchmark_value) if benchmark_value is not None else None
+        curves.append(
+            {
+                "date": curve_date.strftime("%Y-%m-%d"),
+                "equity": _as_float(values[index]),
+                "strategy_return": _as_float(strategy_return[index]),
+                "strategy_return_pct": _as_float(strategy_return[index] * 100),
+                "benchmark_equity": _as_float(benchmark_equity),
+                "benchmark_return": benchmark_value,
+                "benchmark_return_pct": _as_float(
+                    benchmark_value * 100 if benchmark_value is not None else None
+                ),
+                "excess_return": _as_float(excess_return),
+                "excess_return_pct": _as_float(excess_return * 100 if excess_return is not None else None),
+                "drawdown": _as_float(drawdown[index]),
+                "drawdown_pct": _as_float(drawdown[index] * 100),
+                "daily_pnl": _as_float(daily_pnl[index]),
+                "turnover": _as_float(turnover.iloc[index]),
+            }
+        )
+
+    return {
+        "metrics": metric_values,
+        "report_items": report_items,
+        "curves": curves,
+        "trades": trade_records,
+    }
