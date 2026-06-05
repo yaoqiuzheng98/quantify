@@ -373,9 +373,9 @@ def initialize(context):
     context.short_window = 5
     context.long_window = 20
 
-    run_daily(handle_data, time="open")
+    run_daily(rebalance, time="open")
 
-def handle_data(context):
+def rebalance(context):
     code = "510300.XSHG"
     closes = attribute_history(code, context.long_window + 1, "1d", ["close"])["close"]
     if len(closes) < context.long_window + 1:
@@ -386,14 +386,14 @@ def handle_data(context):
 
     # 金叉买入，死叉卖出
     if short_ma > long_ma:
-        order_target_percent(code, 0.95)
+        order_target_value(code, context.portfolio.total_value * 0.95)
     else:
-        order_target_percent(code, 0)
+        order_target_value(code, 0)
 ```
 
 Streamlit 回测工作台默认加载同一段示例策略。
 
-本地引擎内置轻量 `jqdata` 兼容层，支持示例策略中的 `set_benchmark`、`run_daily(..., time="open")`、`attribute_history`、`order_target_percent`、`set_order_cost`、`set_slippage` 等常用聚宽 API；未覆盖聚宽全量 API。
+本地引擎内置轻量 `jqdata` 兼容层，支持示例策略中的 `set_benchmark`、`run_daily(..., time="open")`、`attribute_history`、`order_target_value`、`set_order_cost`、`set_slippage` 等常用聚宽 API；未覆盖聚宽全量 API。
 
 #### `jqdata` 兼容范围
 

@@ -6,10 +6,12 @@
 注：
 1. 聚宽基金代码格式为 '510300.XSHG'；自研引擎会自动转换为 Tushare 格式。
 2. 本策略在每日开盘运行：用上一交易日及以前的 close 计算信号，当日开盘成交。
-3. 聚宽默认一手 100 份，order_target_percent 会按交易单位取整；自研引擎同样按
+3. 聚宽默认一手 100 份，order_target_value 会按交易单位取整；自研引擎同样按
    100 份取整。
 4. 聚宽默认使用 250 个交易日年化；自研引擎 Web 报表同样使用 250。
 """
+
+# ruff: noqa: F403, F405
 
 from jqdata import *
 
@@ -35,10 +37,10 @@ def initialize(context):
     context.short_window = 5
     context.long_window = 20
 
-    run_daily(handle_data, time="open")
+    run_daily(rebalance, time="open")
 
 
-def handle_data(context):
+def rebalance(context):
     code = "510300.XSHG"
 
     # 开盘时 attribute_history 返回上一交易日及以前的完整日线数据，
@@ -47,10 +49,10 @@ def handle_data(context):
     if len(closes) < context.long_window + 1:
         return
 
-    short_ma = closes[-context.short_window:].mean()
-    long_ma = closes[-context.long_window:].mean()
+    short_ma = closes[-context.short_window :].mean()
+    long_ma = closes[-context.long_window :].mean()
 
     if short_ma > long_ma:
-        order_target_percent(code, 0.95)
+        order_target_value(code, context.portfolio.total_value * 0.95)
     else:
-        order_target_percent(code, 0)
+        order_target_value(code, 0)
