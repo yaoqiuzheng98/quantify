@@ -516,7 +516,7 @@ pip install -e ".[web]"
 quantify dashboard
 ```
 
-工作台提供策略代码编辑器、回测参数面板、聚宽风格指标卡片，以及支持鼠标悬浮查看明细的收益曲线、每日盈亏、每日成交和回撤图。Web 图表和 `to_llm_dict()` 使用同一个 `to_report_dict()` 标准结构，避免两套输出口径分叉。Web 运行时会用侧边栏的基准、佣金、滑点参数覆盖策略代码中的默认设置。默认使用 `etf_daily` 表数据，因此需要先执行 `quantify fetch etf basic` 和 `quantify fetch etf all` 完成 ETF 日线入库。
+工作台提供策略代码编辑器、策略库保存/选择、回测参数面板、聚宽风格指标卡片，以及支持鼠标悬浮查看明细的收益曲线、每日盈亏、每日成交和回撤图。Web 图表和 `to_llm_dict()` 使用同一个 `to_report_dict()` 标准结构，避免两套输出口径分叉。策略源码保存到 MySQL 的 `strategy` 表，`quantify db init` 会创建该表，Dashboard 启动后也会按需补建。Web 运行时会用侧边栏的基准、佣金、滑点参数覆盖策略代码中的默认设置。默认使用 `etf_daily` 表数据，因此需要先执行 `quantify fetch etf basic` 和 `quantify fetch etf all` 完成 ETF 日线入库。
 
 默认端口为 `8501`；如果端口已被占用，CLI 会自动尝试后续端口，也可以手动指定：`quantify dashboard --port 8502`。
 

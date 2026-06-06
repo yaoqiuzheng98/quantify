@@ -12,6 +12,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from quantify.backtest import BacktestEngine, BacktestResult, DEFAULT_STRATEGY_SOURCE
+from quantify.database.strategy_store import StrategyRecord, list_strategies, save_strategy
 
 try:
     from streamlit_ace import st_ace
@@ -20,10 +21,82 @@ except ModuleNotFoundError:  # pragma: no cover - optional UI enhancement
 
 
 DEFAULT_STRATEGY = DEFAULT_STRATEGY_SOURCE
+NEW_STRATEGY_ID = 0
 
 
 def _parse_codes(raw_codes: str) -> list[str]:
     return [code.strip().upper() for code in raw_codes.split(",") if code.strip()]
+
+
+def _init_strategy_state() -> None:
+    if "strategy_source" not in st.session_state:
+        st.session_state["strategy_id"] = None
+        st.session_state["strategy_name"] = "默认双均线策略"
+        st.session_state["strategy_description"] = ""
+        st.session_state["strategy_source"] = DEFAULT_STRATEGY
+        st.session_state["strategy_editor_revision"] = 0
+
+
+def _load_strategy(record: StrategyRecord | None) -> None:
+    st.session_state["strategy_id"] = record.id if record else None
+    st.session_state["strategy_name"] = record.name if record else "默认双均线策略"
+    st.session_state["strategy_description"] = (record.description or "") if record else ""
+    st.session_state["strategy_source"] = record.source if record else DEFAULT_STRATEGY
+    st.session_state["strategy_editor_revision"] = st.session_state.get("strategy_editor_revision", 0) + 1
+
+
+def _strategy_label(record: StrategyRecord) -> str:
+    if record.updated_at is None:
+        return record.name
+    return f"{record.name} · {record.updated_at:%Y-%m-%d %H:%M}"
+
+
+def _load_strategy_records() -> list[StrategyRecord]:
+    try:
+        return list_strategies()
+    except Exception as exc:  # noqa: BLE001
+        st.sidebar.warning(f"策略库暂不可用：{exc}")
+        return []
+
+
+def _render_strategy_library(records: list[StrategyRecord]) -> None:
+    st.header("策略库")
+    record_by_id = {record.id: record for record in records}
+    options = [NEW_STRATEGY_ID, *record_by_id]
+    current_id = st.session_state.get("strategy_id") or NEW_STRATEGY_ID
+    index = options.index(current_id) if current_id in options else 0
+    selected_id = st.selectbox(
+        "选择策略",
+        options=options,
+        index=index,
+        format_func=lambda value: (
+            "新建策略" if value == NEW_STRATEGY_ID else _strategy_label(record_by_id[value])
+        ),
+    )
+    if selected_id != current_id:
+        _load_strategy(None if selected_id == NEW_STRATEGY_ID else record_by_id[selected_id])
+        st.rerun()
+
+    with st.expander("查看策略列表", expanded=False):
+        if not records:
+            st.caption("暂无已保存策略。")
+        else:
+            st.dataframe(
+                pd.DataFrame(
+                    [
+                        {
+                            "ID": record.id,
+                            "名称": record.name,
+                            "更新时间": record.updated_at.strftime("%Y-%m-%d %H:%M")
+                            if record.updated_at
+                            else "--",
+                        }
+                        for record in records
+                    ]
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
 
 
 def _run_backtest(
@@ -308,8 +381,9 @@ def _render_result(result: BacktestResult) -> None:
 
 
 def _strategy_editor(default_source: str) -> str:
+    editor_key = f"strategy_editor_{st.session_state.get('strategy_editor_revision', 0)}"
     if st_ace is None:
-        return st.text_area("策略代码", value=default_source, height=520)
+        return st.text_area("策略代码", value=default_source, height=520, key=editor_key)
     source = st_ace(
         value=default_source,
         language="python",
@@ -320,17 +394,46 @@ def _strategy_editor(default_source: str) -> str:
         tab_size=4,
         show_gutter=True,
         auto_update=True,
-        key="strategy_editor",
+        key=editor_key,
     )
     return source or default_source
+
+
+def _render_save_strategy_form(strategy_source: str) -> None:
+    with st.expander("保存当前策略", expanded=False):
+        name = st.text_input("策略名称", key="strategy_name")
+        description = st.text_area("策略说明", key="strategy_description", height=80)
+        if st.button("保存到策略库", type="primary"):
+            try:
+                saved = save_strategy(
+                    strategy_id=st.session_state.get("strategy_id"),
+                    name=name,
+                    description=description,
+                    source=strategy_source,
+                )
+            except Exception as exc:  # noqa: BLE001
+                st.error(f"保存失败：{exc}")
+                return
+            st.session_state["strategy_id"] = saved.id
+            st.session_state["strategy_name"] = saved.name
+            st.session_state["strategy_description"] = saved.description or ""
+            st.session_state["strategy_source"] = saved.source
+            st.session_state["strategy_saved_message"] = f"已保存策略：{saved.name}"
+            st.rerun()
 
 
 def main() -> None:
     st.set_page_config(page_title="Quantify 回测工作台", layout="wide")
     st.title("Quantify 回测工作台")
     st.caption("编辑 JoinQuant 风格策略，运行 ETF 日线回测，并用交互图表查看收益、回撤、盈亏和成交。")
+    _init_strategy_state()
+    if saved_message := st.session_state.pop("strategy_saved_message", None):
+        st.success(saved_message)
 
     with st.sidebar:
+        _render_strategy_library(_load_strategy_records())
+        st.divider()
+
         st.header("回测参数")
         raw_codes = st.text_input("标的代码", value="510300.SH", help="多个代码用英文逗号分隔")
         benchmark_code = st.text_input("基准代码", value="510300.SH", help="仅用于收益对比，会自动加载行情")
@@ -344,7 +447,9 @@ def main() -> None:
         slippage_rate = st.number_input("滑点比例", min_value=0.0, value=0.002, step=0.0005, format="%.6f")
         run_clicked = st.button("运行回测", type="primary", use_container_width=True)
 
-    strategy_source = _strategy_editor(DEFAULT_STRATEGY)
+    strategy_source = _strategy_editor(st.session_state["strategy_source"])
+    st.session_state["strategy_source"] = strategy_source
+    _render_save_strategy_form(strategy_source)
     st.info("策略源码会在当前 Python 进程中执行，请只运行可信代码。")
 
     if run_clicked:

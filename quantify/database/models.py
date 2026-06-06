@@ -9,6 +9,7 @@ Currently focuses on ETF (fund market='E') tables sourced from Tushare Pro:
     - fund_share   -> etf_share
     - fund_portfolio -> etf_portfolio
     - fund_manager -> etf_manager
+    - saved strategies -> strategy
 
 Primary keys are chosen so that re-running a fetch is idempotent via
 INSERT ... ON DUPLICATE KEY UPDATE.
@@ -34,6 +35,28 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 class Base(DeclarativeBase):
     """Project-wide declarative base."""
+
+
+# ---------------------------------------------------------------------------
+# Saved backtest strategies
+# ---------------------------------------------------------------------------
+class SavedStrategy(Base):
+    __tablename__ = "strategy"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True, comment="自增主键")
+    name: Mapped[str] = mapped_column(String(128), comment="策略名称")
+    description: Mapped[str | None] = mapped_column(Text, comment="策略说明")
+    source: Mapped[str] = mapped_column(Text, comment="策略源码")
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), comment="创建时间")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        server_default=func.now(),
+        onupdate=func.now(),
+        comment="更新时间",
+    )
+
+    __table_args__ = (Index("uq_strategy_name", "name", unique=True),)
 
 
 # ---------------------------------------------------------------------------
