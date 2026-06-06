@@ -53,10 +53,12 @@ def _format_int(value: int | None) -> str:
     return str(value)
 
 
-def _daily_returns(values: np.ndarray) -> np.ndarray:
-    if len(values) < 2:
+def _daily_returns(values: np.ndarray, base_value: float | None = None) -> np.ndarray:
+    if len(values) == 0:
         return np.array([], dtype=float)
-    return np.diff(values) / values[:-1]
+    base = float(values[0] if base_value is None else base_value)
+    previous = np.concatenate(([base], values[:-1]))
+    return (values - previous) / previous
 
 
 def _annualized_return(total_return: float, trading_days: int) -> float:
@@ -103,46 +105,78 @@ def _sortino_ratio(
     downside_volatility = float(np.sqrt(np.mean(np.square(downside_returns))) * np.sqrt(250))
     if downside_volatility <= 0:
         return None
-    return (annual_return_pct / 100 - risk_free_rate) / downside_volatility
+    return (annual_return_pct / 100) / downside_volatility
 
 
-def _realized_trade_stats(trades: list[Any] | None) -> tuple[int, int, float | None, float | None]:
+def _downside_volatility(values: np.ndarray) -> float | None:
+    downside = np.minimum(values, 0.0)
+    if len(downside) == 0:
+        return None
+    volatility = float(np.sqrt(np.mean(np.square(downside))) * np.sqrt(250))
+    return volatility if volatility > 0 else None
+
+
+def _realized_trade_stats(
+    trades: list[Any] | None,
+    dividends: list[Any] | None = None,
+) -> tuple[int, int, float | None, float | None]:
     if not trades:
         return 0, 0, None, None
 
-    positions: dict[str, tuple[int, float]] = {}
+    positions: dict[str, dict[str, float]] = {}
     profits: list[float] = []
     losses: list[float] = []
 
+    events = []
     for trade in trades:
+        event_date = getattr(trade, "filled_date", None)
+        if event_date is not None:
+            events.append((event_date, 1, trade))
+    for dividend in dividends or []:
+        event_date = getattr(dividend, "pay_date", None)
+        if event_date is not None:
+            events.append((event_date, 0, dividend))
+
+    for _, event_type, event in sorted(events, key=lambda item: (pd.Timestamp(item[0]), item[1])):
+        if event_type == 0:
+            code = getattr(event, "ts_code", "")
+            position = positions.get(code)
+            if position is not None and position["amount"] > 0:
+                position["dividend"] += float(getattr(event, "cash", 0.0) or 0.0)
+            continue
+
+        trade = event
         code = getattr(trade, "ts_code", "")
         amount = int(getattr(trade, "amount", 0) or 0)
         price = getattr(trade, "filled_price", None)
         if not code or amount == 0 or price is None:
             continue
 
-        commission = float(getattr(trade, "commission", 0.0) or 0.0)
-        current_amount, avg_cost = positions.get(code, (0, 0.0))
+        position = positions.setdefault(code, {"amount": 0.0, "cost": 0.0, "dividend": 0.0})
+        current_amount = int(position["amount"])
 
         if amount > 0:
-            total_cost = amount * float(price) + commission
-            new_amount = current_amount + amount
-            new_avg_cost = (current_amount * avg_cost + total_cost) / new_amount if new_amount > 0 else 0.0
-            positions[code] = (new_amount, new_avg_cost)
+            position["amount"] = current_amount + amount
+            position["cost"] += amount * float(price)
             continue
 
         sell_amount = min(current_amount, abs(amount))
         if sell_amount <= 0:
             continue
 
-        proceeds = sell_amount * float(price) - commission
-        pnl = proceeds - sell_amount * avg_cost
+        ratio = sell_amount / current_amount
+        cost = position["cost"] * ratio
+        dividend_cash = position["dividend"] * ratio
+        proceeds = sell_amount * float(price) + dividend_cash
+        pnl = proceeds - cost
         if pnl > 0:
             profits.append(pnl)
         elif pnl < 0:
             losses.append(pnl)
 
-        positions[code] = (current_amount - sell_amount, avg_cost if current_amount > sell_amount else 0.0)
+        position["amount"] = current_amount - sell_amount
+        position["cost"] -= cost
+        position["dividend"] -= dividend_cash
 
     profit_count = len(profits)
     loss_count = len(losses)
@@ -165,9 +199,32 @@ def benchmark_return_series(
         index=pd.to_datetime(benchmark_df["date"]),
     ).sort_index()
     benchmark = benchmark.reindex(dates).ffill().dropna()
-    if benchmark.empty or benchmark.iloc[0] <= 0:
+    base_value = (
+        float(benchmark_df.attrs.get("base_value", benchmark.iloc[0])) if not benchmark.empty else 0.0
+    )
+    if benchmark.empty or base_value <= 0:
         return None
-    return benchmark / benchmark.iloc[0] - 1
+    return benchmark / base_value - 1
+
+
+def benchmark_daily_return_series(
+    dates: pd.DatetimeIndex,
+    benchmark_df: pd.DataFrame | None,
+) -> np.ndarray | None:
+    if benchmark_df is None or benchmark_df.empty:
+        return None
+
+    value_col = "daily_value" if "daily_value" in benchmark_df.columns else "value"
+    benchmark = pd.Series(
+        benchmark_df[value_col].astype(float).values,
+        index=pd.to_datetime(benchmark_df["date"]),
+    ).sort_index()
+    benchmark = benchmark.reindex(dates).ffill().dropna()
+    base_key = "daily_base_value" if value_col == "daily_value" else "base_value"
+    base_value = float(benchmark_df.attrs.get(base_key, benchmark.iloc[0])) if not benchmark.empty else 0.0
+    if benchmark.empty or base_value <= 0:
+        return None
+    return _daily_returns(benchmark.to_numpy(dtype=float), base_value=base_value)
 
 
 def _compute_alpha_beta(
@@ -183,14 +240,12 @@ def _compute_alpha_beta(
     count = min(len(strategy_returns), len(benchmark_returns))
     strategy_returns = strategy_returns[-count:]
     benchmark_returns = benchmark_returns[-count:]
-    variance = float(np.var(benchmark_returns))
+    variance = float(np.var(benchmark_returns, ddof=1))
     if variance <= 0:
         return None, None
 
     beta = float(np.cov(strategy_returns, benchmark_returns)[0, 1] / variance)
-    alpha = (
-        annual_return_pct / 100 - risk_free_rate - beta * (benchmark_annual_pct / 100 - risk_free_rate)
-    ) * 100
+    alpha = annual_return_pct / 100 - risk_free_rate - beta * (benchmark_annual_pct / 100 - risk_free_rate)
     return alpha, beta
 
 
@@ -199,6 +254,7 @@ def build_report_items(
     benchmark_df: pd.DataFrame | None = None,
     metrics: Any | None = None,
     trades: list[Any] | None = None,
+    dividends: list[Any] | None = None,
 ) -> list[tuple[str, str, float | None]]:
     """Return JoinQuant-style metrics for interactive report views."""
     del metrics
@@ -206,7 +262,7 @@ def build_report_items(
         return []
 
     values = equity_df["value"].astype(float).to_numpy()
-    strategy_daily = _daily_returns(values)
+    strategy_daily = _daily_returns(values, base_value=values[0])
     trading_days = len(values)
     dates = pd.DatetimeIndex(pd.to_datetime(equity_df["date"]))
 
@@ -216,7 +272,7 @@ def build_report_items(
     sharpe = _sharpe_ratio(annual_return, strategy_volatility)
     max_drawdown, max_drawdown_period = _max_drawdown_info(values / values[0], dates)
     sortino = _sortino_ratio(strategy_daily, annual_return)
-    profit_count, loss_count, trade_win_rate, profit_loss_ratio = _realized_trade_stats(trades)
+    profit_count, loss_count, trade_win_rate, profit_loss_ratio = _realized_trade_stats(trades, dividends)
 
     benchmark_total_return = None
     benchmark_annual = None
@@ -228,30 +284,51 @@ def build_report_items(
     excess_max_drawdown = None
     excess_sharpe = None
     information_ratio = None
+    benchmark_daily = None
     benchmark_curve = benchmark_return_series(dates, benchmark_df)
     if benchmark_curve is not None:
         benchmark_total_return = float(benchmark_curve.iloc[-1])
         benchmark_annual = _annualized_return(benchmark_total_return, trading_days)
-        benchmark_daily = (1 + benchmark_curve).pct_change().dropna().to_numpy()
-        benchmark_volatility = _annualized_volatility(benchmark_daily)
-        alpha, beta = _compute_alpha_beta(strategy_daily, benchmark_daily, annual_return, benchmark_annual)
+        benchmark_daily = benchmark_daily_return_series(dates, benchmark_df)
+        benchmark_volatility = (
+            _annualized_volatility(benchmark_daily) if benchmark_daily is not None else None
+        )
+        if benchmark_daily is not None:
+            alpha, beta = _compute_alpha_beta(
+                strategy_daily, benchmark_daily, annual_return, benchmark_annual
+            )
         benchmark_wealth = (1 + benchmark_curve).to_numpy(dtype=float)
         strategy_wealth = values / values[0]
         excess_curve = strategy_wealth / benchmark_wealth
         excess_return = float(excess_curve[-1] - 1)
         excess_daily = (
             strategy_daily[-len(benchmark_daily) :] - benchmark_daily
-            if len(benchmark_daily) > 0
+            if benchmark_daily is not None and len(benchmark_daily) > 0
             else np.array([])
         )
         excess_mean = float(np.mean(excess_daily) * 100) if len(excess_daily) > 0 else None
         excess_max_drawdown, _ = _max_drawdown_info(excess_curve, dates)
         excess_volatility = _annualized_volatility(excess_daily)
         excess_annual = _annualized_return(excess_return, trading_days)
-        excess_sharpe = _sharpe_ratio(excess_annual, excess_volatility, risk_free_rate=0.0)
-        information_ratio = excess_sharpe
+        excess_downside_volatility = _downside_volatility(excess_daily)
+        excess_sharpe = (
+            excess_annual / 100 / excess_downside_volatility
+            if excess_downside_volatility is not None
+            else None
+        )
+        information_ratio = (
+            ((annual_return - benchmark_annual) / 100) / excess_volatility
+            if excess_volatility is not None and excess_volatility > 0
+            else None
+        )
 
-    daily_win_rate = float(np.mean(strategy_daily > 0)) if len(strategy_daily) > 0 else None
+    daily_win_rate = None
+    if len(strategy_daily) > 0:
+        if benchmark_curve is not None and benchmark_daily is not None and len(benchmark_daily) > 0:
+            count = min(len(strategy_daily), len(benchmark_daily))
+            daily_win_rate = float(np.mean(strategy_daily[-count:] > benchmark_daily[-count:]))
+        else:
+            daily_win_rate = float(np.mean(strategy_daily > 0))
 
     return [
         ("策略收益", _format_pct(strategy_return * 100), strategy_return),
@@ -326,12 +403,19 @@ def build_report_payload(
     benchmark_df: pd.DataFrame | None = None,
     metrics: Any | None = None,
     trades: list[Any] | None = None,
+    dividends: list[Any] | None = None,
 ) -> dict[str, Any]:
     """Build the canonical report payload shared by Web and LLM outputs."""
     metric_values = _clean_value(metrics.to_dict()) if metrics is not None else {}
     report_items = [
         {"label": label, "value": value, "numeric_value": _clean_value(numeric_value)}
-        for label, value, numeric_value in build_report_items(equity_df, benchmark_df, metrics, trades)
+        for label, value, numeric_value in build_report_items(
+            equity_df,
+            benchmark_df,
+            metrics,
+            trades,
+            dividends,
+        )
     ]
     trade_records = _trade_records(trades)
 

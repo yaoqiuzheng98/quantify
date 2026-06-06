@@ -11,7 +11,7 @@ import pandas as pd
 from sqlalchemy import select
 
 from quantify.database.engine import session_scope
-from quantify.database.models import EtfDaily, EtfDividend
+from quantify.database.models import EtfAdjFactor, EtfDaily, EtfDividend
 from quantify.utils.logger import log
 
 from .broker import Broker, make_commission, make_slippage, zero_slippage
@@ -99,6 +99,15 @@ class DividendEvent:
     div_cash: float
 
 
+@dataclass(frozen=True)
+class DividendPayment:
+    ts_code: str
+    pay_date: date
+    amount: int
+    div_cash: float
+    cash: float
+
+
 def _load_dividends(ts_codes: list[str], start_date: date, end_date: date) -> list[DividendEvent]:
     with session_scope() as sess:
         rows = sess.execute(
@@ -128,6 +137,54 @@ def _load_dividends(ts_codes: list[str], start_date: date, end_date: date) -> li
     ]
 
 
+def _load_benchmark_data(ts_code: str, start_date: date, end_date: date) -> pd.DataFrame | None:
+    def _query_rows(before_start: bool) -> list:
+        stmt = (
+            select(EtfDaily.trade_date, EtfDaily.close, EtfAdjFactor.adj_factor)
+            .outerjoin(
+                EtfAdjFactor,
+                (EtfAdjFactor.ts_code == EtfDaily.ts_code) & (EtfAdjFactor.trade_date == EtfDaily.trade_date),
+            )
+            .where(EtfDaily.ts_code == ts_code)
+        )
+        if before_start:
+            stmt = stmt.where(EtfDaily.trade_date < start_date).order_by(EtfDaily.trade_date.desc()).limit(1)
+        else:
+            stmt = (
+                stmt.where(EtfDaily.trade_date >= start_date)
+                .where(EtfDaily.trade_date <= end_date)
+                .order_by(EtfDaily.trade_date)
+            )
+        with session_scope() as sess:
+            return list(sess.execute(stmt).all())
+
+    previous_rows = _query_rows(before_start=True)
+    rows = _query_rows(before_start=False)
+    if not rows:
+        return None
+
+    def _benchmark_value(row) -> float:
+        close = float(row.close)
+        factor = float(row.adj_factor) if row.adj_factor is not None else 1.0
+        return close * factor
+
+    benchmark_df = pd.DataFrame(
+        [
+            {
+                "date": row.trade_date,
+                "value": _benchmark_value(row),
+                "daily_value": _benchmark_value(row),
+            }
+            for row in rows
+        ]
+    )
+    if previous_rows:
+        base_value = _benchmark_value(previous_rows[0])
+        benchmark_df.attrs["base_value"] = base_value
+        benchmark_df.attrs["daily_base_value"] = base_value
+    return benchmark_df
+
+
 def _group_to_bars(df: pd.DataFrame) -> dict[str, list[Bar]]:
     """Convert a DataFrame of OHLCV rows into per-code Bar lists."""
     bars: dict[str, list[Bar]] = {}
@@ -148,6 +205,22 @@ def _group_to_bars(df: pd.DataFrame) -> dict[str, list[Bar]]:
             for row in group.itertuples(index=False)
         ]
     return bars
+
+
+def _portfolio_value_at_close(
+    portfolio: Portfolio,
+    all_bars: dict[str, list[Bar]],
+    next_indices: dict[str, int],
+) -> float:
+    value = portfolio.cash
+    for code, position in portfolio.positions.items():
+        bars = all_bars.get(code, [])
+        idx = next_indices.get(code, -1)
+        price = position.current_price
+        if 0 <= idx < len(bars):
+            price = bars[idx].close
+        value += position.amount * price
+    return value
 
 
 @dataclass
@@ -325,12 +398,17 @@ class BacktestEngine:
             raise ValueError(
                 "Strategy must define handle_data(context) or register run_daily(..., time='open')"
             )
+        benchmark_df = (
+            _load_benchmark_data(context.benchmark_code, self.start_date, self.end_date)
+            if context.benchmark_code
+            else None
+        )
 
         # 7. Main event loop — bar by bar
         equity_records: list[dict] = []
-        benchmark_records: list[dict] = []
         next_indices = {code: 0 for code in all_bars}
         dividend_entitlements: dict[DividendEvent, int] = {}
+        dividend_payments: list[DividendPayment] = []
 
         log.info(f"Running {len(unified_dates)} trading days ...")
 
@@ -355,7 +433,17 @@ class BacktestEngine:
             for event in dividends_by_pay.get(bar_date, []):
                 entitled_amount = dividend_entitlements.pop(event, 0)
                 if entitled_amount > 0:
-                    portfolio.cash += entitled_amount * event.div_cash
+                    cash = entitled_amount * event.div_cash
+                    portfolio.cash += cash
+                    dividend_payments.append(
+                        DividendPayment(
+                            ts_code=event.ts_code,
+                            pay_date=event.pay_date,
+                            amount=entitled_amount,
+                            div_cash=event.div_cash,
+                            cash=cash,
+                        )
+                    )
 
             # Call user strategy with today's open + completed history only.
             for handle_fn in handle_functions:
@@ -379,20 +467,9 @@ class BacktestEngine:
             equity_records.append(
                 {
                     "date": bar_date,
-                    "value": portfolio.total_value,
+                    "value": _portfolio_value_at_close(portfolio, all_bars, next_indices),
                 }
             )
-
-            # Benchmark tracking
-            if context.benchmark_code:
-                bm_bar = data_proxy.current(context.benchmark_code)
-                if isinstance(bm_bar, Bar):
-                    benchmark_records.append(
-                        {
-                            "date": bar_date,
-                            "value": bm_bar.open,
-                        }
-                    )
 
         cancelled = broker.cancel_pending()
         if cancelled:
@@ -400,7 +477,6 @@ class BacktestEngine:
 
         # 8. Build results
         equity_df = pd.DataFrame(equity_records)
-        bm_df = pd.DataFrame(benchmark_records) if benchmark_records else None
 
         metrics = compute_metrics(
             equity_df,
@@ -416,8 +492,9 @@ class BacktestEngine:
         return BacktestResult(
             metrics=metrics,
             equity_df=equity_df,
-            benchmark_df=bm_df,
+            benchmark_df=benchmark_df,
             trades=broker.trades,
+            dividends=dividend_payments,
         )
 
 
@@ -430,15 +507,23 @@ class BacktestResult:
         equity_df: pd.DataFrame,
         benchmark_df: pd.DataFrame | None,
         trades: list,
+        dividends: list | None = None,
     ) -> None:
         self.metrics = metrics
         self.equity_df = equity_df
         self.benchmark_df = benchmark_df
         self.trades = trades
+        self.dividends = dividends or []
 
     def to_report_dict(self) -> dict:
         """Return the canonical report payload shared by Web and LLM outputs."""
-        return build_report_payload(self.equity_df, self.benchmark_df, self.metrics, self.trades)
+        return build_report_payload(
+            self.equity_df,
+            self.benchmark_df,
+            self.metrics,
+            self.trades,
+            self.dividends,
+        )
 
     def to_llm_dict(self) -> dict:
         """Return the same canonical payload consumed by the Web dashboard."""
@@ -465,4 +550,5 @@ def _empty_result(initial_cash: float) -> BacktestResult:
         equity_df=pd.DataFrame(),
         benchmark_df=None,
         trades=[],
+        dividends=[],
     )
