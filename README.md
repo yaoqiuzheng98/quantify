@@ -201,8 +201,9 @@ quantify db init
 1. 用 `.env` 里的连接信息登录 MySQL；
 2. 若库不存在则创建（utf8mb4 + `_unicode_ci`）；
 3. 在库内创建本项目当前涉及的全部表：
-   - ETF：`etf_basic` / `etf_daily` / `etf_nav` / `etf_adj_factor` / `etf_dividend` / `etf_share` / `etf_portfolio` / `etf_manager`；
-   - 行业：`sw_industry_classify` / `sw_industry_member` / `sw_industry_daily` / `citic_industry_member` / `citic_industry_daily`；
+   - ETF：`fund_basic` / `fund_daily` / `fund_nav` / `fund_adj` / `fund_div` / `fund_share` / `fund_portfolio` / `fund_manager`；
+   - 行业：`index_classify` / `index_member_all` / `sw_daily` / `ci_index_member` / `ci_daily`；
+   - 交易日历：`trade_cal`；
    - 策略：`strategy`。
 
 如需重建（**会清空数据**）：
@@ -283,10 +284,10 @@ mysql -u quantify -p quantify
 ```
 
 ```sql
-SELECT COUNT(*) AS n_etf FROM etf_basic;
-SELECT COUNT(*) AS n_daily, MAX(trade_date) AS last_date FROM etf_daily;
-SELECT * FROM etf_basic ORDER BY list_date DESC LIMIT 5;
-SELECT * FROM etf_daily WHERE ts_code = '510300.SH' ORDER BY trade_date DESC LIMIT 10;
+SELECT COUNT(*) AS n_etf FROM fund_basic;
+SELECT COUNT(*) AS n_daily, MAX(trade_date) AS last_date FROM fund_daily;
+SELECT * FROM fund_basic ORDER BY list_date DESC LIMIT 5;
+SELECT * FROM fund_daily WHERE ts_code = '510300.SH' ORDER BY trade_date DESC LIMIT 10;
 ```
 
 或者在 Python 里直接读：
@@ -296,7 +297,7 @@ import pandas as pd
 from quantify.database.engine import get_engine
 
 df = pd.read_sql(
-    "SELECT trade_date, close, vol FROM etf_daily "
+    "SELECT trade_date, close, vol FROM fund_daily "
     "WHERE ts_code = '510300.SH' ORDER BY trade_date",
     get_engine(),
 )
@@ -471,9 +472,9 @@ Streamlit 回测工作台默认加载同一段示例策略。
 - 报表净值按日终收盘价估值，交易执行价和报表估值价分离，以贴近聚宽指标面板口径。
 - 订单数量按一手 `100` 份取整；不足一手的买卖请求会被忽略，现金不足时也只会按可负担的整手数量部分成交。
 - 买入现金不足时会按可负担数量部分成交；完全不可成交或无持仓卖出会标记为拒单，不计入 `trades`。
-- ETF 分红按 `etf_dividend` 的登记日锁定持仓、派息日现金入账；这会影响后续可用现金与仓位数量。
+- ETF 分红按 `fund_div` 的登记日锁定持仓、派息日现金入账；这会影响后续可用现金与仓位数量。
 - 佣金会直接扣减现金；滑点通过更差成交价影响现金，并计入结果指标中的 `total_slippage`。
-- 基准收益使用 `etf_adj_factor` 复权收盘价，并以前一交易日作为基准起点；日胜率按“策略日收益跑赢基准日收益”的比例统计。
+- 基准收益使用 `fund_adj` 复权收盘价，并以前一交易日作为基准起点；日胜率按“策略日收益跑赢基准日收益”的比例统计。
 
 ### 在代码中调用引擎
 
@@ -537,7 +538,7 @@ engine = BacktestEngine(
 
 也支持在更底层的 Broker 中使用 `make_commission(rate, minimum)` / `make_slippage(rate)` 或自定义 `callable`。
 
-> 💡 目前仅回测 ETF 日线数据。数据源来自 `etf_daily` 表（OHLCV），读取逻辑在 `engine.py` 的 `_load_data()` 中，可方便扩展至股票 → 期货等资产。
+> 💡 目前仅回测 ETF 日线数据。数据源来自 `fund_daily` 表（OHLCV），读取逻辑在 `engine.py` 的 `_load_data()` 中，可方便扩展至股票 → 期货等资产。
 
 ### Streamlit 回测工作台
 
@@ -548,7 +549,7 @@ pip install -e ".[web]"
 quantify dashboard
 ```
 
-工作台提供策略代码编辑器、策略库保存/选择、回测参数面板、聚宽风格指标卡片，以及支持鼠标悬浮查看明细的收益曲线、每日盈亏、每日成交和回撤图。Web 图表和 `to_llm_dict()` 使用同一个 `to_report_dict()` 标准结构，避免两套输出口径分叉。策略源码保存到 MySQL 的 `strategy` 表，`quantify db init` 会创建该表，Dashboard 启动后也会按需补建。Web 运行时会用侧边栏的基准、佣金、滑点参数覆盖策略代码中的默认设置。默认使用 `etf_daily` 表数据，因此需要先执行 `quantify fetch etf basic` 和 `quantify fetch etf all` 完成 ETF 日线入库。
+工作台提供策略代码编辑器、策略库保存/选择、回测参数面板、聚宽风格指标卡片，以及支持鼠标悬浮查看明细的收益曲线、每日盈亏、每日成交和回撤图。Web 图表和 `to_llm_dict()` 使用同一个 `to_report_dict()` 标准结构，避免两套输出口径分叉。策略源码保存到 MySQL 的 `strategy` 表，`quantify db init` 会创建该表，Dashboard 启动后也会按需补建。Web 运行时会用侧边栏的基准、佣金、滑点参数覆盖策略代码中的默认设置。默认使用 `fund_daily` 表数据，因此需要先执行 `quantify fetch etf basic` 和 `quantify fetch etf all` 完成 ETF 日线入库。
 
 默认端口为 `8501`；如果端口已被占用，CLI 会自动尝试后续端口，也可以手动指定：`quantify dashboard --port 8502`。
 

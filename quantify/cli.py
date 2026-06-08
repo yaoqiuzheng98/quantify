@@ -107,7 +107,7 @@ def fetch_etf(
         True, "--incremental/--full", help="Incremental update vs full backfill"
     ),
     ts_code: Optional[str] = typer.Option(
-        None, "--ts-code", help="Comma-separated ts_codes (default: all in etf_basic)"
+        None, "--ts-code", help="Comma-separated ts_codes (default: all in fund_basic)"
     ),
     skip: Optional[str] = typer.Option(
         None, "--skip", help="Comma-separated stages to skip (only used with stage=all)"

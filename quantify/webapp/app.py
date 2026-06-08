@@ -399,7 +399,7 @@ def _render_metrics(report: dict[str, Any]) -> None:
 def _render_result(result: BacktestResult) -> None:
     report = result.to_report_dict()
     if not report["curves"]:
-        st.warning("没有读取到行情数据，请先确认 `etf_daily` 已入库且日期范围有效。")
+        st.warning("没有读取到行情数据，请先确认 `fund_daily` 已入库且日期范围有效。")
         return
 
     _render_metrics(report)

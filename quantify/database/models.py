@@ -1,20 +1,21 @@
 """SQLAlchemy ORM models.
 
-Currently focuses on ETF and industry tables sourced from Tushare Pro:
-    - fund_basic   -> etf_basic
-    - fund_daily   -> etf_daily
-    - fund_nav     -> etf_nav
-    - fund_adj     -> etf_adj_factor
-    - fund_div     -> etf_dividend
-    - fund_share   -> etf_share
-    - fund_portfolio -> etf_portfolio
-    - fund_manager -> etf_manager
-    - index_classify -> sw_industry_classify
-    - index_member_all -> sw_industry_member
-    - sw_daily -> sw_industry_daily
-    - ci_index_member -> citic_industry_member
-    - ci_daily -> citic_industry_daily
-    - saved strategies -> strategy
+Table names mirror their Tushare Pro endpoint names one-to-one:
+    - fund_basic      (ETF basic info, market='E')
+    - fund_daily      (ETF daily quotes)
+    - fund_nav        (ETF NAV)
+    - fund_adj        (ETF adjustment factor)
+    - fund_div        (ETF dividend)
+    - fund_share      (ETF share)
+    - fund_portfolio  (ETF portfolio)
+    - fund_manager    (ETF manager)
+    - index_classify  (SW industry classification)
+    - index_member_all(SW industry members)
+    - sw_daily        (SW industry index daily)
+    - ci_index_member (CITIC industry members)
+    - ci_daily        (CITIC industry index daily)
+    - trade_cal       (exchange trade calendar)
+    - strategy        (saved backtest strategies, local-only)
 
 Primary keys are chosen so that re-running a fetch is idempotent via
 INSERT ... ON DUPLICATE KEY UPDATE.
@@ -69,7 +70,7 @@ class SavedStrategy(Base):
 # ETF basic info (fund_basic, market='E')
 # ---------------------------------------------------------------------------
 class EtfBasic(Base):
-    __tablename__ = "etf_basic"
+    __tablename__ = "fund_basic"
 
     ts_code: Mapped[str] = mapped_column(String(16), primary_key=True, comment="基金代码")
     name: Mapped[str | None] = mapped_column(String(128), comment="简称")
@@ -104,7 +105,7 @@ class EtfBasic(Base):
 # ETF daily quotes
 # ---------------------------------------------------------------------------
 class EtfDaily(Base):
-    __tablename__ = "etf_daily"
+    __tablename__ = "fund_daily"
 
     ts_code: Mapped[str] = mapped_column(String(16), comment="基金代码")
     trade_date: Mapped[date] = mapped_column(Date, comment="交易日期")
@@ -121,9 +122,9 @@ class EtfDaily(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
     __table_args__ = (
-        PrimaryKeyConstraint("ts_code", "trade_date", name="pk_etf_daily"),
-        Index("idx_etf_daily_date", "trade_date"),
-        Index("idx_etf_daily_trade_code_amount", "trade_date", "ts_code", "amount"),
+        PrimaryKeyConstraint("ts_code", "trade_date", name="pk_fund_daily"),
+        Index("idx_fund_daily_date", "trade_date"),
+        Index("idx_fund_daily_trade_code_amount", "trade_date", "ts_code", "amount"),
     )
 
 
@@ -131,7 +132,7 @@ class EtfDaily(Base):
 # ETF NAV
 # ---------------------------------------------------------------------------
 class EtfNav(Base):
-    __tablename__ = "etf_nav"
+    __tablename__ = "fund_nav"
 
     ts_code: Mapped[str] = mapped_column(String(16), comment="基金代码")
     nav_date: Mapped[date] = mapped_column(Date, comment="净值日期")
@@ -147,8 +148,8 @@ class EtfNav(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
     __table_args__ = (
-        PrimaryKeyConstraint("ts_code", "nav_date", name="pk_etf_nav"),
-        Index("idx_etf_nav_nav_date", "nav_date"),
+        PrimaryKeyConstraint("ts_code", "nav_date", name="pk_fund_nav"),
+        Index("idx_fund_nav_nav_date", "nav_date"),
     )
 
 
@@ -160,7 +161,7 @@ class EtfNav(Base):
 # 注意: 每次分红/拆分后历史因子会追溯更新，因此全量回填时需覆盖历史记录
 # ---------------------------------------------------------------------------
 class EtfAdjFactor(Base):
-    __tablename__ = "etf_adj_factor"
+    __tablename__ = "fund_adj"
 
     ts_code: Mapped[str] = mapped_column(String(16), comment="基金代码")
     trade_date: Mapped[date] = mapped_column(Date, comment="交易日期")
@@ -169,8 +170,8 @@ class EtfAdjFactor(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
     __table_args__ = (
-        PrimaryKeyConstraint("ts_code", "trade_date", name="pk_etf_adj"),
-        Index("idx_etf_adj_trade_date", "trade_date"),
+        PrimaryKeyConstraint("ts_code", "trade_date", name="pk_fund_adj"),
+        Index("idx_fund_adj_trade_date", "trade_date"),
     )
 
 
@@ -178,7 +179,7 @@ class EtfAdjFactor(Base):
 # ETF dividend
 # ---------------------------------------------------------------------------
 class EtfDividend(Base):
-    __tablename__ = "etf_dividend"
+    __tablename__ = "fund_div"
 
     ts_code: Mapped[str] = mapped_column(String(16), comment="基金代码")
     ann_date: Mapped[date | None] = mapped_column(Date, comment="公告日")
@@ -200,8 +201,8 @@ class EtfDividend(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
     __table_args__ = (
-        PrimaryKeyConstraint("ts_code", "base_date", name="pk_etf_div"),
-        Index("idx_etf_div_ex_date", "ex_date"),
+        PrimaryKeyConstraint("ts_code", "base_date", name="pk_fund_div"),
+        Index("idx_fund_div_ex_date", "ex_date"),
     )
 
 
@@ -209,7 +210,7 @@ class EtfDividend(Base):
 # ETF share (规模/份额变动)
 # ---------------------------------------------------------------------------
 class EtfShare(Base):
-    __tablename__ = "etf_share"
+    __tablename__ = "fund_share"
 
     ts_code: Mapped[str] = mapped_column(String(16), comment="基金代码")
     trade_date: Mapped[date] = mapped_column(Date, comment="变动日期")
@@ -220,8 +221,8 @@ class EtfShare(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
     __table_args__ = (
-        PrimaryKeyConstraint("ts_code", "trade_date", name="pk_etf_share"),
-        Index("idx_etf_share_trade_date", "trade_date"),
+        PrimaryKeyConstraint("ts_code", "trade_date", name="pk_fund_share"),
+        Index("idx_fund_share_trade_date", "trade_date"),
     )
 
 
@@ -229,7 +230,7 @@ class EtfShare(Base):
 # ETF portfolio (披露持仓)
 # ---------------------------------------------------------------------------
 class EtfPortfolio(Base):
-    __tablename__ = "etf_portfolio"
+    __tablename__ = "fund_portfolio"
 
     ts_code: Mapped[str] = mapped_column(String(16), comment="基金代码")
     end_date: Mapped[date] = mapped_column(Date, comment="截止日期")
@@ -243,9 +244,9 @@ class EtfPortfolio(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
     __table_args__ = (
-        PrimaryKeyConstraint("ts_code", "end_date", "symbol", name="pk_etf_portfolio"),
-        Index("idx_etf_portfolio_symbol", "symbol", "end_date"),
-        Index("idx_etf_portfolio_end_date", "end_date"),
+        PrimaryKeyConstraint("ts_code", "end_date", "symbol", name="pk_fund_portfolio"),
+        Index("idx_fund_portfolio_symbol", "symbol", "end_date"),
+        Index("idx_fund_portfolio_end_date", "end_date"),
     )
 
 
@@ -253,7 +254,7 @@ class EtfPortfolio(Base):
 # ETF manager
 # ---------------------------------------------------------------------------
 class EtfManager(Base):
-    __tablename__ = "etf_manager"
+    __tablename__ = "fund_manager"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True, comment="自增主键")
     ts_code: Mapped[str] = mapped_column(String(16), index=True, comment="基金代码")
@@ -269,14 +270,14 @@ class EtfManager(Base):
 
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
-    __table_args__ = (Index("uq_etf_manager", "ts_code", "name", "begin_date", unique=True),)
+    __table_args__ = (Index("uq_fund_manager", "ts_code", "name", "begin_date", unique=True),)
 
 
 # ---------------------------------------------------------------------------
 # SW industry classification (index_classify, src='SW2021')
 # ---------------------------------------------------------------------------
 class SwIndustryClassify(Base):
-    __tablename__ = "sw_industry_classify"
+    __tablename__ = "index_classify"
 
     index_code: Mapped[str] = mapped_column(String(16), comment="申万行业指数代码")
     src: Mapped[str] = mapped_column(String(16), comment="分类版本，如 SW2021")
@@ -289,8 +290,8 @@ class SwIndustryClassify(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
     __table_args__ = (
-        PrimaryKeyConstraint("src", "index_code", name="pk_sw_industry_classify"),
-        Index("idx_sw_industry_classify_level", "src", "level", "is_pub"),
+        PrimaryKeyConstraint("src", "index_code", name="pk_index_classify"),
+        Index("idx_index_classify_level", "src", "level", "is_pub"),
     )
 
 
@@ -298,7 +299,7 @@ class SwIndustryClassify(Base):
 # SW industry members (index_member_all)
 # ---------------------------------------------------------------------------
 class SwIndustryMember(Base):
-    __tablename__ = "sw_industry_member"
+    __tablename__ = "index_member_all"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True, comment="自增主键")
     l1_code: Mapped[str | None] = mapped_column(String(16), comment="一级行业代码")
@@ -316,9 +317,9 @@ class SwIndustryMember(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
     __table_args__ = (
-        Index("uq_sw_industry_member", "ts_code", "l3_code", "in_date", unique=True),
-        Index("idx_sw_industry_member_l1", "l1_code", "is_new"),
-        Index("idx_sw_industry_member_l3", "l3_code", "is_new"),
+        Index("uq_index_member_all", "ts_code", "l3_code", "in_date", unique=True),
+        Index("idx_index_member_all_l1", "l1_code", "is_new"),
+        Index("idx_index_member_all_l3", "l3_code", "is_new"),
     )
 
 
@@ -326,7 +327,7 @@ class SwIndustryMember(Base):
 # SW industry daily quotes (sw_daily)
 # ---------------------------------------------------------------------------
 class SwIndustryDaily(Base):
-    __tablename__ = "sw_industry_daily"
+    __tablename__ = "sw_daily"
 
     ts_code: Mapped[str] = mapped_column(String(16), comment="申万行业指数代码")
     trade_date: Mapped[date] = mapped_column(Date, comment="交易日期")
@@ -347,8 +348,8 @@ class SwIndustryDaily(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
     __table_args__ = (
-        PrimaryKeyConstraint("ts_code", "trade_date", name="pk_sw_industry_daily"),
-        Index("idx_sw_industry_daily_trade_date", "trade_date"),
+        PrimaryKeyConstraint("ts_code", "trade_date", name="pk_sw_daily"),
+        Index("idx_sw_daily_trade_date", "trade_date"),
     )
 
 
@@ -356,7 +357,7 @@ class SwIndustryDaily(Base):
 # CITIC industry members (ci_index_member)
 # ---------------------------------------------------------------------------
 class CiticIndustryMember(Base):
-    __tablename__ = "citic_industry_member"
+    __tablename__ = "ci_index_member"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True, comment="自增主键")
     l1_code: Mapped[str | None] = mapped_column(String(16), comment="一级行业代码")
@@ -374,9 +375,9 @@ class CiticIndustryMember(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
     __table_args__ = (
-        Index("uq_citic_industry_member", "ts_code", "l3_code", "in_date", unique=True),
-        Index("idx_citic_industry_member_l1", "l1_code", "is_new"),
-        Index("idx_citic_industry_member_l3", "l3_code", "is_new"),
+        Index("uq_ci_index_member", "ts_code", "l3_code", "in_date", unique=True),
+        Index("idx_ci_index_member_l1", "l1_code", "is_new"),
+        Index("idx_ci_index_member_l3", "l3_code", "is_new"),
     )
 
 
@@ -384,7 +385,7 @@ class CiticIndustryMember(Base):
 # CITIC industry daily quotes (ci_daily)
 # ---------------------------------------------------------------------------
 class CiticIndustryDaily(Base):
-    __tablename__ = "citic_industry_daily"
+    __tablename__ = "ci_daily"
 
     ts_code: Mapped[str] = mapped_column(String(16), comment="中信行业指数代码")
     trade_date: Mapped[date] = mapped_column(Date, comment="交易日期")
@@ -401,8 +402,8 @@ class CiticIndustryDaily(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
     __table_args__ = (
-        PrimaryKeyConstraint("ts_code", "trade_date", name="pk_citic_industry_daily"),
-        Index("idx_citic_industry_daily_trade_date", "trade_date"),
+        PrimaryKeyConstraint("ts_code", "trade_date", name="pk_ci_daily"),
+        Index("idx_ci_daily_trade_date", "trade_date"),
     )
 
 
@@ -410,7 +411,7 @@ class CiticIndustryDaily(Base):
 # Trade calendar (trade_cal) - authoritative exchange open/close dates
 # ---------------------------------------------------------------------------
 class TradeCalendar(Base):
-    __tablename__ = "trade_calendar"
+    __tablename__ = "trade_cal"
 
     exchange: Mapped[str] = mapped_column(String(8), comment="交易所 SSE/SZSE 等")
     cal_date: Mapped[date] = mapped_column(Date, comment="日历日期")
@@ -420,6 +421,6 @@ class TradeCalendar(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
     __table_args__ = (
-        PrimaryKeyConstraint("exchange", "cal_date", name="pk_trade_calendar"),
-        Index("idx_trade_calendar_open", "exchange", "is_open", "cal_date"),
+        PrimaryKeyConstraint("exchange", "cal_date", name="pk_trade_cal"),
+        Index("idx_trade_cal_open", "exchange", "is_open", "cal_date"),
     )

@@ -72,7 +72,7 @@ quantify fetch etf all --skip portfolio,manager        # 跳过耗时阶段
 
 ## 数据顺序依赖
 
-`quantify fetch etf basic` **必须先执行**。它会填充 `etf_basic` 表，其他所有 ETF 采集器都从该表读取标的列表（排除已退市：`status != "D"`）。如果未先拉取基础数据，其他阶段会因为标的列表为空而不做任何操作。
+`quantify fetch etf basic` **必须先执行**。它会填充 `fund_basic` 表，其他所有 ETF 采集器都从该表读取标的列表（排除已退市：`status != "D"`）。如果未先拉取基础数据，其他阶段会因为标的列表为空而不做任何操作。
 
 ## 测试
 

@@ -124,7 +124,7 @@ class EtfFetcher:
             and only request data afterwards.
         ts_codes:
             If provided, restrict the universe to these codes (otherwise read
-            all from ``etf_basic``).
+            all from ``fund_basic``).
         skip:
             Names of stages to skip, e.g. ``{"portfolio", "manager"}``.
         """
