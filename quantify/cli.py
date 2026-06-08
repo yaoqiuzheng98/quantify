@@ -149,6 +149,67 @@ def fetch_etf(
 
 
 # ---------------------------------------------------------------------------
+# fetch industry
+# ---------------------------------------------------------------------------
+@fetch_app.command("industry")
+def fetch_industry(
+    stage: str = typer.Argument(
+        "all",
+        help="Stage to run: all|sw-classify|sw-member|sw-daily|ci-member|ci-daily",
+    ),
+    provider: str = typer.Option("sw", "--provider", help="Provider for stage=all: sw|ci|all"),
+    incremental: bool = typer.Option(
+        True, "--incremental/--full", help="Incremental update vs full backfill for daily stages"
+    ),
+    index_code: Optional[str] = typer.Option(
+        None, "--index-code", help="Comma-separated industry index codes for daily stages"
+    ),
+    start_date: Optional[str] = typer.Option(None, "--start-date", help="Start date, e.g. 20200101"),
+    end_date: Optional[str] = typer.Option(None, "--end-date", help="End date, e.g. 20260608"),
+    sw_src: str = typer.Option("SW2021", "--sw-src", help="SW classification source, e.g. SW2021"),
+    latest: bool = typer.Option(True, "--latest/--all-history", help="Fetch latest industry members only"),
+) -> None:
+    """Fetch SW/CITIC industry classification, members and daily quotes from Tushare."""
+    from quantify.fetcher.industry import IndustryFetcher
+
+    normalized_stage = stage.replace("-", "_").lower()
+    codes = [code.strip() for code in index_code.split(",")] if index_code else None
+    fetcher = IndustryFetcher()
+
+    if normalized_stage == "all":
+        fetcher.fetch_all(
+            provider=provider,
+            incremental=incremental,
+            start_date=start_date,
+            end_date=end_date,
+            sw_src=sw_src,
+        )
+        return
+
+    dispatch = {
+        "sw_classify": lambda: fetcher.fetch_sw_classify(src=sw_src),
+        "sw_member": lambda: fetcher.fetch_sw_member(src=sw_src, latest=latest),
+        "sw_daily": lambda: fetcher.fetch_sw_daily(
+            index_codes=codes,
+            src=sw_src,
+            incremental=incremental,
+            start_date=start_date,
+            end_date=end_date,
+        ),
+        "ci_member": lambda: fetcher.fetch_ci_member(latest=latest),
+        "ci_daily": lambda: fetcher.fetch_ci_daily(
+            index_codes=codes,
+            incremental=incremental,
+            start_date=start_date,
+            end_date=end_date,
+        ),
+    }
+    if normalized_stage not in dispatch:
+        raise typer.BadParameter(f"Unknown stage: {stage}")
+    dispatch[normalized_stage]()
+
+
+# ---------------------------------------------------------------------------
 # version
 # ---------------------------------------------------------------------------
 @app.command("version")

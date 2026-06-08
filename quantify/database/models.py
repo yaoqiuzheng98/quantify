@@ -1,6 +1,6 @@
 """SQLAlchemy ORM models.
 
-Currently focuses on ETF (fund market='E') tables sourced from Tushare Pro:
+Currently focuses on ETF and industry tables sourced from Tushare Pro:
     - fund_basic   -> etf_basic
     - fund_daily   -> etf_daily
     - fund_nav     -> etf_nav
@@ -9,6 +9,11 @@ Currently focuses on ETF (fund market='E') tables sourced from Tushare Pro:
     - fund_share   -> etf_share
     - fund_portfolio -> etf_portfolio
     - fund_manager -> etf_manager
+    - index_classify -> sw_industry_classify
+    - index_member_all -> sw_industry_member
+    - sw_daily -> sw_industry_daily
+    - ci_index_member -> citic_industry_member
+    - ci_daily -> citic_industry_daily
     - saved strategies -> strategy
 
 Primary keys are chosen so that re-running a fetch is idempotent via
@@ -264,3 +269,137 @@ class EtfManager(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
     __table_args__ = (Index("uq_etf_manager", "ts_code", "name", "begin_date", unique=True),)
+
+
+# ---------------------------------------------------------------------------
+# SW industry classification (index_classify, src='SW2021')
+# ---------------------------------------------------------------------------
+class SwIndustryClassify(Base):
+    __tablename__ = "sw_industry_classify"
+
+    index_code: Mapped[str] = mapped_column(String(16), comment="申万行业指数代码")
+    src: Mapped[str] = mapped_column(String(16), comment="分类版本，如 SW2021")
+    industry_name: Mapped[str | None] = mapped_column(String(128), comment="行业名称")
+    parent_code: Mapped[str | None] = mapped_column(String(16), comment="父级行业代码")
+    level: Mapped[str | None] = mapped_column(String(8), comment="行业级别 L1/L2/L3")
+    industry_code: Mapped[str | None] = mapped_column(String(16), comment="行业代码")
+    is_pub: Mapped[str | None] = mapped_column(String(4), comment="是否发布指数")
+
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        PrimaryKeyConstraint("src", "index_code", name="pk_sw_industry_classify"),
+        Index("idx_sw_industry_classify_level", "src", "level", "is_pub"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# SW industry members (index_member_all)
+# ---------------------------------------------------------------------------
+class SwIndustryMember(Base):
+    __tablename__ = "sw_industry_member"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True, comment="自增主键")
+    l1_code: Mapped[str | None] = mapped_column(String(16), comment="一级行业代码")
+    l1_name: Mapped[str | None] = mapped_column(String(128), comment="一级行业名称")
+    l2_code: Mapped[str | None] = mapped_column(String(16), comment="二级行业代码")
+    l2_name: Mapped[str | None] = mapped_column(String(128), comment="二级行业名称")
+    l3_code: Mapped[str | None] = mapped_column(String(16), comment="三级行业代码")
+    l3_name: Mapped[str | None] = mapped_column(String(128), comment="三级行业名称")
+    ts_code: Mapped[str] = mapped_column(String(16), comment="成分股票代码")
+    name: Mapped[str | None] = mapped_column(String(128), comment="成分股票名称")
+    in_date: Mapped[date | None] = mapped_column(Date, comment="纳入日期")
+    out_date: Mapped[date | None] = mapped_column(Date, comment="剔除日期")
+    is_new: Mapped[str | None] = mapped_column(String(4), comment="是否最新")
+
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        Index("uq_sw_industry_member", "ts_code", "l3_code", "in_date", unique=True),
+        Index("idx_sw_industry_member_l1", "l1_code", "is_new"),
+        Index("idx_sw_industry_member_l3", "l3_code", "is_new"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# SW industry daily quotes (sw_daily)
+# ---------------------------------------------------------------------------
+class SwIndustryDaily(Base):
+    __tablename__ = "sw_industry_daily"
+
+    ts_code: Mapped[str] = mapped_column(String(16), comment="申万行业指数代码")
+    trade_date: Mapped[date] = mapped_column(Date, comment="交易日期")
+    name: Mapped[str | None] = mapped_column(String(128), comment="指数名称")
+    open: Mapped[float | None] = mapped_column(Float, comment="开盘点位")
+    low: Mapped[float | None] = mapped_column(Float, comment="最低点位")
+    high: Mapped[float | None] = mapped_column(Float, comment="最高点位")
+    close: Mapped[float | None] = mapped_column(Float, comment="收盘点位")
+    change: Mapped[float | None] = mapped_column(Float, comment="涨跌点位")
+    pct_change: Mapped[float | None] = mapped_column(Float, comment="涨跌幅")
+    vol: Mapped[float | None] = mapped_column(Float, comment="成交量(万股)")
+    amount: Mapped[float | None] = mapped_column(Float, comment="成交额(万元)")
+    pe: Mapped[float | None] = mapped_column(Float, comment="市盈率")
+    pb: Mapped[float | None] = mapped_column(Float, comment="市净率")
+    float_mv: Mapped[float | None] = mapped_column(Float, comment="流通市值(万元)")
+    total_mv: Mapped[float | None] = mapped_column(Float, comment="总市值(万元)")
+
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        PrimaryKeyConstraint("ts_code", "trade_date", name="pk_sw_industry_daily"),
+        Index("idx_sw_industry_daily_trade_date", "trade_date"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# CITIC industry members (ci_index_member)
+# ---------------------------------------------------------------------------
+class CiticIndustryMember(Base):
+    __tablename__ = "citic_industry_member"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True, comment="自增主键")
+    l1_code: Mapped[str | None] = mapped_column(String(16), comment="一级行业代码")
+    l1_name: Mapped[str | None] = mapped_column(String(128), comment="一级行业名称")
+    l2_code: Mapped[str | None] = mapped_column(String(16), comment="二级行业代码")
+    l2_name: Mapped[str | None] = mapped_column(String(128), comment="二级行业名称")
+    l3_code: Mapped[str | None] = mapped_column(String(16), comment="三级行业代码")
+    l3_name: Mapped[str | None] = mapped_column(String(128), comment="三级行业名称")
+    ts_code: Mapped[str] = mapped_column(String(16), comment="成分股票代码")
+    name: Mapped[str | None] = mapped_column(String(128), comment="成分股票名称")
+    in_date: Mapped[date | None] = mapped_column(Date, comment="纳入日期")
+    out_date: Mapped[date | None] = mapped_column(Date, comment="剔除日期")
+    is_new: Mapped[str | None] = mapped_column(String(4), comment="是否最新")
+
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        Index("uq_citic_industry_member", "ts_code", "l3_code", "in_date", unique=True),
+        Index("idx_citic_industry_member_l1", "l1_code", "is_new"),
+        Index("idx_citic_industry_member_l3", "l3_code", "is_new"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# CITIC industry daily quotes (ci_daily)
+# ---------------------------------------------------------------------------
+class CiticIndustryDaily(Base):
+    __tablename__ = "citic_industry_daily"
+
+    ts_code: Mapped[str] = mapped_column(String(16), comment="中信行业指数代码")
+    trade_date: Mapped[date] = mapped_column(Date, comment="交易日期")
+    open: Mapped[float | None] = mapped_column(Float, comment="开盘点位")
+    low: Mapped[float | None] = mapped_column(Float, comment="最低点位")
+    high: Mapped[float | None] = mapped_column(Float, comment="最高点位")
+    close: Mapped[float | None] = mapped_column(Float, comment="收盘点位")
+    pre_close: Mapped[float | None] = mapped_column(Float, comment="昨日收盘点位")
+    change: Mapped[float | None] = mapped_column(Float, comment="涨跌点位")
+    pct_change: Mapped[float | None] = mapped_column(Float, comment="涨跌幅")
+    vol: Mapped[float | None] = mapped_column(Float, comment="成交量(万股)")
+    amount: Mapped[float | None] = mapped_column(Float, comment="成交额(万元)")
+
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        PrimaryKeyConstraint("ts_code", "trade_date", name="pk_citic_industry_daily"),
+        Index("idx_citic_industry_daily_trade_date", "trade_date"),
+    )

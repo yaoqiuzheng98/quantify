@@ -200,7 +200,10 @@ quantify db init
 
 1. 用 `.env` 里的连接信息登录 MySQL；
 2. 若库不存在则创建（utf8mb4 + `_unicode_ci`）；
-3. 在库内创建本项目当前涉及的全部表：`etf_basic` / `etf_daily` / `etf_nav` / `etf_adj_factor` / `etf_dividend` / `etf_share` / `etf_portfolio` / `etf_manager`。
+3. 在库内创建本项目当前涉及的全部表：
+   - ETF：`etf_basic` / `etf_daily` / `etf_nav` / `etf_adj_factor` / `etf_dividend` / `etf_share` / `etf_portfolio` / `etf_manager`；
+   - 行业：`sw_industry_classify` / `sw_industry_member` / `sw_industry_daily` / `citic_industry_member` / `citic_industry_daily`；
+   - 策略：`strategy`。
 
 如需重建（**会清空数据**）：
 
@@ -243,6 +246,35 @@ quantify fetch etf dividend
 ```
 
 所有写入均为 `INSERT ... ON DUPLICATE KEY UPDATE`，**重复运行安全**，断点续跑无需任何额外操作。
+
+### 5.1 拉取行业分类与行业指数（可选）
+
+ETF 行业轮动等策略需要权威的行业分类与行业指数行情。Tushare 的申万（SW）/中信（CITIC）数据已接入：
+
+```bash
+# 申万：分类 + 成分 + 行业指数日线（默认 SW2021 版本，增量更新日线）
+quantify fetch industry all --provider sw
+
+# 中信：成分 + 行业指数日线
+quantify fetch industry all --provider ci
+
+# 申万 + 中信 一起拉
+quantify fetch industry all --provider all
+```
+
+细粒度阶段：
+
+```bash
+quantify fetch industry sw-classify              # 申万行业分类元数据
+quantify fetch industry sw-member                # 申万行业成分股（默认仅最新）
+quantify fetch industry sw-daily                 # 申万行业指数日线（增量）
+quantify fetch industry sw-daily --full          # 申万行业指数日线（全量回填）
+quantify fetch industry sw-daily --index-code 801010.SI,801030.SI  # 指定行业
+quantify fetch industry ci-member                # 中信行业成分股
+quantify fetch industry ci-daily --start-date 20200101             # 中信行业指数日线
+```
+
+> 申万行业日线需 5000 积分，中信行业成分/行情需 5000 积分；积分不足时对应阶段会报权限错误，可先只跑 `sw-classify` / `sw-member`。成分股默认只拉 `is_new=Y` 的最新归属，加 `--all-history` 可拉历史纳入/剔除记录。
 
 ### 6. 验证数据是否入库
 
