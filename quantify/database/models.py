@@ -117,6 +117,7 @@ class EtfDaily(Base):
     __table_args__ = (
         PrimaryKeyConstraint("ts_code", "trade_date", name="pk_etf_daily"),
         Index("idx_etf_daily_date", "trade_date"),
+        Index("idx_etf_daily_trade_code_amount", "trade_date", "ts_code", "amount"),
     )
 
 
