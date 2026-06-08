@@ -216,6 +216,50 @@ def fetch_industry(
 
 
 # ---------------------------------------------------------------------------
+# fetch all (ETF + industry + trade calendar, one shot)
+# ---------------------------------------------------------------------------
+@fetch_app.command("all")
+def fetch_all_data(
+    incremental: bool = typer.Option(
+        True, "--incremental/--full", help="Incremental update vs full backfill"
+    ),
+    exchange: str = typer.Option("SSE", "--exchange", help="Exchange(s) for trade calendar, comma-separated"),
+    sw_src: str = typer.Option("SW2021", "--sw-src", help="SW classification source, e.g. SW2021"),
+    skip: Optional[str] = typer.Option(
+        None, "--skip", help="Comma-separated top-level groups to skip: trade_cal|etf|industry"
+    ),
+) -> None:
+    """Fetch EVERYTHING from Tushare into MySQL in dependency order.
+
+    Order: trade calendar -> ETF (basic first) -> industry (SW + CITIC).
+    Use ``--full`` to backfill all history, otherwise incremental.
+    """
+    from quantify.fetcher.etf import EtfFetcher
+    from quantify.fetcher.industry import IndustryFetcher
+
+    skip_set = {s.strip().lower() for s in skip.split(",")} if skip else set()
+
+    # 1) Trade calendar (no dependency, used as completeness basis)
+    if "trade_cal" not in skip_set:
+        industry = IndustryFetcher()
+        for exch in (e.strip() for e in exchange.split(",") if e.strip()):
+            log.info(f"=== fetch trade_cal ({exch}) ===")
+            industry.fetch_trade_cal(exchange=exch)
+
+    # 2) ETF (fetch_all runs basic first, then all per-code stages)
+    if "etf" not in skip_set:
+        log.info("=== fetch ETF (all stages) ===")
+        EtfFetcher().fetch_all(incremental=incremental)
+
+    # 3) Industry (SW + CITIC): classification, members, daily
+    if "industry" not in skip_set:
+        log.info("=== fetch industry (SW + CITIC) ===")
+        IndustryFetcher().fetch_all(provider="all", incremental=incremental, sw_src=sw_src)
+
+    log.info("=== fetch all: done ===")
+
+
+# ---------------------------------------------------------------------------
 # version
 # ---------------------------------------------------------------------------
 @app.command("version")
