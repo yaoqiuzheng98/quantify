@@ -155,7 +155,7 @@ def fetch_etf(
 def fetch_industry(
     stage: str = typer.Argument(
         "all",
-        help="Stage to run: all|sw-classify|sw-member|sw-daily|ci-member|ci-daily",
+        help="Stage to run: all|trade-cal|sw-classify|sw-member|sw-daily|ci-member|ci-daily",
     ),
     provider: str = typer.Option("sw", "--provider", help="Provider for stage=all: sw|ci|all"),
     incremental: bool = typer.Option(
@@ -168,6 +168,7 @@ def fetch_industry(
     end_date: Optional[str] = typer.Option(None, "--end-date", help="End date, e.g. 20260608"),
     sw_src: str = typer.Option("SW2021", "--sw-src", help="SW classification source, e.g. SW2021"),
     latest: bool = typer.Option(True, "--latest/--all-history", help="Fetch latest industry members only"),
+    exchange: str = typer.Option("SSE", "--exchange", help="Exchange for trade-cal stage, e.g. SSE"),
 ) -> None:
     """Fetch SW/CITIC industry classification, members and daily quotes from Tushare."""
     from quantify.fetcher.industry import IndustryFetcher
@@ -187,6 +188,11 @@ def fetch_industry(
         return
 
     dispatch = {
+        "trade_cal": lambda: fetcher.fetch_trade_cal(
+            exchange=exchange,
+            start_date=start_date,
+            end_date=end_date,
+        ),
         "sw_classify": lambda: fetcher.fetch_sw_classify(src=sw_src),
         "sw_member": lambda: fetcher.fetch_sw_member(src=sw_src, latest=latest),
         "sw_daily": lambda: fetcher.fetch_sw_daily(

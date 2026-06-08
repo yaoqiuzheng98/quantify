@@ -30,6 +30,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     Index,
+    Integer,
     PrimaryKeyConstraint,
     String,
     Text,
@@ -402,4 +403,23 @@ class CiticIndustryDaily(Base):
     __table_args__ = (
         PrimaryKeyConstraint("ts_code", "trade_date", name="pk_citic_industry_daily"),
         Index("idx_citic_industry_daily_trade_date", "trade_date"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Trade calendar (trade_cal) - authoritative exchange open/close dates
+# ---------------------------------------------------------------------------
+class TradeCalendar(Base):
+    __tablename__ = "trade_calendar"
+
+    exchange: Mapped[str] = mapped_column(String(8), comment="交易所 SSE/SZSE 等")
+    cal_date: Mapped[date] = mapped_column(Date, comment="日历日期")
+    is_open: Mapped[int | None] = mapped_column(Integer, comment="是否交易 1开市 0休市")
+    pretrade_date: Mapped[date | None] = mapped_column(Date, comment="上一交易日")
+
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        PrimaryKeyConstraint("exchange", "cal_date", name="pk_trade_calendar"),
+        Index("idx_trade_calendar_open", "exchange", "is_open", "cal_date"),
     )

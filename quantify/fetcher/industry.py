@@ -19,13 +19,14 @@ from quantify.database.models import (
     SwIndustryClassify,
     SwIndustryDaily,
     SwIndustryMember,
+    TradeCalendar,
 )
 from quantify.database.upsert import upsert_dataframe
 from quantify.tushare_client.client import TushareClient, get_client
 from quantify.utils.logger import log
 
 
-DATE_COLUMNS = {"trade_date", "in_date", "out_date"}
+DATE_COLUMNS = {"trade_date", "in_date", "out_date", "cal_date", "pretrade_date"}
 
 
 def _normalize_dates(df: pd.DataFrame) -> pd.DataFrame:
@@ -65,11 +66,39 @@ class IndustryFetcher:
     """Pull SW/CITIC industry classification, members and daily quotes."""
 
     DEFAULT_START_DATE = "20000101"
-    MAX_WORKERS = 5
-    MAX_DAILY_RANGE_DAYS = 1400
+    # Tushare 实测并发上限为 2，超过会触发"并发请求过多"错误并可能返回空。
+    MAX_WORKERS = 2
+    # ci_daily/sw_daily 单次最多约 4000 行；窗口按交易日折算需远低于该值。
+    # ~800 自然日 ≈ 550 个交易日，单段稳定低于上限。
+    MAX_DAILY_RANGE_DAYS = 800
+    # 单段返回行数达到该阈值视为可能被接口截断，需要缩小窗口重拉。
+    DAILY_ROW_CAP = 3800
 
     def __init__(self, client: TushareClient | None = None) -> None:
         self.client = client or get_client()
+
+    def fetch_trade_cal(
+        self,
+        *,
+        exchange: str = "SSE",
+        start_date: str | None = None,
+        end_date: str | None = None,
+    ) -> int:
+        """Pull exchange trade calendar (trade_cal) into MySQL.
+
+        The calendar is the authoritative basis for data-completeness checks:
+        for any open day a daily series should have a row (unless the index
+        itself was suspended/de-listed on that day).
+        """
+        start = start_date or self.DEFAULT_START_DATE
+        end = end_date or _today_str()
+        log.info(f"Fetching trade_cal (exchange={exchange}) {start}..{end} ...")
+        df = self.client.call("trade_cal", exchange=exchange, start_date=start, end_date=end)
+        if df is None or df.empty:
+            log.warning(f"trade_cal returned no rows for {exchange}")
+            return 0
+        df = _normalize_dates(df)
+        return upsert_dataframe(TradeCalendar, df)
 
     def fetch_all(
         self,
@@ -291,6 +320,46 @@ class IndustryFetcher:
         codes = {code for row in rows for code in row if code}
         return sorted(codes)
 
+    def _fetch_daily_range(
+        self,
+        api: str,
+        code: str,
+        start: str,
+        end: str,
+        *,
+        depth: int = 0,
+    ) -> pd.DataFrame | None:
+        """Fetch one daily date range, splitting if the row cap is hit.
+
+        ``ci_daily``/``sw_daily`` silently cap a single response at ~4000 rows.
+        When a response reaches ``DAILY_ROW_CAP`` we recursively split the date
+        range in half so no rows are silently dropped.
+        """
+        df = self.client.call(api, ts_code=code, start_date=start, end_date=end)
+        if df is None or df.empty:
+            return df
+
+        if len(df) < self.DAILY_ROW_CAP:
+            return df
+
+        start_d = _date_from_str(start)
+        end_d = _date_from_str(end)
+        if start_d >= end_d or depth >= 12:
+            # Cannot split further; return what we have.
+            log.warning(f"{api} {code} {start}..{end} hit row cap and cannot split (rows={len(df)})")
+            return df
+
+        mid = start_d + (end_d - start_d) // 2
+        log.info(f"{api} {code} {start}..{end} hit row cap (rows={len(df)}); splitting at {mid}")
+        left = self._fetch_daily_range(api, code, start, mid.strftime("%Y%m%d"), depth=depth + 1)
+        right = self._fetch_daily_range(
+            api, code, (mid + timedelta(days=1)).strftime("%Y%m%d"), end, depth=depth + 1
+        )
+        frames = [f for f in (left, right) if f is not None and not f.empty]
+        if not frames:
+            return df
+        return pd.concat(frames, ignore_index=True)
+
     def _fetch_index_daily(
         self,
         *,
@@ -329,7 +398,7 @@ class IndustryFetcher:
                 end_str,
                 max_days=self.MAX_DAILY_RANGE_DAYS,
             ):
-                df = self.client.call(api, ts_code=code, start_date=chunk_start, end_date=chunk_end)
+                df = self._fetch_daily_range(api, code, chunk_start, chunk_end)
                 if df is not None and not df.empty:
                     frames.append(df)
             if not frames:

@@ -16,7 +16,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Callable, Iterable
 
 import pandas as pd
@@ -79,6 +79,10 @@ def _today_str() -> str:
     return datetime.now().strftime("%Y%m%d")
 
 
+def _date_from_str(value: str) -> date:
+    return datetime.strptime(value, "%Y%m%d").date()
+
+
 # ---------------------------------------------------------------------------
 # Fetcher
 # ---------------------------------------------------------------------------
@@ -92,7 +96,11 @@ class EtfFetcher:
     """Pull every ETF-related dataset from Tushare into MySQL."""
 
     DEFAULT_START_DATE = "20000101"
-    MAX_WORKERS = 5
+    # Tushare 实测并发上限为 2，超过会触发"并发请求过多"错误并可能返回空。
+    MAX_WORKERS = 2
+    # fund_daily/fund_nav/fund_adj 单次行数上限（Tushare 通常单次 ≤8000 行）。
+    # 达到该阈值视为可能被接口截断，需要缩小日期窗口重拉。
+    TIMESERIES_ROW_CAP = 7800
 
     def __init__(self, client: TushareClient | None = None) -> None:
         self.client = client or get_client()
@@ -259,11 +267,14 @@ class EtfFetcher:
             start_str = starts.get(code, self.DEFAULT_START_DATE)
             if start_str >= end_str:
                 return None
-            return self.client.call(
+            return self._fetch_timeseries_range(
                 api,
-                ts_code=code,
-                **{start_param: start_str, end_param: end_str},
-                **api_extra,
+                code,
+                start_str,
+                end_str,
+                start_param=start_param,
+                end_param=end_param,
+                api_extra=api_extra,
             )
 
         return self._fetch_concurrent(
@@ -273,6 +284,69 @@ class EtfFetcher:
             fetch_one=fetch_one,
             log_extra=f" (incremental={incremental})",
         )
+
+    def _fetch_timeseries_range(
+        self,
+        api: str,
+        code: str,
+        start: str,
+        end: str,
+        *,
+        start_param: str = "start_date",
+        end_param: str = "end_date",
+        api_extra: dict | None = None,
+        depth: int = 0,
+    ) -> pd.DataFrame | None:
+        """Fetch one time-series date range, splitting if the row cap is hit.
+
+        Tushare silently caps a single response (commonly ~8000 rows). When a
+        response reaches ``TIMESERIES_ROW_CAP`` we recursively split the date
+        range in half so no rows are silently dropped on long histories.
+        """
+        api_extra = api_extra or {}
+        df = self.client.call(
+            api,
+            ts_code=code,
+            **{start_param: start, end_param: end},
+            **api_extra,
+        )
+        if df is None or df.empty:
+            return df
+        if len(df) < self.TIMESERIES_ROW_CAP:
+            return df
+
+        start_d = _date_from_str(start)
+        end_d = _date_from_str(end)
+        if start_d >= end_d or depth >= 12:
+            log.warning(f"{api} {code} {start}..{end} hit row cap and cannot split (rows={len(df)})")
+            return df
+
+        mid = start_d + (end_d - start_d) // 2
+        log.info(f"{api} {code} {start}..{end} hit row cap (rows={len(df)}); splitting at {mid}")
+        left = self._fetch_timeseries_range(
+            api,
+            code,
+            start,
+            mid.strftime("%Y%m%d"),
+            start_param=start_param,
+            end_param=end_param,
+            api_extra=api_extra,
+            depth=depth + 1,
+        )
+        right = self._fetch_timeseries_range(
+            api,
+            code,
+            (mid + timedelta(days=1)).strftime("%Y%m%d"),
+            end,
+            start_param=start_param,
+            end_param=end_param,
+            api_extra=api_extra,
+            depth=depth + 1,
+        )
+        frames = [f for f in (left, right) if f is not None and not f.empty]
+        if not frames:
+            return df
+        return pd.concat(frames, ignore_index=True)
 
     # ------------------------------------------------------------------
     # 2) fund_daily
