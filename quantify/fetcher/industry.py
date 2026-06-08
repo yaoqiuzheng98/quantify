@@ -161,11 +161,20 @@ class IndustryFetcher:
         start_date: str | None = None,
         end_date: str | None = None,
     ) -> int:
-        """Pull SW industry daily quotes."""
-        codes = list(index_codes) if index_codes else self._load_sw_codes(src=src, published_only=True)
-        if not codes:
-            self.fetch_sw_classify(src=src)
-            codes = self._load_sw_codes(src=src, published_only=True)
+        """Pull SW industry daily quotes.
+
+        The traversal universe is the union of published classification codes and
+        the codes actually returned by ``sw_daily`` (e.g. 申万50/中小/A指 等风格规模
+        指数并不在 ``index_classify`` 分类表里，但 ``sw_daily`` 会返回行情)。
+        """
+        if index_codes:
+            codes = list(index_codes)
+        else:
+            classify_codes = self._load_sw_codes(src=src, published_only=True)
+            if not classify_codes:
+                self.fetch_sw_classify(src=src)
+                classify_codes = self._load_sw_codes(src=src, published_only=True)
+            codes = sorted(set(classify_codes) | set(self._discover_sw_daily_codes()))
         if not codes:
             log.warning("SW industry classification is empty; cannot fetch daily quotes")
             return 0
@@ -226,6 +235,29 @@ class IndustryFetcher:
             start_date=start_date,
             end_date=end_date,
         )
+
+    def _discover_sw_daily_codes(self) -> list[str]:
+        """Discover the full sw_daily index universe from a recent trading day.
+
+        ``sw_daily`` covers style/scale indices (申万50/中小/A指 等) that are not
+        present in ``index_classify``; querying a recent trade day returns the
+        full set so the daily fetch does not silently miss them.
+        """
+        end_str = _today_str()
+        start_str = (datetime.now() - timedelta(days=20)).strftime("%Y%m%d")
+        for chunk_start, chunk_end in reversed(list(_date_chunks(start_str, end_str, max_days=1))):
+            del chunk_end
+            try:
+                df = self.client.call("sw_daily", trade_date=chunk_start)
+            except Exception as exc:  # noqa: BLE001
+                log.warning(f"sw_daily probe {chunk_start} failed: {exc}")
+                continue
+            if df is not None and not df.empty and "ts_code" in df.columns:
+                codes = sorted(str(code) for code in df["ts_code"].dropna().unique())
+                log.info(f"sw_daily universe discovered on {chunk_start}: {len(codes)} indices")
+                return codes
+        log.warning("Could not discover sw_daily universe from recent trading days")
+        return []
 
     def _load_sw_codes(
         self,
