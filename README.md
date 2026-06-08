@@ -203,6 +203,7 @@ quantify db init
 3. 在库内创建本项目当前涉及的全部表：
    - ETF：`fund_basic` / `etf_basic` / `fund_daily` / `fund_nav` / `fund_adj` / `fund_div` / `fund_share` / `fund_portfolio` / `fund_manager`；
    - 行业：`index_classify` / `index_member_all` / `sw_daily` / `ci_index_member` / `ci_daily`；
+   - 指数：`index_basic` / `index_daily` / `index_dailybasic` / `index_weight` / `moneyflow_ind_dc`；
    - 交易日历：`trade_cal`；
    - 策略：`strategy`。
 

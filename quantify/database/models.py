@@ -451,3 +451,133 @@ class TradeCalendar(Base):
         PrimaryKeyConstraint("exchange", "cal_date", name="pk_trade_cal"),
         Index("idx_trade_cal_open", "exchange", "is_open", "cal_date"),
     )
+
+
+# ---------------------------------------------------------------------------
+# Index basic info (index_basic)
+# ---------------------------------------------------------------------------
+class IndexBasic(Base):
+    __tablename__ = "index_basic"
+
+    ts_code: Mapped[str] = mapped_column(String(24), primary_key=True, comment="TS指数代码")
+    name: Mapped[str | None] = mapped_column(String(128), comment="简称")
+    fullname: Mapped[str | None] = mapped_column(String(256), comment="指数全称")
+    market: Mapped[str | None] = mapped_column(String(16), comment="市场")
+    publisher: Mapped[str | None] = mapped_column(String(128), comment="发布方")
+    index_type: Mapped[str | None] = mapped_column(String(64), comment="指数风格")
+    category: Mapped[str | None] = mapped_column(String(64), comment="指数类别")
+    base_date: Mapped[date | None] = mapped_column(Date, comment="基期")
+    base_point: Mapped[float | None] = mapped_column(Float, comment="基点")
+    list_date: Mapped[date | None] = mapped_column(Date, comment="发布日期")
+    weight_rule: Mapped[str | None] = mapped_column(String(128), comment="加权方式")
+    desc: Mapped[str | None] = mapped_column("desc", Text, comment="描述")
+    exp_date: Mapped[date | None] = mapped_column(Date, comment="终止日期")
+
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    __table_args__ = (Index("idx_index_basic_market", "market", "category"),)
+
+
+# ---------------------------------------------------------------------------
+# Index daily quotes (index_daily)
+# ---------------------------------------------------------------------------
+class IndexDaily(Base):
+    __tablename__ = "index_daily"
+
+    ts_code: Mapped[str] = mapped_column(String(24), comment="TS指数代码")
+    trade_date: Mapped[date] = mapped_column(Date, comment="交易日")
+    close: Mapped[float | None] = mapped_column(Float, comment="收盘点位")
+    open: Mapped[float | None] = mapped_column(Float, comment="开盘点位")
+    high: Mapped[float | None] = mapped_column(Float, comment="最高点位")
+    low: Mapped[float | None] = mapped_column(Float, comment="最低点位")
+    pre_close: Mapped[float | None] = mapped_column(Float, comment="昨日收盘点")
+    change: Mapped[float | None] = mapped_column(Float, comment="涨跌点")
+    pct_chg: Mapped[float | None] = mapped_column(Float, comment="涨跌幅(%)")
+    vol: Mapped[float | None] = mapped_column(Float, comment="成交量(手)")
+    amount: Mapped[float | None] = mapped_column(Float, comment="成交额(千元)")
+
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        PrimaryKeyConstraint("ts_code", "trade_date", name="pk_index_daily"),
+        Index("idx_index_daily_trade_date", "trade_date"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Index daily basic indicators (index_dailybasic) - major broad indices only
+# ---------------------------------------------------------------------------
+class IndexDailyBasic(Base):
+    __tablename__ = "index_dailybasic"
+
+    ts_code: Mapped[str] = mapped_column(String(24), comment="TS代码")
+    trade_date: Mapped[date] = mapped_column(Date, comment="交易日期")
+    total_mv: Mapped[float | None] = mapped_column(Float, comment="当日总市值(元)")
+    float_mv: Mapped[float | None] = mapped_column(Float, comment="当日流通市值(元)")
+    total_share: Mapped[float | None] = mapped_column(Float, comment="当日总股本(股)")
+    float_share: Mapped[float | None] = mapped_column(Float, comment="当日流通股本(股)")
+    free_share: Mapped[float | None] = mapped_column(Float, comment="当日自由流通股本(股)")
+    turnover_rate: Mapped[float | None] = mapped_column(Float, comment="换手率")
+    turnover_rate_f: Mapped[float | None] = mapped_column(Float, comment="换手率(自由流通股本)")
+    pe: Mapped[float | None] = mapped_column(Float, comment="市盈率")
+    pe_ttm: Mapped[float | None] = mapped_column(Float, comment="市盈率TTM")
+    pb: Mapped[float | None] = mapped_column(Float, comment="市净率")
+
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        PrimaryKeyConstraint("ts_code", "trade_date", name="pk_index_dailybasic"),
+        Index("idx_index_dailybasic_trade_date", "trade_date"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Index constituents & weights (index_weight) - monthly
+# ---------------------------------------------------------------------------
+class IndexWeight(Base):
+    __tablename__ = "index_weight"
+
+    index_code: Mapped[str] = mapped_column(String(24), comment="指数代码")
+    con_code: Mapped[str] = mapped_column(String(24), comment="成分代码")
+    trade_date: Mapped[date] = mapped_column(Date, comment="交易日期")
+    weight: Mapped[float | None] = mapped_column(Float, comment="权重")
+
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        PrimaryKeyConstraint("index_code", "con_code", "trade_date", name="pk_index_weight"),
+        Index("idx_index_weight_trade_date", "trade_date"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Sector money flow (moneyflow_ind_dc) - DC industry/concept board flows
+# ---------------------------------------------------------------------------
+class MoneyflowIndDc(Base):
+    __tablename__ = "moneyflow_ind_dc"
+
+    trade_date: Mapped[date] = mapped_column(Date, comment="交易日期")
+    ts_code: Mapped[str] = mapped_column(String(24), comment="DC板块代码")
+    content_type: Mapped[str] = mapped_column(String(32), comment="数据类型(行业/概念/地域)")
+    name: Mapped[str | None] = mapped_column(String(64), comment="板块名称")
+    pct_change: Mapped[float | None] = mapped_column(Float, comment="板块涨跌幅(%)")
+    close: Mapped[float | None] = mapped_column(Float, comment="板块最新指数")
+    net_amount: Mapped[float | None] = mapped_column(Float, comment="主力净流入额(元)")
+    net_amount_rate: Mapped[float | None] = mapped_column(Float, comment="主力净流入占比(%)")
+    buy_elg_amount: Mapped[float | None] = mapped_column(Float, comment="超大单净流入额(元)")
+    buy_elg_amount_rate: Mapped[float | None] = mapped_column(Float, comment="超大单净流入占比(%)")
+    buy_lg_amount: Mapped[float | None] = mapped_column(Float, comment="大单净流入额(元)")
+    buy_lg_amount_rate: Mapped[float | None] = mapped_column(Float, comment="大单净流入占比(%)")
+    buy_md_amount: Mapped[float | None] = mapped_column(Float, comment="中单净流入额(元)")
+    buy_md_amount_rate: Mapped[float | None] = mapped_column(Float, comment="中单净流入占比(%)")
+    buy_sm_amount: Mapped[float | None] = mapped_column(Float, comment="小单净流入额(元)")
+    buy_sm_amount_rate: Mapped[float | None] = mapped_column(Float, comment="小单净流入占比(%)")
+    buy_sm_amount_stock: Mapped[str | None] = mapped_column(String(64), comment="小单净流入最大股")
+    rank: Mapped[int | None] = mapped_column(Integer, comment="排名")
+
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        PrimaryKeyConstraint("trade_date", "ts_code", "content_type", name="pk_moneyflow_ind_dc"),
+        Index("idx_moneyflow_ind_dc_code", "ts_code", "trade_date"),
+    )

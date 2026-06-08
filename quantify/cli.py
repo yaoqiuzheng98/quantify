@@ -220,6 +220,71 @@ def fetch_industry(
 
 
 # ---------------------------------------------------------------------------
+# fetch index
+# ---------------------------------------------------------------------------
+@fetch_app.command("index")
+def fetch_index(
+    stage: str = typer.Argument(
+        "all",
+        help="Stage: all|index-basic|index-daily|index-dailybasic|index-weight|moneyflow-ind-dc",
+    ),
+    incremental: bool = typer.Option(
+        True, "--incremental/--full", help="Incremental update vs full backfill"
+    ),
+    ts_code: Optional[str] = typer.Option(
+        None, "--ts-code", help="Comma-separated index codes (daily/weight/dailybasic stages)"
+    ),
+    market: Optional[str] = typer.Option(
+        None, "--market", help="Comma-separated index markets, e.g. SSE,SZSE,CSI,SW"
+    ),
+    start_date: Optional[str] = typer.Option(None, "--start-date", help="Start date, e.g. 20200101"),
+    end_date: Optional[str] = typer.Option(None, "--end-date", help="End date, e.g. 20260608"),
+    skip: Optional[str] = typer.Option(
+        None, "--skip", help="Comma-separated stages to skip (only used with stage=all)"
+    ),
+) -> None:
+    """Fetch Tushare index-theme datasets into MySQL."""
+    from quantify.fetcher.index import IndexFetcher
+
+    normalized = stage.replace("-", "_").lower()
+    codes = [c.strip() for c in ts_code.split(",")] if ts_code else None
+    markets = [m.strip() for m in market.split(",")] if market else None
+    skip_set = {s.strip() for s in skip.split(",")} if skip else None
+    fetcher = IndexFetcher()
+
+    if normalized == "all":
+        fetcher.fetch_all(incremental=incremental, start_date=start_date, end_date=end_date, skip=skip_set)
+        return
+
+    dispatch = {
+        "index_basic": lambda: fetcher.fetch_index_basic(markets=markets),
+        "index_daily": lambda: fetcher.fetch_index_daily(
+            ts_codes=codes,
+            markets=markets,
+            incremental=incremental,
+            start_date=start_date,
+            end_date=end_date,
+        ),
+        "index_dailybasic": lambda: fetcher.fetch_index_dailybasic(
+            ts_codes=codes, incremental=incremental, start_date=start_date, end_date=end_date
+        ),
+        "index_weight": lambda: fetcher.fetch_index_weight(
+            index_codes=codes,
+            markets=markets,
+            incremental=incremental,
+            start_date=start_date,
+            end_date=end_date,
+        ),
+        "moneyflow_ind_dc": lambda: fetcher.fetch_moneyflow_ind_dc(
+            incremental=incremental, start_date=start_date, end_date=end_date
+        ),
+    }
+    if normalized not in dispatch:
+        raise typer.BadParameter(f"Unknown stage: {stage}")
+    dispatch[normalized]()
+
+
+# ---------------------------------------------------------------------------
 # fetch all (ETF + industry + trade calendar, one shot)
 # ---------------------------------------------------------------------------
 @fetch_app.command("all")
@@ -230,15 +295,16 @@ def fetch_all_data(
     exchange: str = typer.Option("SSE", "--exchange", help="Exchange(s) for trade calendar, comma-separated"),
     sw_src: str = typer.Option("SW2021", "--sw-src", help="SW classification source, e.g. SW2021"),
     skip: Optional[str] = typer.Option(
-        None, "--skip", help="Comma-separated top-level groups to skip: trade_cal|etf|industry"
+        None, "--skip", help="Comma-separated top-level groups to skip: trade_cal|etf|industry|index"
     ),
 ) -> None:
     """Fetch EVERYTHING from Tushare into MySQL in dependency order.
 
-    Order: trade calendar -> ETF (basic first) -> industry (SW + CITIC).
+    Order: trade calendar -> ETF (basic first) -> industry (SW + CITIC) -> index.
     Use ``--full`` to backfill all history, otherwise incremental.
     """
     from quantify.fetcher.etf import EtfFetcher
+    from quantify.fetcher.index import IndexFetcher
     from quantify.fetcher.industry import IndustryFetcher
 
     skip_set = {s.strip().lower() for s in skip.split(",")} if skip else set()
@@ -259,6 +325,11 @@ def fetch_all_data(
     if "industry" not in skip_set:
         log.info("=== fetch industry (SW + CITIC) ===")
         IndustryFetcher().fetch_all(provider="all", incremental=incremental, sw_src=sw_src)
+
+    # 4) Index theme: basic, daily, dailybasic, weight, sector money flow
+    if "index" not in skip_set:
+        log.info("=== fetch index (basic/daily/dailybasic/weight/moneyflow) ===")
+        IndexFetcher().fetch_all(incremental=incremental)
 
     log.info("=== fetch all: done ===")
 
