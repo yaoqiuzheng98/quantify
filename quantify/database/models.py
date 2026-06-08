@@ -102,6 +102,33 @@ class EtfBasic(Base):
 
 
 # ---------------------------------------------------------------------------
+# ETF tracking-index info (etf_basic) - distinct from fund_basic above.
+# Provides the ETF -> tracked index mapping (index_code/index_name).
+# ---------------------------------------------------------------------------
+class EtfIndexBasic(Base):
+    __tablename__ = "etf_basic"
+
+    ts_code: Mapped[str] = mapped_column(String(16), primary_key=True, comment="基金交易代码")
+    csname: Mapped[str | None] = mapped_column(String(128), comment="ETF中文简称")
+    extname: Mapped[str | None] = mapped_column(String(128), comment="ETF扩位简称")
+    cname: Mapped[str | None] = mapped_column(String(256), comment="基金中文全称")
+    index_code: Mapped[str | None] = mapped_column(String(32), comment="ETF基准指数代码")
+    index_name: Mapped[str | None] = mapped_column(String(256), comment="ETF基准指数中文全称")
+    setup_date: Mapped[date | None] = mapped_column(Date, comment="设立日期")
+    list_date: Mapped[date | None] = mapped_column(Date, comment="上市日期")
+    list_status: Mapped[str | None] = mapped_column(String(8), comment="存续状态 L上市 D退市 P待上市")
+    exchange: Mapped[str | None] = mapped_column(String(8), comment="交易所 SH/SZ")
+    mgr_name: Mapped[str | None] = mapped_column(String(128), comment="基金管理人简称")
+    custod_name: Mapped[str | None] = mapped_column(String(128), comment="基金托管人名称")
+    mgt_fee: Mapped[float | None] = mapped_column(Float, comment="管理费率")
+    etf_type: Mapped[str | None] = mapped_column(String(16), comment="投资通道类型 境内/QDII")
+
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    __table_args__ = (Index("idx_etf_basic_index_code", "index_code"),)
+
+
+# ---------------------------------------------------------------------------
 # ETF daily quotes
 # ---------------------------------------------------------------------------
 class EtfDaily(Base):

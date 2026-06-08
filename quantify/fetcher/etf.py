@@ -28,6 +28,7 @@ from quantify.database.models import (
     EtfBasic,
     EtfDaily,
     EtfDividend,
+    EtfIndexBasic,
     EtfManager,
     EtfNav,
     EtfPortfolio,
@@ -49,6 +50,7 @@ DATE_COLUMNS = {
     "found_date",
     "due_date",
     "list_date",
+    "setup_date",
     "issue_date",
     "delist_date",
     "purc_startdate",
@@ -136,6 +138,11 @@ class EtfFetcher:
             n = self.fetch_basic()
             results.append(FetchSummary("basic", n))
 
+        # 1b. ETF tracking-index mapping (etf_basic endpoint).
+        if "etf_index_basic" not in skip:
+            n = self.fetch_etf_index_basic()
+            results.append(FetchSummary("etf_index_basic", n))
+
         codes = list(ts_codes) if ts_codes else self._load_universe()
         log.info(f"ETF universe size: {len(codes)}")
 
@@ -187,6 +194,31 @@ class EtfFetcher:
         df = df.drop_duplicates(subset=["ts_code"], keep="last")
         df = _normalize_dates(df)
         return upsert_dataframe(EtfBasic, df)
+
+    # ------------------------------------------------------------------
+    # 1b) etf_basic (ETF tracking-index mapping, needs 8000 credits)
+    # ------------------------------------------------------------------
+    def fetch_etf_index_basic(self) -> int:
+        """Pull ETF -> tracked-index mapping from the ``etf_basic`` endpoint.
+
+        Distinct from :meth:`fetch_basic` (which uses ``fund_basic``): this one
+        carries ``index_code``/``index_name`` so ETFs can be mapped to their
+        benchmark index (and from there to SW/CITIC industries).
+        """
+        log.info("Fetching etf_basic (ETF tracking index) ...")
+        frames = []
+        for status in ("L", "D", "P"):
+            df = self.client.call("etf_basic", list_status=status)
+            log.debug(f"etf_basic list_status={status}: {0 if df is None else len(df)} rows")
+            if df is not None and not df.empty:
+                frames.append(df)
+        if not frames:
+            log.warning("etf_basic returned no rows")
+            return 0
+        df = pd.concat(frames, ignore_index=True)
+        df = df.drop_duplicates(subset=["ts_code"], keep="last")
+        df = _normalize_dates(df)
+        return upsert_dataframe(EtfIndexBasic, df)
 
     # ------------------------------------------------------------------
     # Shared concurrent fetch helper

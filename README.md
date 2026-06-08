@@ -201,7 +201,7 @@ quantify db init
 1. 用 `.env` 里的连接信息登录 MySQL；
 2. 若库不存在则创建（utf8mb4 + `_unicode_ci`）；
 3. 在库内创建本项目当前涉及的全部表：
-   - ETF：`fund_basic` / `fund_daily` / `fund_nav` / `fund_adj` / `fund_div` / `fund_share` / `fund_portfolio` / `fund_manager`；
+   - ETF：`fund_basic` / `etf_basic` / `fund_daily` / `fund_nav` / `fund_adj` / `fund_div` / `fund_share` / `fund_portfolio` / `fund_manager`；
    - 行业：`index_classify` / `index_member_all` / `sw_daily` / `ci_index_member` / `ci_daily`；
    - 交易日历：`trade_cal`；
    - 策略：`strategy`。
@@ -241,10 +241,15 @@ quantify fetch etf nav --ts-code 510300.SH,159915.SZ
 # 跳过持仓 / 经理人这种偏慢的子集
 quantify fetch etf all --skip portfolio,manager
 
-# 单独跑某个阶段：basic / daily / nav / adj / dividend / share / portfolio / manager
+# 单独跑某个阶段：basic / etf-index-basic / daily / nav / adj / dividend / share / portfolio / manager
 quantify fetch etf adj
 quantify fetch etf dividend
+
+# 拉 ETF→跟踪指数映射（etf_basic 接口，需 8000 积分；含 index_code/index_name）
+quantify fetch etf etf-index-basic
 ```
+
+> 📌 **两个 basic 的区别**：`quantify fetch etf basic` 调用 Tushare 的 `fund_basic` 接口，写入 `fund_basic` 表（公募基金通用信息，无跟踪指数）；`quantify fetch etf etf-index-basic` 调用 `etf_basic` 接口，写入 `etf_basic` 表（带 `index_code`/`index_name`，用于 ETF→指数→行业映射）。`quantify fetch etf all` 会同时跑这两个。
 
 所有写入均为 `INSERT ... ON DUPLICATE KEY UPDATE`，**重复运行安全**，断点续跑无需任何额外操作。
 

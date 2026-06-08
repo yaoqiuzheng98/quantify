@@ -101,7 +101,7 @@ def db_drop(
 def fetch_etf(
     stage: str = typer.Argument(
         "all",
-        help="Stage to run: all|basic|daily|nav|adj|dividend|share|portfolio|manager",
+        help="Stage to run: all|basic|etf-index-basic|daily|nav|adj|dividend|share|portfolio|manager",
     ),
     incremental: bool = typer.Option(
         True, "--incremental/--full", help="Incremental update vs full backfill"
@@ -127,6 +127,10 @@ def fetch_etf(
 
     if stage == "basic":
         fetcher.fetch_basic()
+        return
+
+    if stage in ("etf-index-basic", "etf_index_basic"):
+        fetcher.fetch_etf_index_basic()
         return
 
     universe = codes if codes else fetcher._load_universe()  # noqa: SLF001
