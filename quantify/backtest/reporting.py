@@ -152,12 +152,20 @@ def _realized_trade_stats(
         if not code or amount == 0 or price is None:
             continue
 
-        position = positions.setdefault(code, {"amount": 0.0, "cost": 0.0, "dividend": 0.0})
+        position = positions.setdefault(
+            code, {"amount": 0.0, "cost": 0.0, "dividend": 0.0, "fees": 0.0}
+        )
         current_amount = int(position["amount"])
+
+        # 该笔交易的实际成本(佣金 + 滑点),用于扣费后的净盈亏判定(对齐聚宽口径)。
+        trade_fees = float(getattr(trade, "commission", 0.0) or 0.0) + float(
+            getattr(trade, "slippage", 0.0) or 0.0
+        )
 
         if amount > 0:
             position["amount"] = current_amount + amount
             position["cost"] += amount * float(price)
+            position["fees"] += trade_fees  # 买入费用累计,卖出时按比例分摊
             continue
 
         sell_amount = min(current_amount, abs(amount))
@@ -167,16 +175,21 @@ def _realized_trade_stats(
         ratio = sell_amount / current_amount
         cost = position["cost"] * ratio
         dividend_cash = position["dividend"] * ratio
+        buy_fees = position["fees"] * ratio  # 买入费用按平仓比例分摊
         proceeds = sell_amount * float(price) + dividend_cash
-        pnl = proceeds - cost
-        if pnl > 0:
+        # 净盈亏 = 卖出所得 + 分红 - 买入成本 - 买入费用分摊 - 本次卖出费用
+        pnl = proceeds - cost - buy_fees - trade_fees
+        # 浮点容差:接近 0(同价进出等)视为平,不计入盈亏,避免残差误判。
+        eps = 1e-6
+        if pnl > eps:
             profits.append(pnl)
-        elif pnl < 0:
+        elif pnl < -eps:
             losses.append(pnl)
 
         position["amount"] = current_amount - sell_amount
         position["cost"] -= cost
         position["dividend"] -= dividend_cash
+        position["fees"] -= buy_fees
 
     profit_count = len(profits)
     loss_count = len(losses)
