@@ -243,15 +243,42 @@ quantify fetch etf nav --ts-code 510300.SH,159915.SZ
 # 跳过持仓 / 经理人这种偏慢的子集
 quantify fetch etf all --skip portfolio,manager
 
-# 单独跑某个阶段：basic / etf-index-basic / daily / nav / adj / dividend / share / portfolio / manager
+# 单独跑某个阶段：
+#   basic / etf-index-basic / daily / nav / adj / dividend / share / share-size / portfolio / manager
 quantify fetch etf adj
 quantify fetch etf dividend
+quantify fetch etf share-size
+
+# 指定阶段 + 指定代码 + 全量回填（仅对时间序列阶段有意义）
+quantify fetch etf daily --ts-code 510300.SH,159915.SZ --full
 
 # 拉 ETF→跟踪指数映射（etf_basic 接口，需 8000 积分；含 index_code/index_name）
 quantify fetch etf etf-index-basic
 ```
 
 > 📌 **两个 basic 的区别**：`quantify fetch etf basic` 调用 Tushare 的 `fund_basic` 接口，写入 `fund_basic` 表（公募基金通用信息，无跟踪指数）；`quantify fetch etf etf-index-basic` 调用 `etf_basic` 接口，写入 `etf_basic` 表（带 `index_code`/`index_name`，用于 ETF→指数→行业映射）。`quantify fetch etf all` 会同时跑这两个。
+
+#### `--incremental` / `--full` 的真实行为
+
+`--incremental/--full` 是一对**互斥布尔开关**（默认 `--incremental`）。但要注意：**并非所有阶段都受这个开关影响**。`fetch etf all` 实际是“混合模式”——
+
+| 阶段 | 接口 | 默认行为 | `--full` 是否生效 |
+|------|------|---------|------------------|
+| `daily` | `fund_daily` | **增量**：查库内每个 `ts_code` 的 `max(trade_date)`，只拉之后的数据 | ✅ 改为从首日全量回填 |
+| `nav` | `fund_nav` | **增量**（按 `nav_date`） | ✅ |
+| `adj` | `fund_adj` | **增量**（按 `trade_date`） | ✅ |
+| `share` | `fund_share` | **增量**（按 `trade_date`） | ✅ |
+| `share_size` | `etf_share_size` | **增量**（按 `trade_date`） | ✅ |
+| `dividend` | `fund_div` | **始终全量**：每次拉取该 ETF 的全部分红记录 | ❌ 无差异 |
+| `portfolio` | `fund_portfolio` | **始终全量**（季报，默认被跳过） | ❌ 无差异 |
+| `manager` | `fund_manager` | **始终全量** | ❌ 无差异 |
+| `basic` / `etf_index_basic` | `fund_basic` / `etf_basic` | **始终全量刷新** | ❌ 无差异 |
+
+即：日线、净值、复权、份额、规模这 5 个量大的时间序列走增量（高效，只拉新增）；分红、持仓、基金经理及两个 basic 表每次全量重拉（接口本身无增量语义，靠幂等 upsert 去重，不产生脏数据，只多耗一点 API 配额）。
+
+因此日常更新时 `--full` 主要影响那 5 个时间序列阶段；对分红/经理等阶段加不加 `--full` 没有区别。
+
+> 📌 `portfolio` 在 `DEFAULT_SKIP_STAGES` 中**默认被跳过**（拉取较慢），需要时单独执行 `quantify fetch etf portfolio`。
 
 所有写入均为 `INSERT ... ON DUPLICATE KEY UPDATE`，**重复运行安全**，断点续跑无需任何额外操作。
 
@@ -283,6 +310,28 @@ quantify fetch industry ci-daily --start-date 20200101             # 中信行�
 ```
 
 > 申万行业日线需 5000 积分，中信行业成分/行情需 5000 积分；积分不足时对应阶段会报权限错误，可先只跑 `sw-classify` / `sw-member`。成分股默认只拉 `is_new=Y` 的最新归属，加 `--all-history` 可拉历史纳入/剔除记录。
+
+### 5.2 一键拉取全部数据组
+
+如果想一条命令搞定**所有**数据（而不是只拉 ETF），用顶层的 `quantify fetch all`。它会按依赖顺序串行拉取五大数据组：**交易日历 → ETF → 行业（SW+CITIC）→ 指数 → 宏观/跨资产**。
+
+```bash
+# 增量更新全部数据组（默认）
+quantify fetch all
+
+# 全量回填全部数据组（首次建库或需要重拉历史时）
+quantify fetch all --full
+
+# 跳过某些数据组（顶层分组：trade_cal | etf | industry | index | macro）
+quantify fetch all --skip industry,macro
+
+# 指定交易日历的交易所、申万分类版本
+quantify fetch all --exchange SSE,SZSE --sw-src SW2021
+```
+
+> 📌 `quantify fetch all` 与 `quantify fetch etf all` 的区别：前者是**顶层总命令**，拉取全部五大数据组；后者只拉 **ETF 一个组**的全部阶段。两者的 `--incremental/--full` 行为一致——量大的时间序列走增量，分红/经理人/basic 等每次全量（详见上文“`--incremental` / `--full` 的真实行为”）。
+>
+> 各数据组对积分要求不同（行业/指数部分接口需 5000+ 积分）；积分不足时可用 `--skip` 跳过对应组，例如只维护 ETF：`quantify fetch all --skip industry,index,macro`。
 
 ### 6. 验证数据是否入库
 
@@ -316,14 +365,20 @@ print(df.tail())
 建议每个交易日收盘后跑一次：
 
 ```bash
+# 只维护 ETF（最常见）
 quantify fetch etf basic
 quantify fetch etf all      # 默认就是增量
+
+# 或：一条命令增量更新全部数据组（ETF + 行业 + 指数 + 宏观 + 交易日历）
+quantify fetch all          # 默认就是增量
 ```
 
 可结合系统计划任务：
 
-- **Windows**：任务计划程序（Task Scheduler）每日 17:30 触发 `powershell -Command "cd D:\learning\quantify; .venv\Scripts\Activate.ps1; quantify fetch etf all"`。
-- **Linux/macOS**：`crontab -e` 添加 `30 17 * * 1-5 cd /path/to/quantify && . .venv/bin/activate && quantify fetch etf all >> logs/cron.log 2>&1`。
+- **Windows**：任务计划程序（Task Scheduler）每日 17:30 触发 `powershell -Command "cd D:\learning\quantify; .venv\Scripts\Activate.ps1; quantify fetch all"`。
+- **Linux/macOS**：`crontab -e` 添加 `30 17 * * 1-5 cd /path/to/quantify && . .venv/bin/activate && quantify fetch all >> logs/cron.log 2>&1`。
+
+> 只关心 ETF 时把上面的 `quantify fetch all` 换成 `quantify fetch etf all` 即可，速度更快、积分消耗更低。
 
 ### 8. 后续路线（暂未实现）
 
@@ -446,12 +501,12 @@ Streamlit 回测工作台默认加载同一段示例策略。
 | `from jqdata import *` | 生效；本地注入轻量兼容模块，供策略源码导入。 |
 | `set_benchmark(security)` | 生效；设置本地回测基准，并自动把 `.XSHG/.XSHE` 转为 `.SH/.SZ`。 |
 | `run_daily(func, time="open")` | 生效；注册每日开盘执行函数。目前只支持 `time="open"`。 |
-| `attribute_history(security, count, "1d", fields)` | 生效；读取本地日线历史，且不包含当天收盘价；默认可读取回测开始日前 365 天历史。目前只支持 `unit="1d"`。 |
+| `attribute_history(security, count, "1d", fields)` | 生效；读取本地日线历史，价格字段按前复权返回，不包含当天收盘价；默认可读取回测开始日前 365 天历史。目前只支持 `unit="1d"`。 |
 | `order` / `order_value` / `order_target_value` / `order_target_percent` | 生效；走本地 Broker 下单、整手取整、开盘加滑点撮合。 |
 | `set_order_cost(OrderCost(...), type="fund")` | 生效但部分支持；使用 `open_commission`、`close_commission` 的较大值和 `min_commission`，暂不处理印花税等字段。 |
 | `set_slippage(PriceRelatedSlippage(rate))` | 生效；按聚宽风格调整成交价，`0.002` 表示买入价上移 `0.001`、卖出价下移 `0.001`，ETF 成交价按 `0.001` tick 四舍五入。 |
 | `set_option("avoid_future_data", True)` | 仅兼容语法；本地引擎默认已按无未来数据规则执行。 |
-| `set_option("use_real_price", True)` | 仅兼容语法；当前不改变本地行情或撮合口径。 |
+| `set_option("use_real_price", True)` | 语义对齐：成交按真实价撮合，`attribute_history` 历史价按前复权返回（本地默认即此行为）。 |
 | 其他 `set_option(...)` | 仅记录参数，不驱动本地行为。 |
 
 因此，当前目标是支持常见的日频 ETF 聚宽策略在本地与聚宽之间复制运行，而不是完整复刻聚宽所有 API、撮合细节和市场边界规则。
@@ -469,7 +524,7 @@ Streamlit 回测工作台默认加载同一段示例策略。
 | `context.data.history(ts_code, count, field)` | 获取历史 N 根 bar 的字段序列 |
 | `context.portfolio.cash` | 当前现金 |
 | `context.portfolio.total_value` | 当前总资产 |
-| `context.portfolio.positions[code]` | 持仓对象（`.amount`, `.avg_cost`, `.market_value`, `.pnl`） |
+| `context.portfolio.positions[code]` | 持仓对象（`.amount`, `.avg_cost`, `.market_value` / `.value`, `.pnl`） |
 
 ### 撮合与数据对齐
 
@@ -481,7 +536,9 @@ Streamlit 回测工作台默认加载同一段示例策略。
 - 买入现金不足时会按可负担数量部分成交；完全不可成交或无持仓卖出会标记为拒单，不计入 `trades`。
 - ETF 分红按 `fund_div` 的登记日锁定持仓、派息日现金入账；这会影响后续可用现金与仓位数量。
 - 佣金会直接扣减现金；滑点通过更差成交价影响现金，并计入结果指标中的 `total_slippage`。
+- **价格复权口径（对齐聚宽 `use_real_price=True`）**：`attribute_history()` 返回的历史价格（open/high/low/close/pre_close）按 `fund_adj` 复权因子做**前复权**（以当前 bar 为基准），避免分红除息日的虚假跳空污染波动率 / 均线 / 动量等计算；成交价仍用**真实开盘价**，分红现金单独入账（不双算）。成交量、成交额、涨跌幅等非价格字段不复权。
 - 基准收益使用 `fund_adj` 复权收盘价，并以前一交易日作为基准起点；日胜率按“策略日收益跑赢基准日收益”的比例统计。
+- 平仓盈亏统计（盈利次数 / 亏损次数 / 胜率 / 盈亏比）按**扣除双边佣金与滑点后的净盈亏**判定，并对接近 0 的同价进出用浮点容差归为“平”不计入，与聚宽口径一致。
 
 ### 在代码中调用引擎
 
