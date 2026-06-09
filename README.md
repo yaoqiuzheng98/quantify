@@ -201,7 +201,7 @@ quantify db init
 1. 用 `.env` 里的连接信息登录 MySQL；
 2. 若库不存在则创建（utf8mb4 + `_unicode_ci`）；
 3. 在库内创建本项目当前涉及的全部表：
-   - ETF：`fund_basic` / `etf_basic` / `fund_daily` / `fund_nav` / `fund_adj` / `fund_div` / `fund_share` / `fund_portfolio` / `fund_manager`；
+   - ETF：`fund_basic` / `etf_basic` / `fund_daily` / `fund_nav` / `fund_adj` / `fund_div` / `fund_share` / `etf_share_size` / `fund_portfolio` / `fund_manager`；
    - 行业：`index_classify` / `index_member_all` / `sw_daily` / `ci_index_member` / `ci_daily`；
    - 指数：`index_basic` / `index_daily` / `index_dailybasic` / `index_weight` / `moneyflow_ind_dc`；
    - 交易日历：`trade_cal`；

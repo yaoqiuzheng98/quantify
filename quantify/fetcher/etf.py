@@ -33,6 +33,7 @@ from quantify.database.models import (
     EtfNav,
     EtfPortfolio,
     EtfShare,
+    EtfShareSize,
 )
 from quantify.database.upsert import upsert_dataframe
 from quantify.tushare_client.client import TushareClient, get_client
@@ -152,6 +153,7 @@ class EtfFetcher:
             ("adj", self.fetch_adj),
             ("dividend", self.fetch_dividend),
             ("share", self.fetch_share),
+            ("share_size", self.fetch_share_size),
             ("portfolio", self.fetch_portfolio),
             ("manager", self.fetch_manager),
         ]
@@ -466,6 +468,18 @@ class EtfFetcher:
         return self._fetch_per_code_timeseries(
             api="fund_share",
             model=EtfShare,
+            date_field_in_db="trade_date",
+            ts_codes=ts_codes,
+            incremental=incremental,
+        )
+
+    # ------------------------------------------------------------------
+    # 6b) etf_share_size (份额 + 规模/AUM + 净值 + 收盘价)
+    # ------------------------------------------------------------------
+    def fetch_share_size(self, *, ts_codes: Iterable[str], incremental: bool = True) -> int:
+        return self._fetch_per_code_timeseries(
+            api="etf_share_size",
+            model=EtfShareSize,
             date_field_in_db="trade_date",
             ts_codes=ts_codes,
             incremental=incremental,

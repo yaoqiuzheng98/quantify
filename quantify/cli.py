@@ -101,7 +101,7 @@ def db_drop(
 def fetch_etf(
     stage: str = typer.Argument(
         "all",
-        help="Stage to run: all|basic|etf-index-basic|daily|nav|adj|dividend|share|portfolio|manager",
+        help="Stage to run: all|basic|etf-index-basic|daily|nav|adj|dividend|share|share-size|portfolio|manager",
     ),
     incremental: bool = typer.Option(
         True, "--incremental/--full", help="Incremental update vs full backfill"
@@ -144,6 +144,8 @@ def fetch_etf(
         "adj": fetcher.fetch_adj,
         "dividend": fetcher.fetch_dividend,
         "share": fetcher.fetch_share,
+        "share-size": fetcher.fetch_share_size,
+        "share_size": fetcher.fetch_share_size,
         "portfolio": fetcher.fetch_portfolio,
         "manager": fetcher.fetch_manager,
     }

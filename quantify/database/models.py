@@ -254,6 +254,29 @@ class EtfShare(Base):
 
 
 # ---------------------------------------------------------------------------
+# ETF share & size (etf_share_size) - daily share + AUM, ETF-theme endpoint
+# ---------------------------------------------------------------------------
+class EtfShareSize(Base):
+    __tablename__ = "etf_share_size"
+
+    trade_date: Mapped[date] = mapped_column(Date, comment="交易日期")
+    ts_code: Mapped[str] = mapped_column(String(16), comment="ETF代码")
+    etf_name: Mapped[str | None] = mapped_column(String(128), comment="基金名称")
+    total_share: Mapped[float | None] = mapped_column(Float, comment="总份额(万份)")
+    total_size: Mapped[float | None] = mapped_column(Float, comment="总规模(万元)")
+    nav: Mapped[float | None] = mapped_column(Float, comment="基金份额净值(元)")
+    close: Mapped[float | None] = mapped_column(Float, comment="收盘价(元)")
+    exchange: Mapped[str | None] = mapped_column(String(8), comment="交易所 SSE/SZSE/BSE")
+
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        PrimaryKeyConstraint("ts_code", "trade_date", name="pk_etf_share_size"),
+        Index("idx_etf_share_size_trade_date", "trade_date"),
+    )
+
+
+# ---------------------------------------------------------------------------
 # ETF portfolio (披露持仓)
 # ---------------------------------------------------------------------------
 class EtfPortfolio(Base):
