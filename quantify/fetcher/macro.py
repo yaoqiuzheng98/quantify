@@ -221,6 +221,7 @@ class MacroFetcher:
         for i, code in enumerate(codes, 1):
             code_start = starts.get(code, default_start)
             if code_start > end_str:
+                log.info(f"  index_global [{i}/{len(codes)}] {code} up to date")
                 continue
             frames = []
             for chunk_start, chunk_end in _date_chunks(code_start, end_str, max_days=self.GLOBAL_RANGE_DAYS):
@@ -234,6 +235,7 @@ class MacroFetcher:
                 if df is not None and not df.empty:
                     frames.append(df)
             if not frames:
+                log.info(f"  index_global [{i}/{len(codes)}] {code} empty")
                 continue
             df = pd.concat(frames, ignore_index=True)
             df = _normalize_dates(df)

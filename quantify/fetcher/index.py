@@ -83,6 +83,13 @@ class IndexFetcher:
     # index_weight 是月度成分(每月约 300+ 行)；单次上限 8000 行，
     # 故每窗取 ~700 天(约 2 年 × 300 行 ≈ 7000 行)以免触顶。
     WEIGHT_RANGE_DAYS = 700
+    # fetch_all 默认跳过的阶段：index_weight(成分权重)对 ETF 轮动 / 全天候
+    # 跨资产配置策略无用，且接口每次仅返回约 2 个月成分、受并发上限 2 拖累极慢，
+    # 默认不拉，需要时显式 stage=index-weight 单独同步。
+    DEFAULT_SKIP_STAGES = frozenset({"index_weight"})
+    # 东方财富行业资金流(moneyflow_ind_dc)只有 2024 年起才有数据，
+    # 故该接口默认从此日期开始，避免 --full 时遍历 2000~2023 的空交易日。
+    MONEYFLOW_START_DATE = "20240101"
     # 默认拉取每日指标的宽基指数(接口仅支持这几个)。
     DAILYBASIC_CODES = (
         "000001.SH",
@@ -144,6 +151,7 @@ class IndexFetcher:
                     log.warning(f"  {api} [{position}] {code} failed: {exc}; retrying in 3s")
                     time.sleep(3)
             if df is None or df.empty:
+                log.info(f"  {api} [{position}/{len(code_list)}] {code} empty")
                 return 0
             df = _normalize_dates(df)
             written = upsert_dataframe(model, df)
@@ -440,7 +448,7 @@ class IndexFetcher:
         from quantify.database.models import TradeCalendar
 
         end_str = end_date or _today_str()
-        default_start = start_date or self.DEFAULT_START_DATE
+        default_start = start_date or self.MONEYFLOW_START_DATE
         start_str = default_start
         if incremental:
             with session_scope() as session:
@@ -476,7 +484,7 @@ class IndexFetcher:
         etf_only: bool = True,
         skip: Iterable[str] | None = None,
     ) -> list[FetchSummary]:
-        skip_set = {s.strip().lower() for s in (skip or [])}
+        skip_set = {s.strip().lower() for s in (skip or [])} | self.DEFAULT_SKIP_STAGES
         results: list[FetchSummary] = []
 
         if "index_basic" not in skip_set:
