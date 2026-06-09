@@ -604,3 +604,97 @@ class MoneyflowIndDc(Base):
         PrimaryKeyConstraint("trade_date", "ts_code", "content_type", name="pk_moneyflow_ind_dc"),
         Index("idx_moneyflow_ind_dc_code", "ts_code", "trade_date"),
     )
+
+
+# ---------------------------------------------------------------------------
+# 中债国债收益率曲线 (yc_cb)
+# ---------------------------------------------------------------------------
+class YcCb(Base):
+    __tablename__ = "yc_cb"
+
+    trade_date: Mapped[date] = mapped_column(Date, comment="交易日期")
+    ts_code: Mapped[str] = mapped_column(String(16), comment="曲线编码 如 1001.CB")
+    curve_name: Mapped[str | None] = mapped_column(String(64), comment="曲线名称")
+    curve_type: Mapped[str] = mapped_column(String(2), comment="曲线类型 0到期 1即期")
+    curve_term: Mapped[float] = mapped_column(Float, comment="期限(年)")
+    # yield 是 SQL/Python 保留字，属性名加后缀，列名仍用 yield。
+    yield_pct: Mapped[float | None] = mapped_column("yield", Float, comment="收益率(%)")
+
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        PrimaryKeyConstraint("ts_code", "curve_type", "curve_term", "trade_date", name="pk_yc_cb"),
+        Index("idx_yc_cb_trade_date", "trade_date"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# 国际主要指数 (index_global)
+# ---------------------------------------------------------------------------
+class IndexGlobal(Base):
+    __tablename__ = "index_global"
+
+    ts_code: Mapped[str] = mapped_column(String(16), comment="TS指数代码 如 SPX")
+    trade_date: Mapped[date] = mapped_column(Date, comment="交易日期")
+    open: Mapped[float | None] = mapped_column(Float, comment="开盘点位")
+    close: Mapped[float | None] = mapped_column(Float, comment="收盘点位")
+    high: Mapped[float | None] = mapped_column(Float, comment="最高点位")
+    low: Mapped[float | None] = mapped_column(Float, comment="最低点位")
+    pre_close: Mapped[float | None] = mapped_column(Float, comment="昨日收盘点")
+    change: Mapped[float | None] = mapped_column(Float, comment="涨跌点位")
+    pct_chg: Mapped[float | None] = mapped_column(Float, comment="涨跌幅")
+    swing: Mapped[float | None] = mapped_column(Float, comment="振幅")
+    vol: Mapped[float | None] = mapped_column(Float, comment="成交量(多数无)")
+    amount: Mapped[float | None] = mapped_column(Float, comment="成交额(多数无)")
+
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        PrimaryKeyConstraint("ts_code", "trade_date", name="pk_index_global"),
+        Index("idx_index_global_trade_date", "trade_date"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# 美国国债收益率曲线利率 (us_tycr)
+# ---------------------------------------------------------------------------
+class UsTycr(Base):
+    __tablename__ = "us_tycr"
+
+    # date 是 SQL 保留字，属性名用 trade_date，列名保持 date。
+    trade_date: Mapped[date] = mapped_column("date", Date, comment="日期")
+    m1: Mapped[float | None] = mapped_column(Float, comment="1月期")
+    m2: Mapped[float | None] = mapped_column(Float, comment="2月期")
+    m3: Mapped[float | None] = mapped_column(Float, comment="3月期")
+    m4: Mapped[float | None] = mapped_column(Float, comment="4月期(从20221019起)")
+    m6: Mapped[float | None] = mapped_column(Float, comment="6月期")
+    y1: Mapped[float | None] = mapped_column(Float, comment="1年期")
+    y2: Mapped[float | None] = mapped_column(Float, comment="2年期")
+    y3: Mapped[float | None] = mapped_column(Float, comment="3年期")
+    y5: Mapped[float | None] = mapped_column(Float, comment="5年期")
+    y7: Mapped[float | None] = mapped_column(Float, comment="7年期")
+    y10: Mapped[float | None] = mapped_column(Float, comment="10年期")
+    y20: Mapped[float | None] = mapped_column(Float, comment="20年期")
+    y30: Mapped[float | None] = mapped_column(Float, comment="30年期")
+
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    __table_args__ = (PrimaryKeyConstraint("date", name="pk_us_tycr"),)
+
+
+# ---------------------------------------------------------------------------
+# 美国国债实际收益率曲线利率 (us_trycr)
+# ---------------------------------------------------------------------------
+class UsTrycr(Base):
+    __tablename__ = "us_trycr"
+
+    trade_date: Mapped[date] = mapped_column("date", Date, comment="日期")
+    y5: Mapped[float | None] = mapped_column(Float, comment="5年期实际利率")
+    y7: Mapped[float | None] = mapped_column(Float, comment="7年期实际利率")
+    y10: Mapped[float | None] = mapped_column(Float, comment="10年期实际利率")
+    y20: Mapped[float | None] = mapped_column(Float, comment="20年期实际利率")
+    y30: Mapped[float | None] = mapped_column(Float, comment="30年期实际利率")
+
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    __table_args__ = (PrimaryKeyConstraint("date", name="pk_us_trycr"),)

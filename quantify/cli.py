@@ -306,6 +306,58 @@ def fetch_index(
 
 
 # ---------------------------------------------------------------------------
+# fetch macro (yield curves, global indices, US treasury rates)
+# ---------------------------------------------------------------------------
+@fetch_app.command("macro")
+def fetch_macro(
+    stage: str = typer.Argument(
+        "all",
+        help="Stage: all|yc-cb|index-global|us-tycr|us-trycr",
+    ),
+    incremental: bool = typer.Option(
+        True, "--incremental/--full", help="Incremental update vs full backfill"
+    ),
+    ts_code: Optional[str] = typer.Option(
+        None, "--ts-code", help="Comma-separated codes (index-global stage)"
+    ),
+    start_date: Optional[str] = typer.Option(None, "--start-date", help="Start date, e.g. 20200101"),
+    end_date: Optional[str] = typer.Option(None, "--end-date", help="End date, e.g. 20260608"),
+    skip: Optional[str] = typer.Option(
+        None, "--skip", help="Comma-separated stages to skip (only used with stage=all)"
+    ),
+) -> None:
+    """Fetch macro / cross-asset datasets (yield curves, global indices)."""
+    from quantify.fetcher.macro import MacroFetcher
+
+    normalized = stage.replace("-", "_").lower()
+    codes = [c.strip() for c in ts_code.split(",")] if ts_code else None
+    skip_set = {s.strip() for s in skip.split(",")} if skip else None
+    fetcher = MacroFetcher()
+
+    if normalized == "all":
+        fetcher.fetch_all(incremental=incremental, start_date=start_date, end_date=end_date, skip=skip_set)
+        return
+
+    dispatch = {
+        "yc_cb": lambda: fetcher.fetch_yc_cb(
+            incremental=incremental, start_date=start_date, end_date=end_date
+        ),
+        "index_global": lambda: fetcher.fetch_index_global(
+            ts_codes=codes, incremental=incremental, start_date=start_date, end_date=end_date
+        ),
+        "us_tycr": lambda: fetcher.fetch_us_tycr(
+            incremental=incremental, start_date=start_date, end_date=end_date
+        ),
+        "us_trycr": lambda: fetcher.fetch_us_trycr(
+            incremental=incremental, start_date=start_date, end_date=end_date
+        ),
+    }
+    if normalized not in dispatch:
+        raise typer.BadParameter(f"Unknown stage: {stage}")
+    dispatch[normalized]()
+
+
+# ---------------------------------------------------------------------------
 # fetch all (ETF + industry + trade calendar, one shot)
 # ---------------------------------------------------------------------------
 @fetch_app.command("all")
@@ -316,17 +368,19 @@ def fetch_all_data(
     exchange: str = typer.Option("SSE", "--exchange", help="Exchange(s) for trade calendar, comma-separated"),
     sw_src: str = typer.Option("SW2021", "--sw-src", help="SW classification source, e.g. SW2021"),
     skip: Optional[str] = typer.Option(
-        None, "--skip", help="Comma-separated top-level groups to skip: trade_cal|etf|industry|index"
+        None, "--skip", help="Comma-separated top-level groups to skip: trade_cal|etf|industry|index|macro"
     ),
 ) -> None:
     """Fetch EVERYTHING from Tushare into MySQL in dependency order.
 
-    Order: trade calendar -> ETF (basic first) -> industry (SW + CITIC) -> index.
+    Order: trade calendar -> ETF (basic first) -> industry (SW + CITIC)
+    -> index -> macro (yield curves / global indices / US rates).
     Use ``--full`` to backfill all history, otherwise incremental.
     """
     from quantify.fetcher.etf import EtfFetcher
     from quantify.fetcher.index import IndexFetcher
     from quantify.fetcher.industry import IndustryFetcher
+    from quantify.fetcher.macro import MacroFetcher
 
     skip_set = {s.strip().lower() for s in skip.split(",")} if skip else set()
 
@@ -351,6 +405,11 @@ def fetch_all_data(
     if "index" not in skip_set:
         log.info("=== fetch index (basic/daily/dailybasic/weight/moneyflow) ===")
         IndexFetcher().fetch_all(incremental=incremental)
+
+    # 5) Macro / cross-asset: yield curves, global indices, US treasury rates
+    if "macro" not in skip_set:
+        log.info("=== fetch macro (yc_cb/index_global/us_tycr/us_trycr) ===")
+        MacroFetcher().fetch_all(incremental=incremental)
 
     log.info("=== fetch all: done ===")
 

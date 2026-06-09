@@ -204,6 +204,7 @@ quantify db init
    - ETF：`fund_basic` / `etf_basic` / `fund_daily` / `fund_nav` / `fund_adj` / `fund_div` / `fund_share` / `etf_share_size` / `fund_portfolio` / `fund_manager`；
    - 行业：`index_classify` / `index_member_all` / `sw_daily` / `ci_index_member` / `ci_daily`；
    - 指数：`index_basic` / `index_daily` / `index_dailybasic` / `index_weight` / `moneyflow_ind_dc`；
+   - 宏观/跨资产：`yc_cb`（中债收益率曲线）/ `index_global`（国际指数）/ `us_tycr`（美债名义利率）/ `us_trycr`（美债实际利率）；
    - 交易日历：`trade_cal`；
    - 策略：`strategy`。
 
