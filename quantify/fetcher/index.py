@@ -18,6 +18,7 @@ from sqlalchemy import func, select
 
 from quantify.database.engine import session_scope
 from quantify.database.models import (
+    EtfIndexBasic,
     IndexBasic,
     IndexDaily,
     IndexDailyBasic,
@@ -69,13 +70,19 @@ class IndexFetcher:
     """Pull Tushare index-theme datasets into MySQL."""
 
     DEFAULT_START_DATE = "20000101"
+    # 镜像站并发硬上限为 2，无法调高（超过会报"并发请求过多"）。
     MAX_WORKERS = 2
-    # index_daily 单次上限 8000 行；窗口按交易日折算需远低于该值。
-    MAX_DAILY_RANGE_DAYS = 1000
+    # index_daily 单次上限 8000 行。全历史(~26 年)约 5100 个交易日，
+    # 远低于上限，故一次窗口即可拉完；只有极端情况才靠 _fetch_range 二分兜底。
+    MAX_DAILY_RANGE_DAYS = 12000
     DAILY_ROW_CAP = 7800
-    # index_dailybasic 单次上限 3000 行。
-    BASIC_RANGE_DAYS = 800
+    # index_dailybasic 单次上限 3000 行。全历史交易日约 6300，需要分 ~3 段；
+    # 每段 4000 日历天≈2700 个交易日，确保不触顶。
+    BASIC_RANGE_DAYS = 4000
     BASIC_ROW_CAP = 2800
+    # index_weight 是月度成分(每月约 300+ 行)；单次上限 8000 行，
+    # 故每窗取 ~700 天(约 2 年 × 300 行 ≈ 7000 行)以免触顶。
+    WEIGHT_RANGE_DAYS = 700
     # 默认拉取每日指标的宽基指数(接口仅支持这几个)。
     DAILYBASIC_CODES = (
         "000001.SH",
@@ -212,6 +219,23 @@ class IndexFetcher:
             rows = session.execute(stmt).scalars().all()
         return list(rows)
 
+    def _load_etf_tracked_index_codes(self) -> list[str]:
+        """Load the set of index codes actually tracked by ETFs.
+
+        Source: ``etf_basic.index_code``. This is the high-value universe for
+        ETF strategies (a few hundred indices) versus the full index_basic
+        table (10k+ indices, mostly irrelevant CSI/MSCI/etc.).
+        """
+        with session_scope() as session:
+            rows = (
+                session.execute(
+                    select(EtfIndexBasic.index_code).where(EtfIndexBasic.index_code.is_not(None)).distinct()
+                )
+                .scalars()
+                .all()
+            )
+        return sorted(c for c in rows if c)
+
     def _incremental_starts(self, model, default_start: str) -> dict[str, str]:
         starts: dict[str, str] = {}
         with session_scope() as session:
@@ -233,13 +257,21 @@ class IndexFetcher:
         *,
         ts_codes: Iterable[str] | None = None,
         markets: Iterable[str] | None = None,
+        etf_only: bool = True,
         incremental: bool = True,
         start_date: str | None = None,
         end_date: str | None = None,
     ) -> int:
-        codes = list(ts_codes) if ts_codes else self._load_index_codes(markets=markets)
+        if ts_codes:
+            codes = list(ts_codes)
+        elif markets:
+            codes = self._load_index_codes(markets=markets)
+        elif etf_only:
+            codes = self._load_etf_tracked_index_codes()
+        else:
+            codes = self._load_index_codes()
         if not codes:
-            log.warning("index_daily: no index codes - run index_basic first")
+            log.warning("index_daily: no index codes - run index_basic / etf-index-basic first")
             return 0
         end_str = end_date or _today_str()
         default_start = start_date or self.DEFAULT_START_DATE
@@ -315,13 +347,21 @@ class IndexFetcher:
         *,
         index_codes: Iterable[str] | None = None,
         markets: Iterable[str] | None = None,
+        etf_only: bool = True,
         incremental: bool = True,
         start_date: str | None = None,
         end_date: str | None = None,
     ) -> int:
-        codes = list(index_codes) if index_codes else self._load_index_codes(markets=markets)
+        if index_codes:
+            codes = list(index_codes)
+        elif markets:
+            codes = self._load_index_codes(markets=markets)
+        elif etf_only:
+            codes = self._load_etf_tracked_index_codes()
+        else:
+            codes = self._load_index_codes()
         if not codes:
-            log.warning("index_weight: no index codes - run index_basic first")
+            log.warning("index_weight: no index codes - run index_basic / etf-index-basic first")
             return 0
         end_str = end_date or _today_str()
         default_start = start_date or self.DEFAULT_START_DATE
@@ -346,9 +386,7 @@ class IndexFetcher:
             if code_start > end_str:
                 return None
             frames = []
-            for chunk_start, chunk_end in _date_chunks(
-                code_start, end_str, max_days=self.MAX_DAILY_RANGE_DAYS
-            ):
+            for chunk_start, chunk_end in _date_chunks(code_start, end_str, max_days=self.WEIGHT_RANGE_DAYS):
                 df = self._fetch_range(
                     "index_weight",
                     code,
@@ -435,6 +473,7 @@ class IndexFetcher:
         incremental: bool = True,
         start_date: str | None = None,
         end_date: str | None = None,
+        etf_only: bool = True,
         skip: Iterable[str] | None = None,
     ) -> list[FetchSummary]:
         skip_set = {s.strip().lower() for s in (skip or [])}
@@ -446,7 +485,9 @@ class IndexFetcher:
             results.append(
                 FetchSummary(
                     "index_daily",
-                    self.fetch_index_daily(incremental=incremental, start_date=start_date, end_date=end_date),
+                    self.fetch_index_daily(
+                        etf_only=etf_only, incremental=incremental, start_date=start_date, end_date=end_date
+                    ),
                 )
             )
         if "index_dailybasic" not in skip_set:
@@ -463,7 +504,7 @@ class IndexFetcher:
                 FetchSummary(
                     "index_weight",
                     self.fetch_index_weight(
-                        incremental=incremental, start_date=start_date, end_date=end_date
+                        etf_only=etf_only, incremental=incremental, start_date=start_date, end_date=end_date
                     ),
                 )
             )

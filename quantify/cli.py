@@ -239,23 +239,40 @@ def fetch_index(
     market: Optional[str] = typer.Option(
         None, "--market", help="Comma-separated index markets, e.g. SSE,SZSE,CSI,SW"
     ),
+    all_index: bool = typer.Option(
+        False,
+        "--all-index",
+        help="Fetch ALL indices in index_basic (default: only ETF-tracked indices)",
+    ),
     start_date: Optional[str] = typer.Option(None, "--start-date", help="Start date, e.g. 20200101"),
     end_date: Optional[str] = typer.Option(None, "--end-date", help="End date, e.g. 20260608"),
     skip: Optional[str] = typer.Option(
         None, "--skip", help="Comma-separated stages to skip (only used with stage=all)"
     ),
 ) -> None:
-    """Fetch Tushare index-theme datasets into MySQL."""
+    """Fetch Tushare index-theme datasets into MySQL.
+
+    By default index_daily/index_weight only fetch indices actually tracked by
+    ETFs (etf_basic.index_code, a few hundred). Use --all-index to fetch every
+    index in index_basic (10k+, mostly irrelevant), or --market to filter.
+    """
     from quantify.fetcher.index import IndexFetcher
 
     normalized = stage.replace("-", "_").lower()
     codes = [c.strip() for c in ts_code.split(",")] if ts_code else None
     markets = [m.strip() for m in market.split(",")] if market else None
     skip_set = {s.strip() for s in skip.split(",")} if skip else None
+    etf_only = not all_index
     fetcher = IndexFetcher()
 
     if normalized == "all":
-        fetcher.fetch_all(incremental=incremental, start_date=start_date, end_date=end_date, skip=skip_set)
+        fetcher.fetch_all(
+            incremental=incremental,
+            start_date=start_date,
+            end_date=end_date,
+            etf_only=etf_only,
+            skip=skip_set,
+        )
         return
 
     dispatch = {
@@ -263,6 +280,7 @@ def fetch_index(
         "index_daily": lambda: fetcher.fetch_index_daily(
             ts_codes=codes,
             markets=markets,
+            etf_only=etf_only,
             incremental=incremental,
             start_date=start_date,
             end_date=end_date,
@@ -273,6 +291,7 @@ def fetch_index(
         "index_weight": lambda: fetcher.fetch_index_weight(
             index_codes=codes,
             markets=markets,
+            etf_only=etf_only,
             incremental=incremental,
             start_date=start_date,
             end_date=end_date,
