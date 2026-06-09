@@ -104,6 +104,9 @@ class EtfFetcher:
     # fund_daily/fund_nav/fund_adj 单次行数上限（Tushare 通常单次 ≤8000 行）。
     # 达到该阈值视为可能被接口截断，需要缩小日期窗口重拉。
     TIMESERIES_ROW_CAP = 7800
+    # fetch_all 默认跳过的阶段：portfolio(持仓明细 164 万行)对 ETF 轮动策略
+    # 无用且拉取极慢，默认不拉，需要时显式 stage=portfolio 单独同步。
+    DEFAULT_SKIP_STAGES = frozenset({"portfolio"})
 
     def __init__(self, client: TushareClient | None = None) -> None:
         self.client = client or get_client()
@@ -130,8 +133,11 @@ class EtfFetcher:
             all from ``fund_basic``).
         skip:
             Names of stages to skip, e.g. ``{"portfolio", "manager"}``.
+            ``portfolio`` is skipped by default (see ``DEFAULT_SKIP_STAGES``);
+            to fetch it, run the stage directly via the CLI
+            (``quantify fetch etf portfolio``).
         """
-        skip = set(skip or [])
+        skip = set(skip or []) | self.DEFAULT_SKIP_STAGES
         results: list[FetchSummary] = []
 
         # 1. Basic info first - everything else depends on its ts_codes.
