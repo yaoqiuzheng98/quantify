@@ -27,6 +27,11 @@ class Position:
         return self.amount * self.current_price
 
     @property
+    def value(self) -> float:
+        """JoinQuant-compatible alias of ``market_value`` (持仓市值)."""
+        return self.market_value
+
+    @property
     def total_amount(self) -> int:
         return self.amount
 

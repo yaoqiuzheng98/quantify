@@ -301,8 +301,8 @@ class BacktestEngine:
         end_date: str,
         initial_cash: float = 100000.0,
         benchmark_code: str | None = None,
-        commission_rate: float = 0.00015,
-        commission_min: float = 5.0,
+        commission_rate: float = 0.0005,
+        commission_min: float = 0.5,
         slippage_rate: float = 0.0,
         override_strategy_costs: bool = False,
         history_lookback_days: int = 365,
@@ -413,6 +413,10 @@ class BacktestEngine:
         log.info(f"Running {len(unified_dates)} trading days ...")
 
         for bar_date in unified_dates:
+            # Expose current date JoinQuant-style as ``context.current_dt`` so
+            # strategies written for JoinQuant run unmodified on this engine.
+            context.current_dt = datetime(bar_date.year, bar_date.month, bar_date.day)
+
             # Advance data proxy to this date
             for code, bars in all_bars.items():
                 idx = next_indices[code]

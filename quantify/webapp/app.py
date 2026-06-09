@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import date, datetime
 from html import escape
 from typing import Any
@@ -11,8 +12,21 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
+from sqlalchemy import select
+
 from quantify.backtest import BacktestEngine, BacktestResult
+from quantify.backtest.codes import normalize_codes
+from quantify.database.engine import session_scope
+from quantify.database.models import EtfDaily
 from quantify.database.strategy_store import StrategyRecord, list_strategies, save_strategy
+
+
+@st.cache_data(show_spinner=False)
+def _all_etf_codes() -> list[str]:
+    """数据库中所有有日线行情的 ETF 代码（用于'全部加载'压测开关）。"""
+    with session_scope() as sess:
+        rows = sess.execute(select(EtfDaily.ts_code).distinct()).scalars().all()
+    return sorted(rows)
 
 try:
     from streamlit_ace import st_ace
@@ -35,8 +49,23 @@ def rebalance(context):
 """
 
 
-def _parse_codes(raw_codes: str) -> list[str]:
-    return [code.strip().upper() for code in raw_codes.split(",") if code.strip()]
+# 匹配 6 位数字 + 交易所后缀的 ETF/证券代码：
+# 聚宽格式 510300.XSHG / 159915.XSHE，或 Tushare 格式 510300.SH / 159915.SZ。
+_CODE_PATTERN = re.compile(r"\b(\d{6})\.(XSHG|XSHE|SH|SZ)\b", re.IGNORECASE)
+
+
+def _extract_codes_from_source(strategy_source: str) -> list[str]:
+    """从策略源码中提取所有标的代码（去重、保序、统一大写）。
+
+    回测引擎只加载策略真正引用的标的，因此无需手动输入标的列表，
+    避免"策略写了 7 个资产、输入框只填 1 个"导致的静默漏加载。
+    """
+    seen: dict[str, None] = {}
+    for num, suffix in _CODE_PATTERN.findall(strategy_source):
+        seen[f"{num}.{suffix.upper()}"] = None
+    # 归一化为 Tushare 格式并去重：.XSHG/.XSHE 与 .SH/.SZ 视为同一标的，
+    # 避免源码注释里同时出现两种写法导致重复加载。
+    return normalize_codes(list(seen))
 
 
 def _init_strategy_state() -> None:
@@ -483,7 +512,7 @@ def main() -> None:
 
     with st.sidebar:
         st.header("回测参数")
-        raw_codes = st.text_input("标的代码", value="510300.SH", help="多个代码用英文逗号分隔")
+        st.caption("标的代码自动从策略源码解析，无需手动填写。")
         benchmark_code = st.text_input("基准代码", value="510300.SH", help="仅用于收益对比，会自动加载行情")
         start_date = st.date_input("开始日期", value=date(2019, 1, 1))
         end_date = st.date_input("结束日期", value=date(2019, 6, 30))
@@ -493,26 +522,53 @@ def main() -> None:
         commission_rate = st.number_input("佣金费率", min_value=0.0, value=0.0005, step=0.0001, format="%.6f")
         commission_min = st.number_input("最低佣金", min_value=0.0, value=0.5, step=0.5)
         slippage_rate = st.number_input("滑点比例", min_value=0.0, value=0.002, step=0.0005, format="%.6f")
+
+        st.header("调试")
+        load_all = st.checkbox(
+            "加载全部 ETF（压测用）",
+            value=False,
+            help="忽略源码解析，加载库中全部 ETF 行情。仅用于体验加载耗时，正常回测请关闭。",
+        )
+
         run_clicked = st.button("运行回测", type="primary", width="stretch")
 
     st.text_input("策略名称", key="strategy_name")
     strategy_source = _strategy_editor(st.session_state["strategy_source"])
     st.session_state["strategy_source"] = strategy_source
+
+    preview_codes = _extract_codes_from_source(strategy_source)
+    if preview_codes:
+        st.caption(
+            f"将从源码加载 {len(preview_codes)} 个标的：" + " ".join(f"`{c}`" for c in preview_codes)
+        )
+    else:
+        st.caption("未在源码中解析到标的代码（形如 510300.XSHG / 159915.SZ）。")
+
     st.info("策略源码会在当前 Python 进程中执行，请只运行可信代码。")
     if save_clicked:
         _save_current_strategy(strategy_source)
 
     if run_clicked:
-        ts_codes = _parse_codes(raw_codes)
-        if not ts_codes:
-            st.error("请至少输入一个标的代码。")
-            return
+        if load_all:
+            # 压测模式：加载库中全部 ETF，忽略源码解析。
+            ts_codes = _all_etf_codes()
+            if not ts_codes:
+                st.error("数据库中没有任何 ETF 日线行情，无法压测加载。")
+                return
+        else:
+            ts_codes = _extract_codes_from_source(strategy_source)
+            if not ts_codes:
+                st.error("未能从策略源码中解析到任何标的代码（形如 510300.XSHG / 159915.SZ）。")
+                return
         if start_date >= end_date:
             st.error("开始日期必须早于结束日期。")
             return
 
-        with st.spinner("正在运行回测..."):
+        st.session_state["loaded_codes"] = ts_codes
+        spinner_msg = f"正在运行回测（加载 {len(ts_codes)} 个标的）..."
+        with st.spinner(spinner_msg):
             try:
+                elapsed_start = datetime.now()
                 st.session_state["backtest_result"] = _run_backtest(
                     strategy_source=strategy_source,
                     ts_codes=ts_codes,
@@ -524,9 +580,22 @@ def main() -> None:
                     commission_min=float(commission_min),
                     slippage_rate=float(slippage_rate),
                 )
+                st.session_state["last_elapsed"] = (datetime.now() - elapsed_start).total_seconds()
             except Exception as exc:  # noqa: BLE001
                 st.exception(exc)
                 return
+
+    loaded_codes = st.session_state.get("loaded_codes")
+    if loaded_codes:
+        elapsed = st.session_state.get("last_elapsed")
+        elapsed_txt = f"，耗时 {elapsed:.2f}s" if elapsed is not None else ""
+        if len(loaded_codes) <= 50:
+            codes_txt = " ".join(f"`{c}`" for c in loaded_codes)
+            st.markdown(f"**加载的标的（{len(loaded_codes)} 个{elapsed_txt}）**：{codes_txt}")
+        else:
+            st.markdown(f"**加载的标的（{len(loaded_codes)} 个{elapsed_txt}）** —— 数量过多已折叠")
+            with st.expander("展开查看全部标的代码"):
+                st.write(", ".join(loaded_codes))
 
     result = st.session_state.get("backtest_result")
     if result is None:

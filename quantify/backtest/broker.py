@@ -15,7 +15,7 @@ from .context import Bar, DataProxy, Order, ORDER_STATUS_FILLED, ORDER_STATUS_RE
 # ---------------------------------------------------------------------------
 
 
-def make_commission(rate: float = 0.00015, minimum: float = 5.0):
+def make_commission(rate: float = 0.0005, minimum: float = 0.5):
     """Build a commission function from a rate and minimum fee.
 
     The returned callable has signature ``(trade_value: float) -> float``
@@ -31,8 +31,8 @@ def make_commission(rate: float = 0.00015, minimum: float = 5.0):
     return _fn
 
 
-default_etf_commission = make_commission(rate=0.00015, minimum=5.0)
-"""Default ETF commission: 0.015 % per trade, min 5 CNY."""
+default_etf_commission = make_commission(rate=0.0005, minimum=0.5)
+"""Default ETF commission: 0.05 % per trade, min 0.5 CNY."""
 
 
 def zero_slippage(_price: float, _amount: int) -> float:
