@@ -141,6 +141,7 @@ class Bar:
     amount: float
     pre_close: float
     pct_chg: float
+    adj_factor: float = 1.0
 
     def __getitem__(self, key: str) -> Any:
         return getattr(self, key)
@@ -197,7 +198,22 @@ class DataProxy:
         if end < 0:
             return []
         start = max(0, end - count + 1)
-        return [getattr(bars[i], field, 0.0) for i in range(start, end + 1)]
+
+        # Price fields are front-adjusted (前复权) to the current bar's basis so
+        # that dividend/ex-rights gaps don't create spurious returns — matching
+        # JoinQuant's ``attribute_history`` under ``use_real_price=True``.
+        # Non-price fields (volume/amount/pct_chg) are returned as-is.
+        price_fields = {"open", "high", "low", "close", "pre_close"}
+        if field not in price_fields:
+            return [getattr(bars[i], field, 0.0) for i in range(start, end + 1)]
+
+        base_factor = getattr(bars[idx], "adj_factor", 1.0) or 1.0
+        out: list[float] = []
+        for i in range(start, end + 1):
+            raw = getattr(bars[i], field, 0.0)
+            factor = getattr(bars[i], "adj_factor", 1.0) or 1.0
+            out.append(raw * factor / base_factor)
+        return out
 
     @property
     def today(self) -> date | None:

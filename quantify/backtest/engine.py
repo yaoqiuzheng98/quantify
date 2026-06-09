@@ -48,6 +48,12 @@ def _load_data(
                 EtfDaily.amount,
                 EtfDaily.pre_close,
                 EtfDaily.pct_chg,
+                EtfAdjFactor.adj_factor,
+            )
+            .outerjoin(
+                EtfAdjFactor,
+                (EtfAdjFactor.ts_code == EtfDaily.ts_code)
+                & (EtfAdjFactor.trade_date == EtfDaily.trade_date),
             )
             .where(EtfDaily.ts_code.in_(ts_codes))
             .where(EtfDaily.trade_date >= start_str)
@@ -68,6 +74,7 @@ def _load_data(
                 "amount",
                 "pre_close",
                 "pct_chg",
+                "adj_factor",
             ]
         )
 
@@ -84,9 +91,12 @@ def _load_data(
             "amount",
             "pre_close",
             "pct_chg",
+            "adj_factor",
         ],
     )
     df["date"] = pd.to_datetime(df["date"])
+    # Missing adjustment factors default to 1.0 (no adjustment).
+    df["adj_factor"] = pd.to_numeric(df["adj_factor"], errors="coerce").fillna(1.0)
     df = df.sort_values(["ts_code", "date"]).reset_index(drop=True)
     return df
 
@@ -201,6 +211,7 @@ def _group_to_bars(df: pd.DataFrame) -> dict[str, list[Bar]]:
                 amount=float(row.amount),
                 pre_close=float(row.pre_close),
                 pct_chg=float(row.pct_chg),
+                adj_factor=float(row.adj_factor),
             )
             for row in group.itertuples(index=False)
         ]
