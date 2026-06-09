@@ -64,9 +64,12 @@ class MacroFetcher:
 
     DEFAULT_START_DATE = "20000101"
     # 镜像站并发硬上限为 2。这些接口标的少，串行即可，无需线程池。
-    # yc_cb 单次上限 2000 行；一天约 1010 行(两种 curve_type)，故每窗 1 天。
-    YC_CB_RANGE_DAYS = 1
+    # yc_cb 单次按曲线类型返回；每窗 30 天(约 21 交易日 × 505 期限 ≈ 10600 行)实测不截断，
+    # 配合 row_cap 二分兜底。中债收益率曲线数据从 2017 年初才有，故默认起始 20170101。
+    YC_CB_RANGE_DAYS = 30
+    YC_CB_ROW_CAP = 11500
     YC_CB_CODE = "1001.CB"
+    YC_CB_START_DATE = "20170101"
     # index_global 单次上限 4000 行；按指数+日期窗，每窗 ~10 年(约 2500 交易日)。
     GLOBAL_RANGE_DAYS = 3600
     GLOBAL_ROW_CAP = 3900
@@ -160,32 +163,36 @@ class MacroFetcher:
         end_date: str | None = None,
     ) -> int:
         end_str = end_date or _today_str()
-        default_start = start_date or self.DEFAULT_START_DATE
+        default_start = start_date or self.YC_CB_START_DATE
         if incremental:
             default_start = self._single_table_start(YcCb, YcCb.trade_date, default_start)
         if default_start > end_str:
             log.info("yc_cb: up to date")
             return 0
-        log.info(f"Fetching yc_cb ({default_start}..{end_str}) ...")
+        chunks = list(_date_chunks(default_start, end_str, max_days=self.YC_CB_RANGE_DAYS))
+        log.info(f"Fetching yc_cb ({default_start}..{end_str}) in {len(chunks)} windows ...")
         total = 0
-        # 逐窗(默认 1 天)拉取两种曲线类型。
-        for chunk_start, chunk_end in _date_chunks(default_start, end_str, max_days=self.YC_CB_RANGE_DAYS):
+        # 逐窗(默认 30 天)拉取两种曲线类型(0 到期 / 1 即期)。
+        for i, (chunk_start, chunk_end) in enumerate(chunks, 1):
             frames = []
             for ctype in ("0", "1"):
-                df = self.client.call(
+                df = self._fetch_range(
                     "yc_cb",
-                    ts_code=self.YC_CB_CODE,
-                    curve_type=ctype,
-                    start_date=chunk_start,
-                    end_date=chunk_end,
+                    chunk_start,
+                    chunk_end,
+                    row_cap=self.YC_CB_ROW_CAP,
+                    api_extra={"ts_code": self.YC_CB_CODE, "curve_type": ctype},
                 )
                 if df is not None and not df.empty:
                     frames.append(df)
             if not frames:
+                log.info(f"  yc_cb [{i}/{len(chunks)}] {chunk_start}..{chunk_end} empty")
                 continue
             df = pd.concat(frames, ignore_index=True)
             df = _normalize_dates(df)
-            total += upsert_dataframe(YcCb, df)
+            n = upsert_dataframe(YcCb, df)
+            total += n
+            log.info(f"  yc_cb [{i}/{len(chunks)}] {chunk_start}..{chunk_end} +{n} rows (total={total})")
         log.info(f"yc_cb done. rows={total}")
         return total
 
@@ -264,14 +271,18 @@ class MacroFetcher:
         if default_start > end_str:
             log.info(f"{api}: up to date")
             return 0
-        log.info(f"Fetching {api} ({default_start}..{end_str}) ...")
+        chunks = list(_date_chunks(default_start, end_str, max_days=self.US_RANGE_DAYS))
+        log.info(f"Fetching {api} ({default_start}..{end_str}) in {len(chunks)} windows ...")
         total = 0
-        for chunk_start, chunk_end in _date_chunks(default_start, end_str, max_days=self.US_RANGE_DAYS):
+        for i, (chunk_start, chunk_end) in enumerate(chunks, 1):
             df = self._fetch_range(api, chunk_start, chunk_end, row_cap=self.US_ROW_CAP)
             if df is None or df.empty:
+                log.info(f"  {api} [{i}/{len(chunks)}] {chunk_start}..{chunk_end} empty")
                 continue
             df = _normalize_dates(df)
-            total += upsert_dataframe(model, df)
+            n = upsert_dataframe(model, df)
+            total += n
+            log.info(f"  {api} [{i}/{len(chunks)}] {chunk_start}..{chunk_end} +{n} rows (total={total})")
         log.info(f"{api} done. rows={total}")
         return total
 
