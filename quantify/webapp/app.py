@@ -123,17 +123,19 @@ def _render_strategy_list(records: list[StrategyRecord]) -> None:
         st.info("暂无已保存策略。点击 `新建策略` 开始。")
         return
 
-    header_cols = st.columns([5, 2, 1])
-    header_cols[0].markdown("**策略名称**")
-    header_cols[1].markdown("**更新时间**")
-    header_cols[2].markdown("**操作**")
+    header_cols = st.columns([1, 5, 2, 1])
+    header_cols[0].markdown("**ID**")
+    header_cols[1].markdown("**策略名称**")
+    header_cols[2].markdown("**更新时间**")
+    header_cols[3].markdown("**操作**")
     for record in records:
-        row_cols = st.columns([5, 2, 1])
-        row_cols[0].markdown(f"**{record.name}**")
+        row_cols = st.columns([1, 5, 2, 1])
+        row_cols[0].write(str(record.id) if record.id is not None else "--")
+        row_cols[1].markdown(f"**{record.name}**")
         if record.description:
-            row_cols[0].caption(record.description)
-        row_cols[1].write(record.updated_at.strftime("%Y-%m-%d %H:%M") if record.updated_at else "--")
-        if row_cols[2].button("编辑", key=f"edit_strategy_{record.id}", width="stretch"):
+            row_cols[1].caption(record.description)
+        row_cols[2].write(record.updated_at.strftime("%Y-%m-%d %H:%M") if record.updated_at else "--")
+        if row_cols[3].button("编辑", key=f"edit_strategy_{record.id}", width="stretch"):
             _load_strategy(record)
             st.rerun()
 
