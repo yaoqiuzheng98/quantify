@@ -28,6 +28,7 @@ def _all_etf_codes() -> list[str]:
         rows = sess.execute(select(EtfDaily.ts_code).distinct()).scalars().all()
     return sorted(rows)
 
+
 try:
     from streamlit_ace import st_ace
 except ModuleNotFoundError:  # pragma: no cover - optional UI enhancement
@@ -245,6 +246,24 @@ def _turnover_frame(report: dict[str, Any]) -> pd.DataFrame:
     return frame.loc[:, ["date", "turnover"]].copy()
 
 
+def _position_ratio_frame(report: dict[str, Any]) -> pd.DataFrame:
+    """每日各标的持仓占总资产比例(宽表:每列一个标的代码)。"""
+    curves = report.get("curves", [])
+    if not curves:
+        return pd.DataFrame(columns=["date"])
+    rows: list[dict[str, Any]] = []
+    for point in curves:
+        row: dict[str, Any] = {"date": point["date"]}
+        row.update(point.get("position_ratios_pct") or {})
+        rows.append(row)
+    frame = pd.DataFrame(rows)
+    frame["date"] = pd.to_datetime(frame["date"])
+    code_cols = [col for col in frame.columns if col != "date"]
+    if code_cols:
+        frame[code_cols] = frame[code_cols].fillna(0.0)
+    return frame
+
+
 def _trades_frame(report: dict[str, Any]) -> pd.DataFrame:
     records = [
         {
@@ -256,10 +275,42 @@ def _trades_frame(report: dict[str, Any]) -> pd.DataFrame:
             "成交额": trade["value"],
             "佣金": trade["commission"],
             "滑点": trade["slippage"],
+            "平仓盈亏": trade.get("realized_pnl"),
         }
         for trade in report.get("trades", [])
     ]
     return pd.DataFrame(records)
+
+
+def _time_xaxis(show_rangeslider: bool = True) -> dict[str, Any]:
+    """统一的时间轴配置:快捷区间按钮 + 底部缩放滑块。
+
+    长周期(如 2019-2026)下日频柱子会细到看不见,通过区间选择器和滑块
+    让用户拖拽缩放到任意时间窗口,悬浮查看单日数据。
+    """
+    axis: dict[str, Any] = {
+        "rangeselector": {
+            "buttons": [
+                {"count": 1, "label": "1月", "step": "month", "stepmode": "backward"},
+                {"count": 3, "label": "3月", "step": "month", "stepmode": "backward"},
+                {"count": 6, "label": "6月", "step": "month", "stepmode": "backward"},
+                {"count": 1, "label": "1年", "step": "year", "stepmode": "backward"},
+                {"count": 1, "label": "今年", "step": "year", "stepmode": "todate"},
+                {"step": "all", "label": "全部"},
+            ],
+            "x": 0,
+            "y": 1.0,
+            "xanchor": "left",
+            "yanchor": "bottom",
+            "font": {"size": 11},
+            "bgcolor": "#f1f3f5",
+            "activecolor": "#d0d7de",
+        },
+        "type": "date",
+    }
+    if show_rangeslider:
+        axis["rangeslider"] = {"visible": True, "thickness": 0.08}
+    return axis
 
 
 def _line_chart(frame: pd.DataFrame) -> go.Figure:
@@ -301,9 +352,10 @@ def _line_chart(frame: pd.DataFrame) -> go.Figure:
         title="收益曲线",
         hovermode="x unified",
         template="plotly_white",
-        legend={"orientation": "h", "yanchor": "bottom", "y": 1.02, "xanchor": "left", "x": 0},
-        margin={"l": 10, "r": 10, "t": 55, "b": 10},
+        legend={"orientation": "h", "yanchor": "bottom", "y": 1.02, "xanchor": "right", "x": 1},
+        margin={"l": 10, "r": 10, "t": 70, "b": 10},
         yaxis_title="收益率",
+        xaxis=_time_xaxis(),
     )
     return fig
 
@@ -323,8 +375,35 @@ def _bar_chart(frame: pd.DataFrame, value_col: str, title: str, yaxis_title: str
         title=title,
         hovermode="x unified",
         template="plotly_white",
-        margin={"l": 10, "r": 10, "t": 45, "b": 10},
+        margin={"l": 10, "r": 10, "t": 70, "b": 10},
         yaxis_title=yaxis_title,
+        xaxis=_time_xaxis(),
+    )
+    return fig
+
+
+def _position_ratio_chart(frame: pd.DataFrame) -> go.Figure:
+    code_cols = [col for col in frame.columns if col != "date"]
+    fig = go.Figure()
+    for code in code_cols:
+        fig.add_trace(
+            go.Bar(
+                x=frame["date"],
+                y=frame[code],
+                name=code,
+                hovertemplate="%{x|%Y-%m-%d}<br>" + escape(code) + " %{y:.2f}%<extra></extra>",
+            )
+        )
+    fig.update_layout(
+        title="每日持仓比例",
+        barmode="stack",
+        hovermode="x unified",
+        template="plotly_white",
+        legend={"orientation": "h", "yanchor": "bottom", "y": 1.02, "xanchor": "right", "x": 1},
+        margin={"l": 10, "r": 10, "t": 70, "b": 10},
+        yaxis_title="持仓比例",
+        yaxis={"ticksuffix": "%"},
+        xaxis=_time_xaxis(),
     )
     return fig
 
@@ -345,8 +424,9 @@ def _drawdown_chart(frame: pd.DataFrame) -> go.Figure:
         title="回撤曲线",
         hovermode="x unified",
         template="plotly_white",
-        margin={"l": 10, "r": 10, "t": 45, "b": 10},
+        margin={"l": 10, "r": 10, "t": 70, "b": 10},
         yaxis_title="回撤",
+        xaxis=_time_xaxis(),
     )
     return fig
 
@@ -438,6 +518,7 @@ def _render_result(result: BacktestResult) -> None:
 
     st.plotly_chart(_bar_chart(_daily_pnl_frame(report), "daily_pnl", "每日盈亏", "金额"), width="stretch")
     st.plotly_chart(_bar_chart(_turnover_frame(report), "turnover", "每日成交", "成交额"), width="stretch")
+    st.plotly_chart(_position_ratio_chart(_position_ratio_frame(report)), width="stretch")
     st.plotly_chart(_drawdown_chart(_drawdown_frame(report)), width="stretch")
 
     trades_df = _trades_frame(report)
@@ -538,9 +619,7 @@ def main() -> None:
 
     preview_codes = _extract_codes_from_source(strategy_source)
     if preview_codes:
-        st.caption(
-            f"将从源码加载 {len(preview_codes)} 个标的：" + " ".join(f"`{c}`" for c in preview_codes)
-        )
+        st.caption(f"将从源码加载 {len(preview_codes)} 个标的：" + " ".join(f"`{c}`" for c in preview_codes))
     else:
         st.caption("未在源码中解析到标的代码（形如 510300.XSHG / 159915.SZ）。")
 

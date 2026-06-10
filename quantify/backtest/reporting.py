@@ -152,9 +152,7 @@ def _realized_trade_stats(
         if not code or amount == 0 or price is None:
             continue
 
-        position = positions.setdefault(
-            code, {"amount": 0.0, "cost": 0.0, "dividend": 0.0, "fees": 0.0}
-        )
+        position = positions.setdefault(code, {"amount": 0.0, "cost": 0.0, "dividend": 0.0, "fees": 0.0})
         current_amount = int(position["amount"])
 
         # 该笔交易的实际成本(佣金 + 滑点),用于扣费后的净盈亏判定(对齐聚宽口径)。
@@ -392,20 +390,48 @@ def trade_turnover_series(equity_dates: pd.DatetimeIndex, trades: list[Any] | No
 
 def _trade_records(trades: list[Any] | None) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
+    # 按平均成本法跟踪每个标的的持仓,卖出时结算平仓盈亏(扣除买入费用分摊
+    # 与本次卖出费用,对齐 _realized_trade_stats 的净盈亏口径)。
+    positions: dict[str, dict[str, float]] = {}
     for trade in trades or []:
         amount = int(getattr(trade, "filled_amount", 0) or getattr(trade, "amount", 0) or 0)
         price = _as_float(getattr(trade, "filled_price", None))
         trade_value = abs(amount) * price if price is not None else None
+        commission = _as_float(getattr(trade, "commission", 0.0))
+        slippage = _as_float(getattr(trade, "slippage", 0.0))
+        code = getattr(trade, "ts_code", "")
+        trade_fees = (commission or 0.0) + (slippage or 0.0)
+
+        realized_pnl: float | None = None
+        position = positions.setdefault(code, {"amount": 0.0, "cost": 0.0, "fees": 0.0})
+        current_amount = int(position["amount"])
+
+        if price is not None and amount > 0:
+            position["amount"] = current_amount + amount
+            position["cost"] += amount * price
+            position["fees"] += trade_fees
+        elif price is not None and amount < 0 and current_amount > 0:
+            sell_amount = min(current_amount, abs(amount))
+            ratio = sell_amount / current_amount
+            cost = position["cost"] * ratio
+            buy_fees = position["fees"] * ratio
+            proceeds = sell_amount * price
+            realized_pnl = proceeds - cost - buy_fees - trade_fees
+            position["amount"] = current_amount - sell_amount
+            position["cost"] -= cost
+            position["fees"] -= buy_fees
+
         records.append(
             {
                 "date": _as_date(getattr(trade, "filled_date", None)),
-                "ts_code": getattr(trade, "ts_code", ""),
+                "ts_code": code,
                 "direction": "buy" if amount > 0 else "sell" if amount < 0 else "flat",
                 "amount": amount,
                 "price": price,
                 "value": trade_value,
-                "commission": _as_float(getattr(trade, "commission", 0.0)),
-                "slippage": _as_float(getattr(trade, "slippage", 0.0)),
+                "commission": commission,
+                "slippage": slippage,
+                "realized_pnl": _as_float(realized_pnl),
             }
         )
     return records
@@ -449,6 +475,21 @@ def build_report_payload(
     drawdown = wealth / np.maximum.accumulate(wealth) - 1
     turnover = trade_turnover_series(dates, trades)
 
+    # 每日持仓市值占总资产比例(持仓比例),总资产为 0 时记为 0。
+    if "position_value" in equity_df.columns:
+        position_value = equity_df["position_value"].astype(float).to_numpy()
+    else:
+        position_value = np.zeros_like(values)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        position_ratio = np.where(values != 0, position_value / values, 0.0)
+
+    # 每日各标的持仓市值(用于堆叠展示各标的占总资产比例)。
+    per_code_values: list[dict[str, float]] = (
+        list(equity_df["position_values"])
+        if "position_values" in equity_df.columns
+        else [{} for _ in range(len(values))]
+    )
+
     benchmark_return = pd.Series(np.nan, index=dates)
     benchmark_curve = benchmark_return_series(dates, benchmark_df)
     if benchmark_curve is not None:
@@ -459,6 +500,12 @@ def build_report_payload(
         benchmark_value = _as_float(benchmark_return.iloc[index])
         excess_return = strategy_return[index] - benchmark_value if benchmark_value is not None else None
         benchmark_equity = initial_value * (1 + benchmark_value) if benchmark_value is not None else None
+        total_value = values[index]
+        code_values = per_code_values[index] if index < len(per_code_values) else {}
+        position_ratios = {
+            code: _as_float((market_value / total_value * 100) if total_value else 0.0)
+            for code, market_value in (code_values or {}).items()
+        }
         curves.append(
             {
                 "date": curve_date.strftime("%Y-%m-%d"),
@@ -476,6 +523,10 @@ def build_report_payload(
                 "drawdown_pct": _as_float(drawdown[index] * 100),
                 "daily_pnl": _as_float(daily_pnl[index]),
                 "turnover": _as_float(turnover.iloc[index]),
+                "position_value": _as_float(position_value[index]),
+                "position_ratio": _as_float(position_ratio[index]),
+                "position_ratio_pct": _as_float(position_ratio[index] * 100),
+                "position_ratios_pct": position_ratios,
             }
         )
 
