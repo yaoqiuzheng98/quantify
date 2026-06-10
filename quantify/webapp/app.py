@@ -118,7 +118,7 @@ def _load_strategy_records() -> list[StrategyRecord]:
 def _confirm_delete_strategy(record: StrategyRecord) -> None:
     st.warning(f"确定要删除策略 **{record.name}**（ID: {record.id}）吗？此操作不可撤销。")
     confirm_col, cancel_col = st.columns(2)
-    if confirm_col.button("确认删除", type="primary", width="stretch"):
+    if confirm_col.button("确认删除", type="primary", width="stretch", key="confirm_delete_yes"):
         try:
             deleted = delete_strategy(record.id)
         except Exception as exc:  # noqa: BLE001
@@ -129,8 +129,10 @@ def _confirm_delete_strategy(record: StrategyRecord) -> None:
         st.session_state["strategy_saved_message"] = (
             f"已删除策略：{record.name}" if deleted else f"策略不存在：{record.name}"
         )
+        st.session_state.pop("pending_delete_id", None)
         st.rerun()
-    if cancel_col.button("取消", width="stretch"):
+    if cancel_col.button("取消", width="stretch", key="confirm_delete_no"):
+        st.session_state.pop("pending_delete_id", None)
         st.rerun()
 
 
@@ -198,7 +200,16 @@ def _render_strategy_list(records: list[StrategyRecord]) -> None:
             _load_strategy(record)
             st.rerun()
         if row_cols[4].button("删除", key=f"delete_strategy_{record.id}", width="stretch"):
-            _confirm_delete_strategy(record)
+            st.session_state["pending_delete_id"] = record.id
+            st.rerun()
+
+    pending_id = st.session_state.get("pending_delete_id")
+    if pending_id is not None:
+        target = next((r for r in records if r.id == pending_id), None)
+        if target is None:
+            st.session_state.pop("pending_delete_id", None)
+        else:
+            _confirm_delete_strategy(target)
 
 
 def _render_toast(message: str) -> None:
