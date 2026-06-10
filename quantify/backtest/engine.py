@@ -11,7 +11,7 @@ import pandas as pd
 from sqlalchemy import select
 
 from quantify.database.engine import session_scope
-from quantify.database.models import EtfAdjFactor, EtfDaily, EtfDividend
+from quantify.database.models import EtfAdjFactor, EtfDaily, EtfDividend, EtfNav
 from quantify.utils.logger import log
 
 from .broker import Broker, make_commission, make_slippage, zero_slippage
@@ -49,11 +49,16 @@ def _load_data(
                 EtfDaily.pre_close,
                 EtfDaily.pct_chg,
                 EtfAdjFactor.adj_factor,
+                EtfNav.unit_nav,
+                EtfNav.accum_nav,
             )
             .outerjoin(
                 EtfAdjFactor,
-                (EtfAdjFactor.ts_code == EtfDaily.ts_code)
-                & (EtfAdjFactor.trade_date == EtfDaily.trade_date),
+                (EtfAdjFactor.ts_code == EtfDaily.ts_code) & (EtfAdjFactor.trade_date == EtfDaily.trade_date),
+            )
+            .outerjoin(
+                EtfNav,
+                (EtfNav.ts_code == EtfDaily.ts_code) & (EtfNav.nav_date == EtfDaily.trade_date),
             )
             .where(EtfDaily.ts_code.in_(ts_codes))
             .where(EtfDaily.trade_date >= start_str)
@@ -75,6 +80,8 @@ def _load_data(
                 "pre_close",
                 "pct_chg",
                 "adj_factor",
+                "unit_nav",
+                "accum_nav",
             ]
         )
 
@@ -92,11 +99,17 @@ def _load_data(
             "pre_close",
             "pct_chg",
             "adj_factor",
+            "unit_nav",
+            "accum_nav",
         ],
     )
     df["date"] = pd.to_datetime(df["date"])
     # Missing adjustment factors default to 1.0 (no adjustment).
     df["adj_factor"] = pd.to_numeric(df["adj_factor"], errors="coerce").fillna(1.0)
+    # 累计净值/单位净值比值(au)用于推断纯份额折算比例，剔除现金分红污染。
+    # 缺失净值时留作 NaN，由下游回退到 adj_factor 跳变比例。
+    df["unit_nav"] = pd.to_numeric(df["unit_nav"], errors="coerce")
+    df["accum_nav"] = pd.to_numeric(df["accum_nav"], errors="coerce")
     df = df.sort_values(["ts_code", "date"]).reset_index(drop=True)
     return df
 
@@ -195,10 +208,62 @@ def _load_benchmark_data(ts_code: str, start_date: date, end_date: date) -> pd.D
     return benchmark_df
 
 
+def _compute_split_ratios(group: pd.DataFrame) -> list[float]:
+    """Per-bar ETF share-split ratios for one code (1.0 on non-split days).
+
+    A share split (份额折算) is detected on the day ``adj_factor`` jumps relative
+    to the previous trading day (synchronised with the raw ``close``). The
+    *magnitude* is taken from the jump in ``accum_nav/unit_nav`` (记为 au), which
+    reflects pure share folding and excludes the cash-dividend contamination
+    present in ``adj_factor``. Because Tushare's ``fund_nav`` and ``fund_daily``
+    can be misaligned by one day, the ratio compares the au value on the jump
+    day against a *stable* au value two trading days earlier.
+
+    Falls back to the ``adj_factor`` jump ratio when net-asset-value data is
+    missing for the relevant rows.
+    """
+    n = len(group)
+    ratios = [1.0] * n
+    adj = group["adj_factor"].tolist()
+    unit = group["unit_nav"].tolist()
+    accum = group["accum_nav"].tolist()
+
+    def _au(i: int) -> float | None:
+        try:
+            u = float(unit[i])
+            a = float(accum[i])
+        except (TypeError, ValueError):
+            return None
+        if not (u > 0) or not (a > 0):
+            return None
+        return a / u
+
+    for i in range(1, n):
+        prev_adj = float(adj[i - 1]) if adj[i - 1] else 1.0
+        cur_adj = float(adj[i]) if adj[i] else 1.0
+        if prev_adj <= 0 or abs(cur_adj - prev_adj) < 1e-9:
+            continue
+
+        # Split detected at bar i. Prefer the au-based ratio (dividend-clean).
+        au_now = _au(i)
+        au_ref = _au(max(0, i - 2))
+        if au_now is not None and au_ref is not None and au_ref > 0:
+            ratio = au_now / au_ref
+        else:
+            # Fall back to adj_factor jump (may include dividend, best effort).
+            ratio = cur_adj / prev_adj
+
+        if ratio > 0 and abs(ratio - 1.0) > 1e-6:
+            ratios[i] = ratio
+
+    return ratios
+
+
 def _group_to_bars(df: pd.DataFrame) -> dict[str, list[Bar]]:
     """Convert a DataFrame of OHLCV rows into per-code Bar lists."""
     bars: dict[str, list[Bar]] = {}
     for ts_code, group in df.groupby("ts_code"):
+        split_ratios = _compute_split_ratios(group)
         bars[ts_code] = [
             Bar(
                 ts_code=ts_code,
@@ -212,8 +277,9 @@ def _group_to_bars(df: pd.DataFrame) -> dict[str, list[Bar]]:
                 pre_close=float(row.pre_close),
                 pct_chg=float(row.pct_chg),
                 adj_factor=float(row.adj_factor),
+                split_ratio=float(ratio),
             )
-            for row in group.itertuples(index=False)
+            for row, ratio in zip(group.itertuples(index=False), split_ratios)
         ]
     return bars
 
@@ -222,16 +288,54 @@ def _portfolio_value_at_close(
     portfolio: Portfolio,
     all_bars: dict[str, list[Bar]],
     next_indices: dict[str, int],
+    bar_date: date,
 ) -> float:
     value = portfolio.cash
     for code, position in portfolio.positions.items():
         bars = all_bars.get(code, [])
         idx = next_indices.get(code, -1)
         price = position.current_price
-        if 0 <= idx < len(bars):
+        # Only mark to the bar at ``idx`` when it is *today's* bar. If the code
+        # has no data on ``bar_date`` (e.g. suspended/missing day), ``idx`` may
+        # point at a *future* bar whose close already reflects a share split not
+        # yet applied to the holding — using it would distort the equity curve.
+        if 0 <= idx < len(bars) and bars[idx].date == bar_date:
             price = bars[idx].close
         value += position.amount * price
     return value
+
+
+def _schedule_fire_dates(unified_dates: list, period: str) -> dict[int, set]:
+    """按"第 N 个交易日"语义，预计算各 day 偏移对应的触发日期集合。
+
+    period="weekly"  以 ISO 周(年, 周号)分组；period="monthly" 以(年, 月)分组。
+    返回 {day_offset: {date, ...}}：day_offset>0 取组内正数第 N 个交易日(1-based)，
+    day_offset<0 取倒数第 |N| 个。聚宽 run_weekly(weekday=)/run_monthly(monthday=)
+    即此语义(1=该周期首个交易日)。仅为已可能用到的偏移构建集合(惰性按需在引擎查询)。
+    """
+    groups: dict[tuple, list] = {}
+    order: list[tuple] = []
+    for d in unified_dates:
+        if period == "weekly":
+            iso = d.isocalendar()
+            key = (iso[0], iso[1])
+        else:
+            key = (d.year, d.month)
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(d)
+
+    fire: dict[int, set] = {}
+    for key in order:
+        days = groups[key]
+        n = len(days)
+        for pos, d in enumerate(days):
+            pos_offset = pos + 1  # 正数第 N 个交易日(1-based)
+            neg_offset = -(n - pos)  # 倒数第 N 个交易日
+            fire.setdefault(pos_offset, set()).add(d)
+            fire.setdefault(neg_offset, set()).add(d)
+    return fire
 
 
 @dataclass
@@ -241,9 +345,16 @@ class StrategyRuntime:
     compat: JoinQuantCompat
 
     def handle_functions(self) -> list[Callable]:
-        if self.compat.daily_functions:
-            return list(self.compat.daily_functions)
+        if self.compat.scheduled:
+            return [func for func, _freq, _day in self.compat.scheduled]
         return [self.handle_data] if self.handle_data is not None else []
+
+    def scheduled_tasks(self) -> list[tuple[Callable, str, int]]:
+        if self.compat.scheduled:
+            return list(self.compat.scheduled)
+        if self.handle_data is not None:
+            return [(self.handle_data, "daily", 0)]
+        return []
 
 
 def _load_strategy(source: str) -> StrategyRuntime:
@@ -404,11 +515,15 @@ class BacktestEngine:
             broker.set_commission_fn(self.commission_fn)
             broker.set_slippage_fn(self.slippage_fn)
 
-        handle_functions = runtime.handle_functions()
-        if not handle_functions:
+        scheduled_tasks = runtime.scheduled_tasks()
+        if not scheduled_tasks:
             raise ValueError(
                 "Strategy must define handle_data(context) or register run_daily(..., time='open')"
             )
+        # 预计算每个交易日触发哪些 weekly/monthly 任务：按"第 N 个交易日"语义
+        # (monthday/weekday 为正=正数第 N 个交易日，为负=倒数第 N 个)。daily 任务每天触发。
+        weekly_fire = _schedule_fire_dates(unified_dates, period="weekly")
+        monthly_fire = _schedule_fire_dates(unified_dates, period="monthly")
         benchmark_df = (
             _load_benchmark_data(context.benchmark_code, self.start_date, self.end_date)
             if context.benchmark_code
@@ -439,6 +554,23 @@ class BacktestEngine:
                 else:
                     data_proxy._current_idx[code] = -1  # noqa: SLF001
 
+            # ETF 份额折算处理(对齐聚宽 use_real_price=True 的动态复权账户处理)：
+            # 在折算日开盘前，按折算比例调整持仓数量与成本价，使持仓市值在折算
+            # 前后保持连续(只反映当日真实涨跌)。份额折算不涉及现金，与分红现金
+            # 链路相互独立，故不会双算。折算比例由 _compute_split_ratios 预计算，
+            # 取自 accum_nav/unit_nav(剔除分红污染)，比 adj_factor 更贴近聚宽。
+            for code, pos in list(portfolio.positions.items()):
+                if pos.amount == 0:
+                    continue
+                idx = next_indices[code]
+                bars = all_bars.get(code, [])
+                if not (0 <= idx < len(bars) and bars[idx].date == bar_date):
+                    continue
+                ratio = bars[idx].split_ratio
+                if ratio and abs(ratio - 1.0) > 1e-6:
+                    pos.amount = int(round(pos.amount * ratio))
+                    pos.avg_cost = pos.avg_cost / ratio
+
             # Mark current holdings at today's open before sizing orders.
             for code, pos in list(portfolio.positions.items()):
                 bar = data_proxy.current(code)
@@ -461,8 +593,16 @@ class BacktestEngine:
                     )
 
             # Call user strategy with today's open + completed history only.
-            for handle_fn in handle_functions:
-                handle_fn(context)
+            # 按注册频率触发：daily 每天；weekly/monthly 仅在当周/当月第 N 个交易日。
+            for handle_fn, freq, day in scheduled_tasks:
+                if freq == "daily":
+                    handle_fn(context)
+                elif freq == "weekly":
+                    if bar_date in weekly_fire.get(day, ()):
+                        handle_fn(context)
+                elif freq == "monthly":
+                    if bar_date in monthly_fire.get(day, ()):
+                        handle_fn(context)
 
             # Execute orders generated by today's strategy at today's open.
             broker.execute_pending(portfolio)
@@ -482,7 +622,7 @@ class BacktestEngine:
             equity_records.append(
                 {
                     "date": bar_date,
-                    "value": _portfolio_value_at_close(portfolio, all_bars, next_indices),
+                    "value": _portfolio_value_at_close(portfolio, all_bars, next_indices, bar_date),
                 }
             )
 

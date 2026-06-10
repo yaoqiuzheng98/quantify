@@ -32,8 +32,17 @@ class JoinQuantCompat:
 
     def __init__(self) -> None:
         self.context: Any | None = None
-        self.daily_functions: list[Callable] = []
+        # 已注册的调度任务，每项为 (func, freq, day)：
+        #   freq="daily"   day 忽略，每个交易日触发
+        #   freq="weekly"  day=weekday，第 N 个交易日(每周)，负数表示倒数
+        #   freq="monthly" day=monthday，第 N 个交易日(每月)，负数表示倒数
+        self.scheduled: list[tuple[Callable, str, int]] = []
         self.options: dict[str, Any] = {}
+
+    @property
+    def daily_functions(self) -> list[Callable]:
+        """Backward-compatible view of registered daily tasks."""
+        return [func for func, freq, _day in self.scheduled if freq == "daily"]
 
     def bind(self, context: Any) -> None:
         self.context = context
@@ -50,9 +59,19 @@ class JoinQuantCompat:
         self._require_context().set_benchmark(security)
 
     def run_daily(self, func: Callable, time: str = "open", **_kwargs: Any) -> None:
-        if time != "open":
+        if time not in ("open", "every_bar"):
             raise NotImplementedError("Local engine currently supports run_daily(..., time='open') only")
-        self.daily_functions.append(func)
+        self.scheduled.append((func, "daily", 0))
+
+    def run_weekly(self, func: Callable, weekday: int = 1, time: str = "open", **_kwargs: Any) -> None:
+        if time not in ("open", "every_bar"):
+            raise NotImplementedError("Local engine currently supports time='open' only")
+        self.scheduled.append((func, "weekly", weekday))
+
+    def run_monthly(self, func: Callable, monthday: int = 1, time: str = "open", **_kwargs: Any) -> None:
+        if time not in ("open", "every_bar"):
+            raise NotImplementedError("Local engine currently supports time='open' only")
+        self.scheduled.append((func, "monthly", monthday))
 
     def attribute_history(
         self,
@@ -107,6 +126,8 @@ class JoinQuantCompat:
             "set_order_cost": self.set_order_cost,
             "set_slippage": self.set_slippage,
             "run_daily": self.run_daily,
+            "run_weekly": self.run_weekly,
+            "run_monthly": self.run_monthly,
             "attribute_history": self.attribute_history,
             "order": self.order,
             "order_value": self.order_value,

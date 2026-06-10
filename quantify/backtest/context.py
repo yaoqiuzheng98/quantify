@@ -142,6 +142,9 @@ class Bar:
     pre_close: float
     pct_chg: float
     adj_factor: float = 1.0
+    # 当日发生 ETF 份额折算时的折算比例(份额×ratio、价格÷ratio)；
+    # 非折算日为 1.0。由 _group_to_bars 预计算(见引擎)。
+    split_ratio: float = 1.0
 
     def __getitem__(self, key: str) -> Any:
         return getattr(self, key)
