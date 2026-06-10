@@ -81,3 +81,14 @@ def save_strategy(
             row.source = source
         sess.flush()
         return _to_record(row)
+
+
+def delete_strategy(strategy_id: int) -> bool:
+    """按 ID 删除策略,返回是否真的删除了记录(不存在则返回 False)。"""
+    ensure_strategy_table()
+    with session_scope() as sess:
+        row = sess.get(SavedStrategy, strategy_id)
+        if row is None:
+            return False
+        sess.delete(row)
+        return True

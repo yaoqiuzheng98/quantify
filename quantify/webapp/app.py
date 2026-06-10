@@ -18,7 +18,12 @@ from quantify.backtest import BacktestEngine, BacktestResult
 from quantify.backtest.codes import normalize_codes
 from quantify.database.engine import session_scope
 from quantify.database.models import EtfDaily
-from quantify.database.strategy_store import StrategyRecord, list_strategies, save_strategy
+from quantify.database.strategy_store import (
+    StrategyRecord,
+    delete_strategy,
+    list_strategies,
+    save_strategy,
+)
 
 
 @st.cache_data(show_spinner=False)
@@ -109,13 +114,66 @@ def _load_strategy_records() -> list[StrategyRecord]:
         return []
 
 
+@st.dialog("确认删除策略")
+def _confirm_delete_strategy(record: StrategyRecord) -> None:
+    st.warning(f"确定要删除策略 **{record.name}**（ID: {record.id}）吗？此操作不可撤销。")
+    confirm_col, cancel_col = st.columns(2)
+    if confirm_col.button("确认删除", type="primary", width="stretch"):
+        try:
+            deleted = delete_strategy(record.id)
+        except Exception as exc:  # noqa: BLE001
+            st.error(f"删除失败：{exc}")
+            return
+        if deleted and st.session_state.get("strategy_id") == record.id:
+            st.session_state.pop("backtest_result", None)
+        st.session_state["strategy_saved_message"] = (
+            f"已删除策略：{record.name}" if deleted else f"策略不存在：{record.name}"
+        )
+        st.rerun()
+    if cancel_col.button("取消", width="stretch"):
+        st.rerun()
+
+
 def _render_strategy_list(records: list[StrategyRecord]) -> None:
+    # 按钮配色：新建=蓝色、删除=红色。Streamlit 会给带 key 的组件容器加上
+    # ``st-key-<key>`` class，借此精确着色（覆盖默认主题色，故用 !important）。
+    st.markdown(
+        """
+        <style>
+        .st-key-btn_new_strategy button {
+            background-color: #1f6feb !important;
+            border-color: #1f6feb !important;
+            color: #ffffff !important;
+        }
+        .st-key-btn_new_strategy button:hover,
+        .st-key-btn_new_strategy button:focus,
+        .st-key-btn_new_strategy button:active {
+            background-color: #1a5fd0 !important;
+            border-color: #1a5fd0 !important;
+            color: #ffffff !important;
+        }
+        [class*="st-key-delete_strategy_"] button {
+            background-color: #d62728 !important;
+            border-color: #d62728 !important;
+            color: #ffffff !important;
+        }
+        [class*="st-key-delete_strategy_"] button:hover,
+        [class*="st-key-delete_strategy_"] button:focus,
+        [class*="st-key-delete_strategy_"] button:active {
+            background-color: #b71f20 !important;
+            border-color: #b71f20 !important;
+            color: #ffffff !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
     title_col, action_col = st.columns([4, 1])
     with title_col:
         st.subheader("策略列表")
         st.caption("选择一个已保存策略进入编辑和回测，或新建一个基础框架策略。")
     with action_col:
-        if st.button("新建策略", type="primary", width="stretch"):
+        if st.button("新建策略", type="primary", width="stretch", key="btn_new_strategy"):
             _new_strategy()
             st.rerun()
 
@@ -123,13 +181,14 @@ def _render_strategy_list(records: list[StrategyRecord]) -> None:
         st.info("暂无已保存策略。点击 `新建策略` 开始。")
         return
 
-    header_cols = st.columns([1, 5, 2, 1])
+    header_cols = st.columns([1, 5, 2, 1, 1])
     header_cols[0].markdown("**ID**")
     header_cols[1].markdown("**策略名称**")
     header_cols[2].markdown("**更新时间**")
     header_cols[3].markdown("**操作**")
+    header_cols[4].markdown("**删除**")
     for record in records:
-        row_cols = st.columns([1, 5, 2, 1])
+        row_cols = st.columns([1, 5, 2, 1, 1])
         row_cols[0].write(str(record.id) if record.id is not None else "--")
         row_cols[1].markdown(f"**{record.name}**")
         if record.description:
@@ -138,6 +197,8 @@ def _render_strategy_list(records: list[StrategyRecord]) -> None:
         if row_cols[3].button("编辑", key=f"edit_strategy_{record.id}", width="stretch"):
             _load_strategy(record)
             st.rerun()
+        if row_cols[4].button("删除", key=f"delete_strategy_{record.id}", width="stretch"):
+            _confirm_delete_strategy(record)
 
 
 def _render_toast(message: str) -> None:
