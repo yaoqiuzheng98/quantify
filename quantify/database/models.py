@@ -1022,10 +1022,27 @@ class Income(Base):
     transfer_housing_imprest: Mapped[float | None] = mapped_column(Float, comment="住房周转金转入")
     transfer_oth: Mapped[float | None] = mapped_column(Float, comment="其他转入")
     adj_lossgain: Mapped[float | None] = mapped_column(Float, comment="调整以前年度损益")
-    withheld_bs_pen: Mapped[float | None] = mapped_column(Float, comment="扣除非经常性损益后的基本每股收益")
-    withheld_bs_dpen: Mapped[float | None] = mapped_column(Float, comment="扣除非经常性损益后的稀释每股收益")
-    withheld_bs_profit: Mapped[float | None] = mapped_column(Float, comment="扣除非经常性损益后净利润")
-    surplus_rese_fund: Mapped[float | None] = mapped_column(Float, comment="盈余公积转入(下)")
+    withdra_legal_surplus: Mapped[float | None] = mapped_column(Float, comment="提取法定盈余公积")
+    withdra_legal_pubfund: Mapped[float | None] = mapped_column(Float, comment="提取法定公益金")
+    withdra_biz_devfund: Mapped[float | None] = mapped_column(Float, comment="提取企业发展基金")
+    withdra_rese_fund: Mapped[float | None] = mapped_column(Float, comment="提取储备基金")
+    withdra_oth_ersu: Mapped[float | None] = mapped_column(Float, comment="提取其他盈余公积")
+    workers_welfare: Mapped[float | None] = mapped_column(Float, comment="职工奖励及福利基金")
+    distr_profit_shrhder: Mapped[float | None] = mapped_column(Float, comment="分配股利/利润")
+    prfshare_payable_dvd: Mapped[float | None] = mapped_column(Float, comment="应付优先股股利")
+    comshare_payable_dvd: Mapped[float | None] = mapped_column(Float, comment="应付普通股股利")
+    capit_comstock_div: Mapped[float | None] = mapped_column(Float, comment="转作股本的普通股股利")
+    credit_impa_loss: Mapped[float | None] = mapped_column(Float, comment="信用减值损失")
+    net_expo_hedging_benefits: Mapped[float | None] = mapped_column(Float, comment="净敞口套期收益")
+    oth_impair_loss_assets: Mapped[float | None] = mapped_column(Float, comment="其他资产减值损失")
+    total_opcost: Mapped[float | None] = mapped_column(Float, comment="营业总成本(新)")
+    amodcost_fin_assets: Mapped[float | None] = mapped_column(
+        Float, comment="以摊余成本计量的金融资产终止确认收益"
+    )
+    oth_income: Mapped[float | None] = mapped_column(Float, comment="其他收益")
+    asset_disp_income: Mapped[float | None] = mapped_column(Float, comment="资产处置收益")
+    continued_net_profit: Mapped[float | None] = mapped_column(Float, comment="持续经营净利润")
+    end_net_profit: Mapped[float | None] = mapped_column(Float, comment="终止经营净利润")
     update_flag: Mapped[str | None] = mapped_column(String(4), comment="更新标识")
 
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
@@ -1209,10 +1226,10 @@ class FinaIndicator(Base):
     roic: Mapped[float | None] = mapped_column(Float, comment="投入资本回报率")
     profit_to_op: Mapped[float | None] = mapped_column(Float, comment="营业利润率")
     profit_to_gr: Mapped[float | None] = mapped_column(Float, comment="总利润同比增长率")
-    profit_to_netprofit: Mapped[float | None] = mapped_column(Float, comment="净利润/营业总收入")
-    sale_exp_to_gr: Mapped[float | None] = mapped_column(Float, comment="销售费用/营业总收入")
-    admin_exp_to_gr: Mapped[float | None] = mapped_column(Float, comment="管理费用/营业总收入")
-    fin_exp_to_gr: Mapped[float | None] = mapped_column(Float, comment="财务费用/营业总收入")
+    netprofit_margin: Mapped[float | None] = mapped_column(Float, comment="净利润/营业总收入")
+    saleexp_to_gr: Mapped[float | None] = mapped_column(Float, comment="销售费用/营业总收入")
+    adminexp_of_gr: Mapped[float | None] = mapped_column(Float, comment="管理费用/营业总收入")
+    finaexp_of_gr: Mapped[float | None] = mapped_column(Float, comment="财务费用/营业总收入")
     impai_ttm: Mapped[float | None] = mapped_column(Float, comment="资产减值损失/营业总收入")
     gc_of_gr: Mapped[float | None] = mapped_column(Float, comment="营业总成本/营业总收入")
     op_of_gr: Mapped[float | None] = mapped_column(Float, comment="营业利润/营业总收入")
@@ -1234,8 +1251,7 @@ class FinaIndicator(Base):
     )
     capitalized_to_da: Mapped[float | None] = mapped_column(Float, comment="资本支出/折旧和摊销")
     debt_to_eqt: Mapped[float | None] = mapped_column(Float, comment="权益乘数")
-    cf_sales: Mapped[float | None] = mapped_column(Float, comment="每股经营活动产生的现金流量净额")
-    rateofreturn: Mapped[float | None] = mapped_column(Float, comment="股息收益率（近12个月）")
+    ocfps: Mapped[float | None] = mapped_column(Float, comment="每股经营活动产生的现金流量净额")
     basic_eps_yoy: Mapped[float | None] = mapped_column(Float, comment="基本每股收益同比增长率(%)")
     dt_eps_yoy: Mapped[float | None] = mapped_column(Float, comment="稀释每股收益同比增长率(%)")
     cfps_yoy: Mapped[float | None] = mapped_column(
@@ -1246,10 +1262,10 @@ class FinaIndicator(Base):
     netprofit_yoy: Mapped[float | None] = mapped_column(Float, comment="归属母公司股东的净利润同比增长率(%)")
     dt_netprofit_yoy: Mapped[float | None] = mapped_column(Float, comment="扣非净利润同比增长率(%)")
     or_yoy: Mapped[float | None] = mapped_column(Float, comment="营业总收入同比增长率(%)")
-    eq_yoy: Mapped[float | None] = mapped_column(Float, comment="净资产同比增长率")
+    equity_yoy: Mapped[float | None] = mapped_column(Float, comment="净资产同比增长率")
     tr_yoy: Mapped[float | None] = mapped_column(Float, comment="总资产同比增长率")
-    or_qoq: Mapped[float | None] = mapped_column(Float, comment="营业总收入环比增长率(%)")
-    op_qoq: Mapped[float | None] = mapped_column(Float, comment="营业利润环比增长率(%)")
+    q_gr_qoq: Mapped[float | None] = mapped_column(Float, comment="营业总收入环比增长率(%)")
+    q_op_qoq: Mapped[float | None] = mapped_column(Float, comment="营业利润环比增长率(%)")
     update_flag: Mapped[str | None] = mapped_column(String(4), comment="更新标识")
 
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
@@ -1278,7 +1294,6 @@ class Forecast(Base):
     first_ann_date: Mapped[date | None] = mapped_column(Date, comment="首次公告日")
     summary: Mapped[str | None] = mapped_column(String(512), comment="业绩预告摘要")
     change_reason: Mapped[str | None] = mapped_column(String(512), comment="业绩变动原因")
-    update_flag: Mapped[str | None] = mapped_column(String(4), comment="更新标识")
 
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
@@ -1316,8 +1331,6 @@ class Express(Base):
     yoy_eps: Mapped[float | None] = mapped_column(Float, comment="基本每股收益同比(%)")
     yoy_roe: Mapped[float | None] = mapped_column(Float, comment="净资产收益率同比(%)")
     growth_assets: Mapped[float | None] = mapped_column(Float, comment="总资产同比(%)")
-    profit_dedt: Mapped[float | None] = mapped_column(Float, comment="非经常性损益")
-    update_flag: Mapped[str | None] = mapped_column(String(4), comment="更新标识")
 
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
@@ -1349,7 +1362,6 @@ class StockDividend(Base):
     imp_ann_date: Mapped[date | None] = mapped_column(Date, comment="实施公告日")
     base_date: Mapped[date | None] = mapped_column(Date, comment="基准日")
     base_share: Mapped[float | None] = mapped_column(Float, comment="基准股本(万股)")
-    update_flag: Mapped[str | None] = mapped_column(String(4), comment="更新标识")
 
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
@@ -1434,7 +1446,7 @@ class MarginDetail(Base):
 
 
 # ---------------------------------------------------------------------------
-# Broker profit forecast / consensus (stk_factor)
+# Stock daily factor / technical indicators (stk_factor)
 # ---------------------------------------------------------------------------
 class StkFactor(Base):
     __tablename__ = "stk_factor"
@@ -1450,20 +1462,20 @@ class StkFactor(Base):
     pct_change: Mapped[float | None] = mapped_column(Float, comment="涨跌幅(%)")
     vol: Mapped[float | None] = mapped_column(Float, comment="成交量(手)")
     amount: Mapped[float | None] = mapped_column(Float, comment="成交额(千元)")
-    turnover_rate: Mapped[float | None] = mapped_column(Float, comment="换手率(%)")
-    volume_ratio: Mapped[float | None] = mapped_column(Float, comment="量比")
-    pe: Mapped[float | None] = mapped_column(Float, comment="市盈率")
-    pe_ttm: Mapped[float | None] = mapped_column(Float, comment="市盈率(TTM)")
-    pb: Mapped[float | None] = mapped_column(Float, comment="市净率")
-    ps: Mapped[float | None] = mapped_column(Float, comment="市销率")
-    ps_ttm: Mapped[float | None] = mapped_column(Float, comment="市销率(TTM)")
-    dv_ratio: Mapped[float | None] = mapped_column(Float, comment="股息率(%)")
-    dv_ttm: Mapped[float | None] = mapped_column(Float, comment="股息率(TTM)(%)")
-    total_share: Mapped[float | None] = mapped_column(Float, comment="总股本(万股)")
-    float_share: Mapped[float | None] = mapped_column(Float, comment="流通股本(万股)")
-    free_share: Mapped[float | None] = mapped_column(Float, comment="自由流通股本(万股)")
-    total_mv: Mapped[float | None] = mapped_column(Float, comment="总市值(万元)")
-    circ_mv: Mapped[float | None] = mapped_column(Float, comment="流通市值(万元)")
+    adj_factor: Mapped[float | None] = mapped_column(Float, comment="复权因子")
+    macd_dif: Mapped[float | None] = mapped_column(Float, comment="MACD DIF")
+    macd_dea: Mapped[float | None] = mapped_column(Float, comment="MACD DEA")
+    macd: Mapped[float | None] = mapped_column(Float, comment="MACD 柱")
+    kdj_k: Mapped[float | None] = mapped_column(Float, comment="KDJ K值")
+    kdj_d: Mapped[float | None] = mapped_column(Float, comment="KDJ D值")
+    kdj_j: Mapped[float | None] = mapped_column(Float, comment="KDJ J值")
+    rsi_6: Mapped[float | None] = mapped_column(Float, comment="RSI 6日")
+    rsi_12: Mapped[float | None] = mapped_column(Float, comment="RSI 12日")
+    rsi_24: Mapped[float | None] = mapped_column(Float, comment="RSI 24日")
+    boll_upper: Mapped[float | None] = mapped_column(Float, comment="BOLL 上轨")
+    boll_mid: Mapped[float | None] = mapped_column(Float, comment="BOLL 中轨")
+    boll_lower: Mapped[float | None] = mapped_column(Float, comment="BOLL 下轨")
+    cci: Mapped[float | None] = mapped_column(Float, comment="CCI 顺势指标")
 
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
@@ -1490,36 +1502,11 @@ class BrokerRecommend(Base):
 
 
 # ---------------------------------------------------------------------------
-# Broker profit forecast (stk_factor_pro) - 券商卖方盈利预测/一致预期
+# Note: The Tushare ``stk_factor_pro`` endpoint returns daily technical
+# indicators (261 columns) — NOT broker profit forecasts. Broker consensus
+# data is not available via current Tushare endpoints. Use ``stk_factor``
+# for the core technical indicator subset (34 columns).
 # ---------------------------------------------------------------------------
-class StkFactorPro(Base):
-    __tablename__ = "stk_factor_pro"
-
-    ts_code: Mapped[str] = mapped_column(String(16), comment="股票代码")
-    trade_date: Mapped[date] = mapped_column(Date, comment="预测日期")
-    end_date: Mapped[date | None] = mapped_column(Date, comment="预测报告期")
-    ann_date: Mapped[date | None] = mapped_column(Date, comment="公告日期")
-    broker: Mapped[str | None] = mapped_column(String(128), comment="券商名称")
-    analyst: Mapped[str | None] = mapped_column(String(64), comment="分析师名称")
-    s_ra: Mapped[str | None] = mapped_column(String(32), comment="标准评级")
-    s_ra_min: Mapped[float | None] = mapped_column(Float, comment="当日最低评级")
-    s_ra_max: Mapped[float | None] = mapped_column(Float, comment="当日最高评级")
-    s_ra_mean: Mapped[float | None] = mapped_column(Float, comment="当日评级均值")
-    profit: Mapped[float | None] = mapped_column(Float, comment="预测净利润(元)")
-    profit_min: Mapped[float | None] = mapped_column(Float, comment="当日最低预测净利润(元)")
-    profit_max: Mapped[float | None] = mapped_column(Float, comment="当日最高预测净利润(元)")
-    profit_mean: Mapped[float | None] = mapped_column(Float, comment="当日预测净利润均值(元)")
-    target_price: Mapped[float | None] = mapped_column(Float, comment="预测目标价(元)")
-    target_price_min: Mapped[float | None] = mapped_column(Float, comment="当日最低目标价(元)")
-    target_price_max: Mapped[float | None] = mapped_column(Float, comment="当日最高目标价(元)")
-
-    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
-
-    __table_args__ = (
-        PrimaryKeyConstraint("ts_code", "trade_date", "broker", "end_date", name="pk_stk_factor_pro"),
-        Index("idx_stk_factor_pro_date", "trade_date"),
-        Index("idx_stk_factor_pro_end_date", "end_date"),
-    )
 
 
 # ===========================================================================

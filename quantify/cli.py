@@ -367,7 +367,7 @@ def fetch_stock(
         help="Stage: all|basic|daily|adj-factor|daily-basic|weekly|monthly|"
         "suspend|namechange|income|balancesheet|cashflow|fina-indicator|"
         "forecast|express|dividend|moneyflow-hsgt|margin|margin-detail|"
-        "stk-factor|stk-factor-pro|broker-recommend",
+        "stk-factor|broker-recommend",
     ),
     incremental: bool = typer.Option(
         True, "--incremental/--full", help="Incremental update vs full backfill"
@@ -384,9 +384,9 @@ def fetch_stock(
     Stage=all runs: basic -> daily -> adj_factor -> daily_basic -> weekly ->
     monthly -> suspend -> namechange -> income -> balancesheet -> cashflow ->
     fina_indicator -> forecast -> express -> dividend -> moneyflow_hsgt ->
-    margin -> margin_detail -> stk_factor -> stk_factor_pro -> broker_recommend.
+    margin -> margin_detail -> stk_factor -> broker_recommend.
 
-    By default margin_detail, stk_factor, stk_factor_pro, broker_recommend,
+    By default margin_detail, stk_factor, broker_recommend,
     weekly, monthly are skipped. Run individual stages to fetch them.
     """
     from quantify.fetcher.stock import StockFetcher
@@ -428,7 +428,6 @@ def fetch_stock(
         "margin": lambda: fetcher.fetch_margin(incremental=incremental),
         "margin_detail": lambda: fetcher.fetch_margin_detail(incremental=incremental),
         "stk_factor": lambda: fetcher.fetch_stk_factor(ts_codes=universe),
-        "stk_factor_pro": lambda: fetcher.fetch_stk_factor_pro(ts_codes=universe),
         "broker_recommend": lambda: fetcher.fetch_broker_recommend(ts_codes=universe),
     }
     if normalized not in dispatch:

@@ -34,7 +34,6 @@ from quantify.database.models import (
     MoneyflowHsgt,
     NameChange,
     StkFactor,
-    StkFactorPro,
     StockBasic,
     StockDaily,
     StockDividend,
@@ -166,7 +165,6 @@ class StockFetcher:
             ("suspend", self.fetch_suspend),
             ("namechange", self.fetch_namechange),
             ("stk_factor", self.fetch_stk_factor),
-            ("stk_factor_pro", self.fetch_stk_factor_pro),
             ("broker_recommend", self.fetch_broker_recommend),
         ]
         for name, method in full_stages:
@@ -672,19 +670,7 @@ class StockFetcher:
         )
 
     # ------------------------------------------------------------------
-    # 20) stk_factor_pro (券商卖方盈利预测/一致预期)
-    # ------------------------------------------------------------------
-    def fetch_stk_factor_pro(self, *, ts_codes: Iterable[str]) -> int:
-        """Pull broker profit forecasts per stock (full history)."""
-        return self._fetch_per_code_full(
-            api="stk_factor_pro",
-            model=StkFactorPro,
-            ts_codes=ts_codes,
-            pk_dropna=["trade_date", "end_date", "broker"],
-        )
-
-    # ------------------------------------------------------------------
-    # 21) broker_recommend (券商金股)
+    # 20) broker_recommend (券商金股)
     # ------------------------------------------------------------------
     def fetch_broker_recommend(self, *, ts_codes: Iterable[str]) -> int:
         """Pull broker monthly gold-stock picks for the current month."""
