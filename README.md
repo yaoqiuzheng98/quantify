@@ -1,186 +1,81 @@
-# Quantify 📈
+# Quantify
 
-> 基于 Python 的个人量化策略研究平台 · LLM Agent 辅助因子组合与回测验证
+> 基于 Python 的个人量化策略研究平台 · 事件驱动回测引擎 · Tushare 全量数据接入
 
-[![Python](https://img.shields.io/badge/Python-3.11+-3776AB.svg)](https://www.python.org/)
+[![Python](https://img.shields.io/badge/Python-3.11-3776AB.svg)](https://www.python.org/)
 [![MySQL](https://img.shields.io/badge/MySQL-8.0+-4479A1.svg)](https://www.mysql.com/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Status](https://img.shields.io/badge/Status-WIP-orange.svg)]()
 
-Quantify 是一个使用 **Python** 构建的中低频量化研究框架。它从 **Tushare Pro** 拉取股票、基金、指数的日频行情与财务数据，持久化到 **MySQL**，再结合 **LLM Agent** 自动生成因子组合假设，由确定性回测引擎执行验证，最终通过 **Walk-forward 时间切分 + 行业稳健性诊断** 锤炼出可落地的投资策略。
-
----
-
-## ✨ 核心特性
-
-- 🐍 **Python 全栈**：拥抱成熟的量化生态（pandas / qlib / vectorbt），开发与迭代极快
-- 📊 **Tushare 单数据源**：日频行情 / 财务 / 指数 / 行业分类 / 基金净值，覆盖个人研究全场景
-- 🗄️ **MySQL 单库架构**：元数据 + 时序面板统一存储，运维成本最低
-- 🧠 **LLM 辅助研究**：Agent 提假设、引擎做计算、LLM 读报告，分工清晰
-- ⏱️ **Walk-forward 验证**：滚动时间窗口训练 + 样本外验证，避免风格漂移过拟合
-- 🏭 **行业稳健性诊断**：行业中性化 + 分行业拆解，验证跨行业鲁棒性
-- 📈 **完整评估体系**：IC / ICIR / Sharpe / 最大回撤 / 换手率 一应俱全
+Quantify 是一个 **Python** 量化研究框架。它从 **Tushare Pro** 拉取 A 股/ETF/指数/期货/行业/宏观全量日频数据，持久化到 **MySQL**，并提供**事件驱动逐 bar 回测引擎**（兼容聚宽策略 API）及 **Streamlit 回测工作台**。
 
 ---
 
-## 🏗️ 项目架构
+## 核心特性
+
+- **全量数据接入**：A 股日线/周月线、复权因子、每日指标、三大财报、财务指标、分红送股、沪深港通、融资融券、技术指标、ETF、指数成分/权重、行业分类、宏观经济、期货——**50+ 张数据表**，覆盖量化研究全场景
+- **幂等增量同步**：所有写入走 `INSERT ... ON DUPLICATE KEY UPDATE`，重复运行安全，断点续跑无需额外操作；时间序列阶段自动查库内最大日期仅拉增量
+- **事件驱动回测**：逐 bar 模拟，聚宽 `initialize`/`handle_data` 策略 API 兼容，前复权历史价格、真实开盘价撮合、佣金/滑点/分红/份额拆分全建模
+- **Streamlit 工作台**：代码编辑器 + 策略持久化 + 参数面板 + 交互式收益/回撤/持仓图表 + 20+ 指标卡片
+- **Tushare 客户端**：镜像站支持、滑动窗口限流、指数退避重试、并发硬上限 2 路的线程池安全调用
+
+---
+
+## 项目架构
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                     数据采集层 (Fetcher)                      │
-│         Tushare Pro API · 异步并发 · 增量更新 · 限流控制       │
-└──────────────────────────┬──────────────────────────────────┘
-                           ↓
-┌─────────────────────────────────────────────────────────────┐
-│                     存储层 (MySQL 8)                          │
-│   元数据：交易日历 / 股票池 / 行业分类 / 因子定义              │
-│   时序数据：日频行情 / 财务报表 / 因子面板 (按月分区)          │
-└──────────────────────────┬──────────────────────────────────┘
-                           ↓
-┌─────────────────────────────────────────────────────────────┐
-│                     因子层 (Factor Engine)                    │
-│   Alpha101/191 · Barra 风格因子 · 自定义因子                  │
-│   行业中性化 · 市值中性化 · 因子正交化                         │
-└──────────────────────────┬──────────────────────────────────┘
-                           ↓
-┌─────────────────────────────────────────────────────────────┐
-│                  策略生成层 (LLM Agent)                       │
-│   读取因子描述 + IC 报告 + 相关性矩阵                          │
-│        ↓                                                     │
-│   输出结构化策略 JSON {factors, weights, rebalance, ...}     │
-└──────────────────────────┬──────────────────────────────────┘
-                           ↓
-┌─────────────────────────────────────────────────────────────┐
-│                  回测层 (Backtest Engine)                    │
-│   逐 bar 事件驱动 · 佣金/滑点模型 · 指标 + LLM 报告           │
-└──────────────────────────┬──────────────────────────────────┘
-                           ↓
-┌─────────────────────────────────────────────────────────────┐
-│                    分析层 (Analyzer)                          │
-│   LLM 解读结构化报告 · 分行业稳健性诊断 · 策略池管理            │
-└─────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│                   数据采集层 (Fetcher)                     │
+│     Tushare Pro API · 6 个 Fetcher · 并发 + 限流 + 重试    │
+│     ETF / Stock / Index / Industry / Futures / Macro       │
+└─────────────────────┬────────────────────────────────────┘
+                       ↓
+┌──────────────────────────────────────────────────────────┐
+│                   存储层 (MySQL 8)                         │
+│     50+ 张表 · 元数据 + 时序 · INSERT ON DUPLICATE KEY    │
+└─────────────────────┬────────────────────────────────────┘
+                       ↓
+┌──────────────────────────────────────────────────────────┐
+│               回测层 (Backtest Engine)                     │
+│   逐 bar 事件驱动 · 佣金/滑点/分红/拆股 · 聚宽 API 兼容      │
+└─────────────────────┬────────────────────────────────────┘
+                       ↓
+┌──────────────────────────────────────────────────────────┐
+│              Web 工作台 (Streamlit Dashboard)              │
+│   策略编辑器 · 参数配置 · 交互式图表 · 指标卡片 · 策略持久化   │
+└──────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 🚀 快速开始
+## 快速开始
 
 ### 环境要求
 
-- **Python 3.11+**
-- **MySQL 8.0+**（推荐启用 InnoDB + utf8mb4）
-- **Tushare Pro 账号**（积分 ≥ 5000 推荐）
-- 操作系统：Linux / macOS / Windows
-- 推荐内存：**16GB+**（全市场因子计算时）
+- **Python 3.11**（`pyproject.toml` 锁定）
+- **MySQL 8.0+**（utf8mb4）
+- **Tushare Pro 账号**（ETF 行情 ≥ 2000 积分；财务/行业 ≥ 5000 积分）
+- 推荐：Linux / macOS，16GB+ 内存
 
-### 0. Ubuntu 安装 pyenv 与 Python（可选）
-
-如果你的 Ubuntu 系统没有合适的 Python 版本，推荐通过 **pyenv** 管理多版本 Python。
-
-#### 0.1 安装系统依赖
+### 1. 安装
 
 ```bash
-sudo apt update && sudo apt install -y \
-    make build-essential libssl-dev zlib1g-dev \
-    libbz2-dev libreadline-dev libsqlite3-dev wget curl llvm \
-    libncursesw5-dev xz-utils tk-dev libxml2-dev libxmlsec1-dev \
-    libffi-dev liblzma-dev git
+git clone <repo-url> && cd quantify
+python -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"          # 核心依赖
+pip install -e ".[web]"          # Streamlit 工作台（可选）
 ```
 
-#### 0.2 安装 pyenv
+### 2. 配置 `.env`
 
 ```bash
-curl https://pyenv.run | bash
+cp .env.example .env
 ```
 
-#### 0.3 配置 Shell
-
-将以下内容追加到 `~/.bashrc`（使用 zsh 则改为 `~/.zshrc`）：
-
-```bash
-export PYENV_ROOT="$HOME/.pyenv"
-[[ -d $PYENV_ROOT/bin ]] && export PATH="$PYENV_ROOT/bin:$PATH"
-eval "$(pyenv init -)"
-eval "$(pyenv virtualenv-init -)"
-```
-
-使配置立即生效：
-
-```bash
-source ~/.bashrc
-```
-
-#### 0.4 安装 Python 3.11
-
-```bash
-pyenv install 3.11.9
-```
-
-> 安装过程会从源码编译，通常需要 3–5 分钟。运行 `pyenv install --list | grep "3\.11"` 可查看可用的 3.11.x 版本，选最新的即可。
-
-#### 0.5 设置项目 Python 版本
-
-```bash
-# 进入项目目录后，设置本目录专用的 Python 版本
-pyenv local 3.11.9
-
-# 验证
-python --version   # 应输出 Python 3.11.9
-```
-
-> 也可以用 `pyenv global 3.11.9` 全局生效，但推荐按项目隔离。
-
----
-
-### 1. 克隆与安装
-
-```bash
-# 克隆仓库
-git clone https://github.com/yourname/quantify.git
-cd quantify
-
-# 创建虚拟环境
-python -m venv .venv
-# Windows (PowerShell)
-.venv\Scripts\Activate.ps1
-# Linux / macOS
-source .venv/bin/activate
-
-# 升级 pip 并安装项目（开发模式）
-python -m pip install --upgrade pip
-pip install -e ".[dev]"
-
-# 如需使用 Streamlit 回测工作台，再安装 Web 依赖
-pip install -e ".[web]"
-```
-
-安装完成后，命令行入口 `quantify` 会自动注册到当前虚拟环境，运行 `quantify --help` 即可看到全部子命令。
-
-### 2. 准备 MySQL
-
-本地或远程都可以，推荐版本 **MySQL 8.0+**，字符集 **utf8mb4**。账号需有创建数据库与读写权限。无需手动建库——`quantify db init` 会自动 `CREATE DATABASE IF NOT EXISTS`。
-
-```sql
--- 仅作示例：用 root 创建一个独立账号
-CREATE USER 'quantify'@'%' IDENTIFIED BY 'your_password';
-GRANT ALL PRIVILEGES ON quantify.* TO 'quantify'@'%';
-FLUSH PRIVILEGES;
-```
-
-### 3. 配置 `.env`
-
-```bash
-cp .env.example .env       # Windows: copy .env.example .env
-```
-
-编辑 `.env`，至少填好两类配置：
+编辑 `.env`：
 
 ```ini
-# Tushare Pro
-TUSHARE_TOKEN=你的_tushare_pro_token
-TUSHARE_RATE_PER_MIN=480       # 按账号积分调整：低权限账号请下调到 100~200
-
-# MySQL
+TUSHARE_TOKEN=你的_token
+TUSHARE_RATE_PER_MIN=480
 MYSQL_HOST=127.0.0.1
 MYSQL_PORT=3306
 MYSQL_USER=quantify
@@ -188,624 +83,350 @@ MYSQL_PASSWORD=your_password
 MYSQL_DATABASE=quantify
 ```
 
-> 没有 token 时执行任何 `fetch` 命令都会立即报错；建议先到 <https://tushare.pro> 注册并获取 token。ETF 行情通常 2000 积分以上即可调用。
-
-### 4. 初始化数据库
+### 3. 初始化数据库
 
 ```bash
 quantify db init
 ```
 
-该命令会：
+创建所有 50+ 张表。重建：`quantify db drop --yes && quantify db init`
 
-1. 用 `.env` 里的连接信息登录 MySQL；
-2. 若库不存在则创建（utf8mb4 + `_unicode_ci`）；
-3. 在库内创建本项目当前涉及的全部表：
-   - ETF：`fund_basic` / `etf_basic` / `fund_daily` / `fund_nav` / `fund_adj` / `fund_div` / `fund_share` / `etf_share_size` / `fund_portfolio` / `fund_manager`；
-   - 行业：`index_classify` / `index_member_all` / `sw_daily` / `ci_index_member` / `ci_daily`；
-   - 指数：`index_basic` / `index_daily` / `index_dailybasic` / `index_weight` / `moneyflow_ind_dc`；
-   - 宏观/跨资产：`yc_cb`（中债收益率曲线）/ `index_global`（国际指数）/ `us_tycr`（美债名义利率）/ `us_trycr`（美债实际利率）；
-   - 交易日历：`trade_cal`；
-   - 策略：`strategy`。
-
-如需重建（**会清空数据**）：
+### 4. 拉取数据
 
 ```bash
-quantify db drop --yes
-quantify db init
-```
+# === 基础：交易日历 ===
+quantify fetch industry trade-cal
 
-### 5. 拉取 ETF 全量数据
-
-首次拉全量约 10–30 分钟，主要受 Tushare 的限流约束。建议按下面的顺序执行：
-
-```bash
-# 5.1 必须先拉基础信息（决定后续要遍历的 ts_code 列表）
+# === ETF（必须先拉 basic） ===
 quantify fetch etf basic
-
-# 5.2 一键拉全部子集（增量模式：仅拉本地已有数据之后的部分）
 quantify fetch etf all
 
-# 想强制全量回填（忽略本地已存在的最大日期）
-# --full 是 --incremental/--full 布尔开关对中的一个，二者互斥
-quantify fetch etf all --full
-```
+# === A 股个股（必须先拉 basic） ===
+quantify fetch stock basic
+quantify fetch stock all                # 默认增量，跳过周月线/融资明细/金股
+quantify fetch stock all --full         # 全量回填
 
-常用的细粒度命令：
-
-```bash
-# 仅拉日频行情
-quantify fetch etf daily
-
-# 只针对特定 ETF（逗号分隔）
-quantify fetch etf nav --ts-code 510300.SH,159915.SZ
-
-# 跳过持仓 / 经理人这种偏慢的子集
-quantify fetch etf all --skip portfolio,manager
-
-# 单独跑某个阶段：
-#   basic / etf-index-basic / daily / nav / adj / dividend / share / share-size / portfolio / manager
-quantify fetch etf adj
-quantify fetch etf dividend
-quantify fetch etf share-size
-
-# 指定阶段 + 指定代码 + 全量回填（仅对时间序列阶段有意义）
-quantify fetch etf daily --ts-code 510300.SH,159915.SZ --full
-
-# 拉 ETF→跟踪指数映射（etf_basic 接口，需 8000 积分；含 index_code/index_name）
-quantify fetch etf etf-index-basic
-```
-
-> 📌 **两个 basic 的区别**：`quantify fetch etf basic` 调用 Tushare 的 `fund_basic` 接口，写入 `fund_basic` 表（公募基金通用信息，无跟踪指数）；`quantify fetch etf etf-index-basic` 调用 `etf_basic` 接口，写入 `etf_basic` 表（带 `index_code`/`index_name`，用于 ETF→指数→行业映射）。`quantify fetch etf all` 会同时跑这两个。
-
-#### `--incremental` / `--full` 的真实行为
-
-`--incremental/--full` 是一对**互斥布尔开关**（默认 `--incremental`）。但要注意：**并非所有阶段都受这个开关影响**。`fetch etf all` 实际是“混合模式”——
-
-| 阶段 | 接口 | 默认行为 | `--full` 是否生效 |
-|------|------|---------|------------------|
-| `daily` | `fund_daily` | **增量**：查库内每个 `ts_code` 的 `max(trade_date)`，只拉之后的数据 | ✅ 改为从首日全量回填 |
-| `nav` | `fund_nav` | **增量**（按 `nav_date`） | ✅ |
-| `adj` | `fund_adj` | **增量**（按 `trade_date`） | ✅ |
-| `share` | `fund_share` | **增量**（按 `trade_date`） | ✅ |
-| `share_size` | `etf_share_size` | **增量**（按 `trade_date`） | ✅ |
-| `dividend` | `fund_div` | **始终全量**：每次拉取该 ETF 的全部分红记录 | ❌ 无差异 |
-| `portfolio` | `fund_portfolio` | **始终全量**（季报，默认被跳过） | ❌ 无差异 |
-| `manager` | `fund_manager` | **始终全量** | ❌ 无差异 |
-| `basic` / `etf_index_basic` | `fund_basic` / `etf_basic` | **始终全量刷新** | ❌ 无差异 |
-
-即：日线、净值、复权、份额、规模这 5 个量大的时间序列走增量（高效，只拉新增）；分红、持仓、基金经理及两个 basic 表每次全量重拉（接口本身无增量语义，靠幂等 upsert 去重，不产生脏数据，只多耗一点 API 配额）。
-
-因此日常更新时 `--full` 主要影响那 5 个时间序列阶段；对分红/经理等阶段加不加 `--full` 没有区别。
-
-> 📌 `portfolio` 在 `DEFAULT_SKIP_STAGES` 中**默认被跳过**（拉取较慢），需要时单独执行 `quantify fetch etf portfolio`。
-
-所有写入均为 `INSERT ... ON DUPLICATE KEY UPDATE`，**重复运行安全**，断点续跑无需任何额外操作。
-
-### 5.1 拉取行业分类与行业指数（可选）
-
-ETF 行业轮动等策略需要权威的行业分类与行业指数行情。Tushare 的申万（SW）/中信（CITIC）数据已接入：
-
-```bash
-# 申万：分类 + 成分 + 行业指数日线（默认 SW2021 版本，增量更新日线）
-quantify fetch industry all --provider sw
-
-# 中信：成分 + 行业指数日线
-quantify fetch industry all --provider ci
-
-# 申万 + 中信 一起拉
+# === 行业分类 + 行情 ===
 quantify fetch industry all --provider all
+
+# === 指数 ===
+quantify fetch index all
+
+# === 宏观/跨资产 ===
+quantify fetch macro all
+
+# === 期货 ===
+quantify fetch futures all
+
+# === 公募基金公司 ===
+quantify fetch fund all
+
+# === 一键全部 ===
+quantify fetch all                      # 按依赖顺序：日历→ETF→个股→行业→指数→宏观→期货→基金
+quantify fetch all --skip futures,macro # 跳过指定组
 ```
 
-细粒度阶段：
+### 5. 日常增量更新
 
 ```bash
-quantify fetch industry sw-classify              # 申万行业分类元数据
-quantify fetch industry sw-member                # 申万行业成分股（默认仅最新）
-quantify fetch industry sw-daily                 # 申万行业指数日线（增量）
-quantify fetch industry sw-daily --full          # 申万行业指数日线（全量回填）
-quantify fetch industry sw-daily --index-code 801010.SI,801030.SI  # 指定行业
-quantify fetch industry ci-member                # 中信行业成分股
-quantify fetch industry ci-daily --start-date 20200101             # 中信行业指数日线
+quantify fetch all     # 默认增量模式
 ```
 
-> 申万行业日线需 5000 积分，中信行业成分/行情需 5000 积分；积分不足时对应阶段会报权限错误，可先只跑 `sw-classify` / `sw-member`。成分股默认只拉 `is_new=Y` 的最新归属，加 `--all-history` 可拉历史纳入/剔除记录。
-
-### 5.2 一键拉取全部数据组
-
-如果想一条命令搞定**所有**数据（而不是只拉 ETF），用顶层的 `quantify fetch all`。它会按依赖顺序串行拉取五大数据组：**交易日历 → ETF → 行业（SW+CITIC）→ 指数 → 宏观/跨资产**。
+或按需只更新特定组：
 
 ```bash
-# 增量更新全部数据组（默认）
-quantify fetch all
-
-# 全量回填全部数据组（首次建库或需要重拉历史时）
-quantify fetch all --full
-
-# 跳过某些数据组（顶层分组：trade_cal | etf | industry | index | macro）
-quantify fetch all --skip industry,macro
-
-# 指定交易日历的交易所、申万分类版本
-quantify fetch all --exchange SSE,SZSE --sw-src SW2021
+quantify fetch stock daily --ts-code 600000.SH    # 单只股票最新日线
+quantify fetch etf all                             # 仅更新 ETF
 ```
-
-> 📌 `quantify fetch all` 与 `quantify fetch etf all` 的区别：前者是**顶层总命令**，拉取全部五大数据组；后者只拉 **ETF 一个组**的全部阶段。两者的 `--incremental/--full` 行为一致——量大的时间序列走增量，分红/经理人/basic 等每次全量（详见上文“`--incremental` / `--full` 的真实行为”）。
->
-> 各数据组对积分要求不同（行业/指数部分接口需 5000+ 积分）；积分不足时可用 `--skip` 跳过对应组，例如只维护 ETF：`quantify fetch all --skip industry,index,macro`。
-
-### 6. 验证数据是否入库
-
-```bash
-mysql -u quantify -p quantify
-```
-
-```sql
-SELECT COUNT(*) AS n_etf FROM fund_basic;
-SELECT COUNT(*) AS n_daily, MAX(trade_date) AS last_date FROM fund_daily;
-SELECT * FROM fund_basic ORDER BY list_date DESC LIMIT 5;
-SELECT * FROM fund_daily WHERE ts_code = '510300.SH' ORDER BY trade_date DESC LIMIT 10;
-```
-
-或者在 Python 里直接读：
-
-```python
-import pandas as pd
-from quantify.database.engine import get_engine
-
-df = pd.read_sql(
-    "SELECT trade_date, close, vol FROM fund_daily "
-    "WHERE ts_code = '510300.SH' ORDER BY trade_date",
-    get_engine(),
-)
-print(df.tail())
-```
-
-### 7. 日常增量更新
-
-建议每个交易日收盘后跑一次：
-
-```bash
-# 只维护 ETF（最常见）
-quantify fetch etf basic
-quantify fetch etf all      # 默认就是增量
-
-# 或：一条命令增量更新全部数据组（ETF + 行业 + 指数 + 宏观 + 交易日历）
-quantify fetch all          # 默认就是增量
-```
-
-可结合系统计划任务：
-
-- **Windows**：任务计划程序（Task Scheduler）每日 17:30 触发 `powershell -Command "cd D:\learning\quantify; .venv\Scripts\Activate.ps1; quantify fetch all"`。
-- **Linux/macOS**：`crontab -e` 添加 `30 17 * * 1-5 cd /path/to/quantify && . .venv/bin/activate && quantify fetch all >> logs/cron.log 2>&1`。
-
-> 只关心 ETF 时把上面的 `quantify fetch all` 换成 `quantify fetch etf all` 即可，速度更快、积分消耗更低。
-
-### 8. 后续路线（暂未实现）
-
-以下命令在路线图中，**当前版本尚未实现**，仅作为后续里程碑示意：
-
-```bash
-# 计算并入库因子（M2）
-quantify factor compute --names pe_ttm,roe,momentum_60d
-
-# 单因子 IC 测试（M3）
-quantify backtest ic --factor pe_ttm --start 2018-01-01 --end 2025-12-31
-
-# LLM 驱动的因子组合搜索（M4）
-quantify agent search --industry "游戏" --rounds 5
-```
-
-### 常见问题
-
-- **`TUSHARE_TOKEN is empty`**：`.env` 没找到或字段未填。确认在项目根目录运行命令，且 `.env` 与 `pyproject.toml` 同级。
-- **`Access denied for user ...`**：MySQL 账号/密码或权限问题，先用 `mysql -u ...` 直连验证。
-- **`抱歉，您每分钟最多访问该接口 N 次`**：把 `.env` 中的 `TUSHARE_RATE_PER_MIN` 调小一些（如 60）。
-- **`pymysql.err.OperationalError: (2003, ...)`**：MySQL 没启动或 host/port 不对。
-- **Windows 编码乱码**：建议在 PowerShell 里执行 `chcp 65001` 切到 UTF-8 后再跑命令。
 
 ---
 
-## 📦 数据粒度与表设计
+## CLI 命令参考
 
-所有数据日频为主，统一存储于 MySQL，关键时序表按月分区以保证查询性能。
+### 数据库管理
 
-| **数据类型** | **粒度** | **表名** | **说明** |
-|------------|---------|---------|---------|
-| 行情 OHLCV | 日频 | `daily_quote` | 按 `trade_date` 月分区 |
-| 复权因子 | 日频 | `adj_factor` | 前复权计算用 |
-| 财务报表 | 季频 | `financial_report` | 含 PIT 字段避免未来函数 |
-| 基金净值 | 日频 | `fund_nav` | 单位净值 + 累计净值 |
-| 因子面板 | 日频横截面 | `factor_value` | 按 `trade_date` 月分区，长格式 |
-| 交易日历 | — | `trade_calendar` | 元数据 |
-| 股票池 | — | `stock_basic` | 含上市/退市状态 |
-| 行业分类 | — | `industry_classify` | 申万 + 中信 |
-| 因子定义 | — | `factor_meta` | 因子描述 / 公式 / 频率 |
-
-### 关键索引设计
-
-```sql
--- 时序查询主索引
-CREATE INDEX idx_daily_code_date ON daily_quote(ts_code, trade_date);
-CREATE INDEX idx_factor_date_factor ON factor_value(trade_date, factor_name);
-
--- 因子横截面查询（最常用）
-CREATE INDEX idx_factor_factor_date_code ON factor_value(factor_name, trade_date, ts_code);
+```bash
+quantify db init         # 创建库 + 全部表
+quantify db drop --yes   # 删除全部表
 ```
 
-> 💡 **为什么 MySQL 够用？** 日频粒度下，A 股 5000+ 标的 × 30 年 ≈ 5000 万行，加上分区与合理索引，单因子全市场查询毫秒级。配合 `pandas.read_sql` 的 chunked 读取与连接池，性能完全够用。
+### 数据采集
+
+| 命令 | 阶段 | 关键参数 |
+|------|------|---------|
+| `quantify fetch etf` | `basic\|daily\|nav\|adj\|dividend\|share\|share-size\|portfolio\|manager` | `--ts-code`, `--incremental/--full`, `--skip` |
+| `quantify fetch stock` | `basic\|daily\|adj-factor\|daily-basic\|weekly\|monthly\|suspend\|namechange\|income\|balancesheet\|cashflow\|fina-indicator\|forecast\|express\|dividend\|moneyflow-hsgt\|margin\|margin-detail\|stk-factor\|broker-recommend` | 同上 |
+| `quantify fetch industry` | `trade-cal\|sw-classify\|sw-member\|sw-daily\|ci-member\|ci-daily` | `--provider sw\|ci\|all`, `--sw-src` |
+| `quantify fetch index` | `index-basic\|index-daily\|index-dailybasic\|index-weight\|moneyflow-ind-dc` | `--market`, `--all-index` |
+| `quantify fetch macro` | `yc-cb\|index-global\|us-tycr\|us-trycr` | `--ts-code`, `--start-date/--end-date` |
+| `quantify fetch futures` | `fut-basic\|fut-daily\|fut-holding\|fut-wsr\|fut-settle` | `--incremental/--full` |
+| `quantify fetch fund` | `company` | — |
+| `quantify fetch all` | 全部数据组依赖顺序执行 | `--skip trade_cal\|etf\|stock\|industry\|index\|macro\|futures\|fund` |
+
+### 回测工作台
+
+```bash
+quantify dashboard              # 默认 8501 端口
+quantify dashboard --port 8502  # 指定端口
+```
 
 ---
 
-## 📈 回测引擎
+## 数据表清单
 
-回测引擎采用**事件驱动逐 bar 模拟**，策略 API 对齐聚宽（JoinQuant）风格，熟悉 `initialize` / `handle_data` 模式的用户可以零学习成本上手。
+全部 51 张表，表名与 Tushare 接口名一一对应。所有写入均为幂等 upsert。
 
-### 策略写法
+### ETF（10 表）
 
-编写一个包含 `initialize(context)` 和 `handle_data(context)` 的 Python 代码段即可：
+| 表名 | 内容 |
+|------|------|
+| `fund_basic` | ETF 基础信息（market='E'） |
+| `etf_basic` | ETF→跟踪指数映射（index_code/index_name） |
+| `fund_daily` | ETF 日线 OHLCV |
+| `fund_nav` | 单位净值/累计净值/复权净值 |
+| `fund_adj` | 复权因子 |
+| `fund_div` | 分红记录 |
+| `fund_share` | 份额变动 |
+| `etf_share_size` | 份额+规模+AUM+净值+收盘价 |
+| `fund_portfolio` | 季报披露持仓 |
+| `fund_manager` | 基金经理信息 |
+
+### A 股个股（20 表）
+
+| 表名 | 内容 |
+|------|------|
+| `stock_basic` | A 股基础列表（含上市/退市状态、行业、地域） |
+| `daily` | 日线 OHLCV |
+| `adj_factor` | 复权因子 |
+| `daily_basic` | 每日指标：PE/PB/PS/换手率/总市值/流通市值 |
+| `weekly` / `monthly` | 周线/月线 OHLCV |
+| `suspend_d` | 停复牌信息 |
+| `namechange` | 历史名称变更 |
+| `income` | 利润表（94 列） |
+| `balancesheet` | 资产负债表（158 列） |
+| `cashflow` | 现金流量表（97 列） |
+| `fina_indicator` | 财务指标：ROE/ROA/毛利率/同比增长率等（167 列） |
+| `forecast` | 业绩预告 |
+| `express` | 业绩快报 |
+| `dividend` | 分红送股 |
+| `moneyflow_hsgt` | 沪深港通资金流向 |
+| `margin` | 融资融券交易汇总（SSE/SZSE） |
+| `margin_detail` | 融资融券交易明细（per stock per day） |
+| `stk_factor` | 每日技术指标：MACD/KDJ/RSI/BOLL/CCI |
+| `broker_recommend` | 券商月度金股 |
+
+### 行业（7 表）
+
+| 表名 | 内容 |
+|------|------|
+| `trade_cal` | 交易所交易日历 |
+| `index_classify` | 申万行业分类（SW2021） |
+| `index_member_all` | 申万行业成分股 |
+| `sw_daily` | 申万行业指数日线 |
+| `ci_index_member` | 中信行业成分股 |
+| `ci_daily` | 中信行业指数日线 |
+
+### 指数（5 表）
+
+| 表名 | 内容 |
+|------|------|
+| `index_basic` | 指数基本信息 |
+| `index_daily` | 指数日线行情 |
+| `index_dailybasic` | 指数每日指标（仅主要宽基） |
+| `index_weight` | 指数成分权重（月度） |
+| `moneyflow_ind_dc` | 东方财富行业/概念资金流 |
+
+### 宏观/跨资产（4 表）
+
+| 表名 | 内容 |
+|------|------|
+| `yc_cb` | 中债国债收益率曲线（即期/到期） |
+| `index_global` | 国际主要指数日线（SPX/DJI/HSI 等 22 个） |
+| `us_tycr` | 美国国债名义收益率曲线（1M–30Y） |
+| `us_trycr` | 美国国债实际收益率曲线（5Y–30Y） |
+
+### 期货（5 表）
+
+| 表名 | 内容 |
+|------|------|
+| `fut_basic` | 合约列表（6 个交易所） |
+| `fut_daily` | 期货日线 OHLCV + 持仓量 |
+| `fut_holding` | 每日成交持仓排名 |
+| `fut_wsr` | 仓单日报 |
+| `fut_settle` | 结算参数 |
+
+### 公募基金（1 表）
+
+| 表名 | 内容 |
+|------|------|
+| `fund_company` | 公募基金公司信息 |
+
+---
+
+## 回测引擎
+
+事件驱动逐 bar 模拟，策略 API 对齐聚宽 JoinQuant。
+
+### 策略示例
 
 ```python
 from jqdata import *
 
-
 def initialize(context):
-    set_option("use_real_price", True)
-    set_option("avoid_future_data", True)
     set_benchmark("510300.XSHG")
-
-    set_order_cost(
-        OrderCost(
-            open_tax=0,
-            close_tax=0,
-            open_commission=0.0005,
-            close_commission=0.0005,
-            min_commission=0.5,
-        ),
-        type="fund",
-    )
+    set_order_cost(OrderCost(open_commission=0.0005, close_commission=0.0005, min_commission=0.5), type="fund")
     set_slippage(PriceRelatedSlippage(0.002))
-
     context.short_window = 5
     context.long_window = 20
-
     run_daily(rebalance, time="open")
 
 def rebalance(context):
     code = "510300.XSHG"
-    closes = attribute_history(code, context.long_window + 1, "1d", ["close"])["close"]
-    if len(closes) < context.long_window + 1:
+    closes = attribute_history(code, 21, "1d", ["close"])["close"]
+    if len(closes) < 21:
         return
-
-    short_ma = closes[-context.short_window:].mean()
-    long_ma = closes[-context.long_window:].mean()
-    position_amount = (
-        context.portfolio.positions[code].total_amount if code in context.portfolio.positions else 0
-    )
-
-    # 金叉买入，死叉卖出
+    short_ma = closes[-5:].mean()
+    long_ma = closes[-20:].mean()
     if short_ma > long_ma:
-        if position_amount == 0:
-            order_target_value(code, context.portfolio.total_value * 0.95)
-    elif position_amount > 0:
+        order_target_value(code, context.portfolio.total_value * 0.95)
+    else:
         order_target_value(code, 0)
 ```
 
-Streamlit 回测工作台默认加载同一段示例策略。
-
-本地引擎内置轻量 `jqdata` 兼容层，支持示例策略中的 `set_benchmark`、`run_daily(..., time="open")`、`attribute_history`、`order_target_value`、`set_order_cost`、`set_slippage` 等常用聚宽 API；未覆盖聚宽全量 API。
-
-#### `jqdata` 兼容范围
-
-| API | 本地行为 |
-|-----|----------|
-| `from jqdata import *` | 生效；本地注入轻量兼容模块，供策略源码导入。 |
-| `set_benchmark(security)` | 生效；设置本地回测基准，并自动把 `.XSHG/.XSHE` 转为 `.SH/.SZ`。 |
-| `run_daily(func, time="open")` | 生效；注册每日开盘执行函数。目前只支持 `time="open"`。 |
-| `attribute_history(security, count, "1d", fields)` | 生效；读取本地日线历史，价格字段按前复权返回，不包含当天收盘价；默认可读取回测开始日前 365 天历史。目前只支持 `unit="1d"`。 |
-| `order` / `order_value` / `order_target_value` / `order_target_percent` | 生效；走本地 Broker 下单、整手取整、开盘加滑点撮合。 |
-| `set_order_cost(OrderCost(...), type="fund")` | 生效但部分支持；使用 `open_commission`、`close_commission` 的较大值和 `min_commission`，暂不处理印花税等字段。 |
-| `set_slippage(PriceRelatedSlippage(rate))` | 生效；按聚宽风格调整成交价，`0.002` 表示买入价上移 `0.001`、卖出价下移 `0.001`，ETF 成交价按 `0.001` tick 四舍五入。 |
-| `set_option("avoid_future_data", True)` | 仅兼容语法；本地引擎默认已按无未来数据规则执行。 |
-| `set_option("use_real_price", True)` | 语义对齐：成交按真实价撮合，`attribute_history` 历史价按前复权返回（本地默认即此行为）。 |
-| 其他 `set_option(...)` | 仅记录参数，不驱动本地行为。 |
-
-因此，当前目标是支持常见的日频 ETF 聚宽策略在本地与聚宽之间复制运行，而不是完整复刻聚宽所有 API、撮合细节和市场边界规则。
-
-### Context API 一览
-
-| 方法 | 说明 |
-|------|------|
-| `context.set_benchmark(ts_code)` | 设置基准标的 |
-| `context.order(ts_code, amount)` | 按股数下单（正=买，负=卖） |
-| `context.order_value(ts_code, value)` | 按金额下单 |
-| `context.order_target_value(ts_code, target)` | 调仓至目标市值 |
-| `context.order_target_percent(ts_code, pct)` | 调仓至目标仓位比例 |
-| `context.data.current(ts_code)` | 获取当前 bar（返回 Bar 对象） |
-| `context.data.history(ts_code, count, field)` | 获取历史 N 根 bar 的字段序列 |
-| `context.portfolio.cash` | 当前现金 |
-| `context.portfolio.total_value` | 当前总资产 |
-| `context.portfolio.positions[code]` | 持仓对象（`.amount`, `.avg_cost`, `.market_value` / `.value`, `.pnl`） |
-
-### 撮合与数据对齐
-
-- 时间轴使用所有 `ts_codes` 的交易日期并集推进；某标的当天没有 bar 时，`context.data.current()` 返回 `None`，不会复用上一交易日价格，也不会读到未来价格。
-- 策略在每日开盘时运行：`context.data.current()` 只暴露当天开盘可知信息，`history()` 只返回上一交易日及以前的完整历史数据，不包含当天收盘价；引擎默认额外预加载回测开始日前 `365` 天历史供均线等信号使用。
-- `handle_data()` 中提交的订单会在当天按开盘价加滑点后撮合；如果当天无可交易 bar 则不会生成订单。
-- 报表净值按日终收盘价估值，交易执行价和报表估值价分离，以贴近聚宽指标面板口径。
-- 订单数量按一手 `100` 份取整；不足一手的买卖请求会被忽略，现金不足时也只会按可负担的整手数量部分成交。
-- 买入现金不足时会按可负担数量部分成交；完全不可成交或无持仓卖出会标记为拒单，不计入 `trades`。
-- ETF 分红按 `fund_div` 的登记日锁定持仓、派息日现金入账；这会影响后续可用现金与仓位数量。
-- 佣金会直接扣减现金；滑点通过更差成交价影响现金，并计入结果指标中的 `total_slippage`。
-- **价格复权口径（对齐聚宽 `use_real_price=True`）**：`attribute_history()` 返回的历史价格（open/high/low/close/pre_close）按 `fund_adj` 复权因子做**前复权**（以当前 bar 为基准），避免分红除息日的虚假跳空污染波动率 / 均线 / 动量等计算；成交价仍用**真实开盘价**，分红现金单独入账（不双算）。成交量、成交额、涨跌幅等非价格字段不复权。
-- 基准收益使用 `fund_adj` 复权收盘价，并以前一交易日作为基准起点；日胜率按“策略日收益跑赢基准日收益”的比例统计。
-- 平仓盈亏统计（盈利次数 / 亏损次数 / 胜率 / 盈亏比）按**扣除双边佣金与滑点后的净盈亏**判定，并对接近 0 的同价进出用浮点容差归为“平”不计入，与聚宽口径一致。
-
-### 在代码中调用引擎
+### 引擎调用
 
 ```python
 from quantify.backtest import BacktestEngine
 
 engine = BacktestEngine(
-    strategy_source=open("my_strategy.py").read(),   # 或直接传字符串
-    ts_codes=["510300.SH", "510050.SH"],
-    start_date="2022-01-01",
-    end_date="2025-12-31",
-    initial_cash=100000,
-    benchmark_code="510300.SH",
-    commission_rate=0.0005,    # 万五
-    commission_min=0.5,        # 最低 0.5 元
-    slippage_rate=0.002,       # 聚宽 PriceRelatedSlippage 风格滑点
+    strategy_source=open("my_strategy.py").read(),
+    ts_codes=["510300.SH"],
+    start_date="2022-01-01", end_date="2025-12-31",
+    initial_cash=100000, benchmark_code="510300.SH",
+    commission_rate=0.0005, commission_min=0.5, slippage_rate=0.002,
 )
-
 result = engine.run()
-```
-
-### 结果输出
-
-引擎提供**两种格式**的输出：
-
-```python
-# 1) 人类可读 — 格式化文本指标
 print(result.metrics.to_llm_prompt())
-
-# 2) LLM / Web 同源结构 — 指标 + 曲线 + 交易记录
-report = result.to_report_dict()
-llm_dict = result.to_llm_dict()  # 与 report 完全同源
-# report["metrics"]      → {sharpe_ratio, max_drawdown_pct, win_rate_pct, ...}
-# report["report_items"] → [{label, value, numeric_value}, ...]
-# report["curves"]       → [{date, equity, strategy_return_pct, benchmark_return_pct, ...}]
-# report["trades"]       → [{date, ts_code, direction, amount, price, commission, ...}]
 ```
 
-### 指标清单
+### Context API
 
-| 类别 | 指标 |
+| 方法 | 说明 |
 |------|------|
-| 收益 | 总收益率、年化收益率 |
-| 风险 | 最大回撤 (含持续天数)、年化波动率 |
-| 风险调整 | Sharpe 比率、Calmar 比率、索提诺比率、信息比率 |
-| 交易 | 胜率、盈亏比、Profit Factor、交易次数 |
-| 成本 | 累计佣金、累计滑点 |
+| `context.order(ts_code, amount)` | 按股数下单 |
+| `context.order_value(ts_code, value)` | 按金额下单 |
+| `context.order_target_value(ts_code, target)` | 调仓至目标市值 |
+| `context.order_target_percent(ts_code, pct)` | 调仓至目标仓位比例 |
+| `context.data.current(ts_code)` | 当前 bar |
+| `context.data.history(ts_code, count, field)` | 前复权历史序列 |
+| `context.portfolio.cash / .total_value` | 现金/总资产 |
+| `context.portfolio.positions[code]` | 持仓（amount, avg_cost, value, pnl） |
 
-### 佣金与滑点
+### 关键行为
 
-佣金通过 `commission_rate` + `commission_min` 参数自由配置，`commission_rate=0, commission_min=0` 即为零佣金：
+- **前复权**：`attribute_history()` 返回的价格按复权因子前复权，避免分红除息跳空污染计算
+- **真实成交价**：订单按当天真实开盘价 + 滑点撮合
+- **整手取整**：100 份一手，不足一手忽略
+- **ETF 分红**：登记日锁定持仓，派息日现金入账
+- **ETF 拆股**：基于 accum_nav/unit_nav 比率自动检测并调整持仓
+- **佣金/滑点**：直接扣减现金并计入指标
 
-```python
-engine = BacktestEngine(
-    ...,
-    commission_rate=0.0005,    # 费率（如万五 = 0.05%）
-    commission_min=0.5,        # 最低佣金（0 表示无下限）
-    slippage_rate=0.002,       # 聚宽 PriceRelatedSlippage 风格滑点（可选，默认 0）
-)
-```
+### 指标输出
 
-也支持在更底层的 Broker 中使用 `make_commission(rate, minimum)` / `make_slippage(rate)` 或自定义 `callable`。
+总收益率、年化收益率、最大回撤（含持续天数）、年化波动率、Sharpe/Sortino/Calmar/信息比率、胜率、盈亏比、Profit Factor、累计佣金、累计滑点、Alpha/Beta。
 
-> 💡 目前仅回测 ETF 日线数据。数据源来自 `fund_daily` 表（OHLCV），读取逻辑在 `engine.py` 的 `_load_data()` 中，可方便扩展至股票 → 期货等资产。
+---
 
-### Streamlit 回测工作台
-
-安装 Web 依赖后，可以启动交互式回测工作台：
+## Streamlit 回测工作台
 
 ```bash
-pip install -e ".[web]"
-quantify dashboard
+quantify dashboard --port 8501
 ```
 
-工作台提供策略代码编辑器、策略库保存/选择、回测参数面板、聚宽风格指标卡片，以及支持鼠标悬浮查看明细的收益曲线、每日盈亏、每日成交和回撤图。Web 图表和 `to_llm_dict()` 使用同一个 `to_report_dict()` 标准结构，避免两套输出口径分叉。策略源码保存到 MySQL 的 `strategy` 表，`quantify db init` 会创建该表，Dashboard 启动后也会按需补建。Web 运行时会用侧边栏的基准、佣金、滑点参数覆盖策略代码中的默认设置。默认使用 `fund_daily` 表数据，因此需要先执行 `quantify fetch etf basic` 和 `quantify fetch etf all` 完成 ETF 日线入库。
-
-默认端口为 `8501`；如果端口已被占用，CLI 会自动尝试后续端口，也可以手动指定：`quantify dashboard --port 8502`。
+功能：策略代码编辑器（ACE）、策略库 CRUD（MySQL `strategy` 表）、回测参数面板（基准/日期/现金/佣金/滑点）、交互式收益曲线/日盈亏/回撤/持仓占比图、20+ 指标卡片、交易明细表。
 
 ---
 
-## 🤖 LLM Agent 工作流
+## 技术栈
 
-Agent 与回测引擎遵循"**LLM 提假设 + 引擎做计算 + LLM 读报告**"的黄金分工：
-
-```
-1. LLM 输入：因子库元数据 + 历史 IC 报告 + 因子相关性矩阵
-2. LLM 输出：结构化策略假设 (Pydantic Schema 强校验)
-   {
-     "factors": ["pe_ttm", "roe", "momentum_60d"],
-     "weights": [-0.4, 0.4, 0.2],
-     "rebalance": "monthly",
-     "filter": {"market_cap_min": 5e9, "exclude_st": true},
-     "neutralize": ["industry", "market_cap"]
-   }
-3. Python 回测引擎：向量化计算，输出标准化报告
-4. LLM 分析：诊断问题（过拟合？暴露过高？换手太频？）
-5. 迭代终止：连续 N 轮无提升 / 达到上限轮数 / token 预算耗尽
-```
-
-### 设计原则 🔑
-
-- **LLM 永不直接计算数值**，只生成"配方"和读"报告"
-- 策略输出由 **Pydantic Model** 强制校验，幻觉直接拒绝
-- 报告同时输出**结构化版本（给 LLM）+ 自然语言版本（给人）**
-- 每轮记录到 `agent_session` 表，研究过程可追溯、可复盘
-
-### LLM 接入
-
-通过 `LiteLLM` 统一接口对接，目前支持：
-
-- OpenAI 兼容协议（GPT、DeepSeek、Qwen、Kimi 等）
-- Anthropic Claude
-- 本地 Ollama / vLLM
-
-切换只需改 `config.yaml` 中的 `llm.model` 字段。
+| 层级 | 选型 |
+|------|------|
+| 语言 | Python 3.11 |
+| CLI | Typer |
+| 配置 | Pydantic Settings |
+| ORM | SQLAlchemy 2.0 |
+| 数据库 | MySQL 8.0 (PyMySQL) |
+| 数据源 | Tushare Pro |
+| 重试 | tenacity |
+| 日志 | loguru |
+| 回测 | 事件驱动逐 bar（自研引擎） |
+| Web | Streamlit + Plotly |
+| 代码检查 | Ruff（行宽 110） |
 
 ---
 
-## 🎯 样本划分方法论
-
-Quantify 采用 **时间切分为主、行业维度为辅** 的双轴验证体系。
-
-### 主轴：Walk-forward 时间切分
-
-```
-训练 2015–2017 → 验证 2018
-        训练 2016–2018 → 验证 2019
-                训练 2017–2019 → 验证 2020
-                        训练 2018–2020 → 验证 2021
-                                ... 滚动到当前
-```
-
-只有在**多个滚动窗口验证期都稳定**的策略，才会进入策略池。
-
-### 辅轴：行业稳健性诊断
-
-行业**不用于切分样本**（避免横截面信息泄漏），而是用于：
-
-- **行业中性化**：剔除行业 beta，提纯 alpha
-- **行业内排序选股**：避免行业暴露集中
-- **分行业拆解验证**：策略是否依赖少数几个行业？
-- **行业特化策略**（可选）：对单一行业用时间切分训练专属权重
-
-### 评估指标
-
-| **类别** | **指标** |
-|---------|---------|
-| 选股有效性 | IC / Rank IC / ICIR / IC 衰减 |
-| 组合收益 | 年化收益 / Sharpe / Sortino / Calmar |
-| 风险控制 | 最大回撤 / 波动率 / 下行波动率 |
-| 实操性 | 换手率 / 容量 / 滑点敏感性 |
-| 稳健性 | 分组单调性 / 跨行业一致性 / 跨周期稳定性 |
-
----
-
-## 📂 项目目录结构
+## 项目目录
 
 ```
 quantify/
-├── quantify/                     # 主包
-│   ├── __init__.py
-│   ├── cli.py                    # Typer CLI 入口
-│   ├── config.py                 # Pydantic Settings
-│   ├── database/                 # MySQL 连接 + Migration
-│   │   ├── engine.py
-│   │   ├── models.py             # SQLAlchemy ORM 模型
-│   │   └── migrations/
-│   ├── tushare/                  # Tushare 客户端 (限流/重试)
-│   │   ├── client.py
-│   │   └── rate_limiter.py
-│   ├── fetcher/                  # 数据采集任务
-│   │   ├── calendar.py
-│   │   ├── daily.py
-│   │   ├── financial.py
-│   │   └── fund.py
-│   ├── factor/                   # 因子计算引擎
-│   │   ├── alpha101.py
-│   │   ├── barra.py
-│   │   ├── neutralize.py
-│   │   └── registry.py
-│   ├── backtest/                 # 回测引擎 (事件驱动)
-│   │   ├── engine.py             # 核心引擎：加载 → 逐bar执行 → 输出
+├── quantify/
+│   ├── cli.py                    # Typer CLI（db + fetch + dashboard）
+│   ├── config.py                 # Pydantic Settings（Tushare/MySQL/Log）
+│   ├── database/
+│   │   ├── models.py             # 51 个 SQLAlchemy ORM 模型
+│   │   ├── engine.py             # MySQL 连接池 + session
+│   │   ├── init_db.py            # 建库建表
+│   │   ├── upsert.py             # upsert_dataframe() 幂等写入
+│   │   └── strategy_store.py     # 策略 CRUD
+│   ├── fetcher/
+│   │   ├── etf.py                # EtfFetcher（10 阶段）
+│   │   ├── stock.py              # StockFetcher（20 阶段）
+│   │   ├── industry.py           # IndustryFetcher（SW + CITIC）
+│   │   ├── index.py              # IndexFetcher
+│   │   ├── macro.py              # MacroFetcher
+│   │   └── future.py             # FuturesFetcher
+│   ├── tushare_client/
+│   │   ├── client.py             # TushareClient（限流 + 重试）
+│   │   └── rate_limiter.py       # 滑动窗口限流器
+│   ├── backtest/
+│   │   ├── engine.py             # 核心引擎
 │   │   ├── context.py            # Context / Portfolio / DataProxy
 │   │   ├── broker.py             # 订单执行 / 佣金 / 滑点
-│   │   ├── metrics.py            # Sharpe / 最大回撤 / 年化 / 胜率
-│   │   └── reporting.py          # 报表指标 / 基准收益 / 成交序列
-│   ├── agent/                    # LLM Agent 编排
-│   │   ├── proposer.py           # 策略生成
-│   │   ├── analyzer.py           # 报告解读
-│   │   ├── schemas.py            # Pydantic 输出约束
-│   │   └── prompts/              # Prompt 模板 (Jinja2)
-│   ├── analysis/                 # 评估与诊断
-│   │   ├── ic.py
-│   │   └── industry.py
+│   │   ├── joinquant.py          # 聚宽兼容层（jqdata）
+│   │   ├── metrics.py            # 绩效指标计算
+│   │   ├── reporting.py          # 报表生成
+│   │   ├── codes.py              # 代码格式转换
+│   │   └── examples.py           # 内置示例策略
+│   ├── webapp/
+│   │   └── app.py                # Streamlit 工作台
 │   └── utils/
-├── config/
-│   ├── config.example.yaml
-│   └── factors/                  # 因子定义 YAML
-├── tests/
-├── notebooks/                    # 探索性研究 Notebook
-├── docs/                         # 设计文档
+│       └── logger.py             # Loguru 配置
+├── logs/                         # 日志输出
 ├── pyproject.toml
-├── Makefile
 └── README.md
 ```
 
 ---
 
-## 🛠️ 技术栈
+## 路线图
 
-| **层级** | **选型** | **说明** |
-|---------|---------|---------|
-| 语言 | **Python 3.11+** | 类型提示 + 异步 + 性能改进 |
-| 包管理 | **pip** | 标准 Python 包管理器 |
-| 数据源 | **Tushare Pro** | 唯一数据源，覆盖股/基/指数 |
-| 数据库 | **MySQL 8** | 元数据 + 时序面板统一存储 |
-| ORM | **SQLAlchemy 2.0** | 模型映射 + 类型安全 |
-| 迁移 | **Alembic** | 数据库版本管理 |
-| 数据处理 | **pandas / polars / numpy** | polars 用于大面板加速 |
-| 可视化 | **Streamlit / Plotly** | 交互式回测工作台与悬浮图表 |
-| CLI | **Typer** | 现代化命令行框架 |
-| 配置 | **Pydantic Settings** | 类型安全的配置加载 |
-| 日志 | **loguru** | 开箱即用的结构化日志 |
-| 任务调度 | **APScheduler** | 定时数据更新 / Agent 迭代 |
-| LLM 接入 | **LiteLLM** | 统一接口适配多家模型 |
-| 测试 | **pytest** | 单元 + 集成测试 |
+- [x] **数据层**：Tushare 客户端 + 6 个 Fetcher + 51 张表全量入库
+- [x] **回测层**：事件驱动引擎 + 聚宽 API 兼容 + 佣金/滑点/分红/拆股
+- [x] **Web 工作台**：Streamlit 策略编辑器 + 交互式图表 + 策略持久化
+- [ ] **因子层**（`factor/`）：经典因子计算 + 行业/市值中性化
+- [ ] **Agent 层**（`agent/`）：LLM 策略生成 + 报告解读
+- [ ] **分析层**（`analysis/`）：行业稳健性诊断 + IC 分析
 
 ---
 
-## 🗺️ 路线图
+## 重要声明
 
-- [x] 项目骨架与配置系统
-- [x] **M1 – 数据层**：Tushare 客户端 + ETF 全量数据入库 MySQL
-- [ ] **M2 – 因子层**：实现 20 个经典因子 + 中性化工具
-- [x] **M3 – 回测层**：事件驱动回测引擎 + 指标/LLM 报告
-- [ ] **M4 – Agent 层**：LLM 策略生成器 + 报告解读器
-- [ ] **M5 – 分析层**：行业稳健性诊断 + 策略池管理
-- [ ] **M6 – 实盘联调**：QMT / Ptrade 模拟盘对接
-- [ ] **M7 – Web Dashboard**：Streamlit 策略可视化与监控（回测工作台已实现）
-
----
-
-## ⚠️ 重要声明
-
-- 本项目**仅供个人学习与研究**，不构成任何投资建议。
+- 本项目仅供个人学习与研究，不构成任何投资建议。
 - Tushare 数据使用请遵守其服务条款与积分规则。
-- 历史回测结果不代表未来表现，量化策略存在失效风险，请独立判断。
-- 实盘交易前请充分理解策略逻辑、风险敞口与极端市场情形下的表现。
+- 历史回测结果不代表未来表现，量化策略存在失效风险。
 
 ---
 
-## 📚 推荐阅读
+## License
 
-- 《Advances in Financial Machine Learning》— López de Prado（Purged K-Fold 与多重检验）
-- 《Active Portfolio Management》— Grinold & Kahn（IC、信息比率体系）
-- 《101 Formulaic Alphas》— WorldQuant（经典 Alpha 因子）
-- Tushare Pro 官方文档：<https://tushare.pro/document/2>
-- Microsoft qlib 官方文档：<https://qlib.readthedocs.io/>
-
----
-
-## 📄 License
-
-MIT License © 2026 [Your Name]
-
----
-
-## 🙋 鸣谢
-
-感谢 Tushare、qlib、vectorbt、pandas 等开源项目与数据社区。这是站在巨人肩膀上的实验。
+MIT License
