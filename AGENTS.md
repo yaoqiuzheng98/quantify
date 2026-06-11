@@ -65,9 +65,10 @@ quantify version                                        # 打印版本号
 
 ## 并发
 
-- ETF 采集器使用 `ThreadPoolExecutor(max_workers=5)` 按代码并发调用 API
+- ETF 采集器使用 `ThreadPoolExecutor(max_workers=2)` 按代码并发调用 API（Tushare 镜像站并发硬上限为 2，超过会触发"并发请求过多"）
 - 限流器：滑动窗口、线程安全（`tushare_client/rate_limiter.py` 中的 `RateLimiter`）
 - Tushare 客户端失败重试 5 次，指数退避（tenacity）
+- `_fetch_concurrent()` 中无论单次请求有无数据，每行都打印进度（空数据 `"empty"`，有数据 `"+N rows"`），保持终端可见性。写新 fetcher 时要遵循相同模式。
 
 ## 配置
 
