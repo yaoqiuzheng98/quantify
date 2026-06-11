@@ -679,7 +679,6 @@ class IndexGlobal(Base):
     pct_chg: Mapped[float | None] = mapped_column(Float, comment="涨跌幅")
     swing: Mapped[float | None] = mapped_column(Float, comment="振幅")
     vol: Mapped[float | None] = mapped_column(Float, comment="成交量(多数无)")
-    amount: Mapped[float | None] = mapped_column(Float, comment="成交额(多数无)")
 
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
@@ -700,7 +699,6 @@ class UsTycr(Base):
     m1: Mapped[float | None] = mapped_column(Float, comment="1月期")
     m2: Mapped[float | None] = mapped_column(Float, comment="2月期")
     m3: Mapped[float | None] = mapped_column(Float, comment="3月期")
-    m4: Mapped[float | None] = mapped_column(Float, comment="4月期(从20221019起)")
     m6: Mapped[float | None] = mapped_column(Float, comment="6月期")
     y1: Mapped[float | None] = mapped_column(Float, comment="1年期")
     y2: Mapped[float | None] = mapped_column(Float, comment="2年期")
@@ -1522,7 +1520,6 @@ class FundCompany(Base):
 
     name: Mapped[str] = mapped_column(String(128), comment="基金公司名称")
     shortname: Mapped[str | None] = mapped_column(String(64), comment="简称")
-    short_enname: Mapped[str | None] = mapped_column(String(128), comment="英文缩写")
     province: Mapped[str | None] = mapped_column(String(32), comment="省份")
     city: Mapped[str | None] = mapped_column(String(32), comment="城市")
     address: Mapped[str | None] = mapped_column(String(256), comment="注册地址")
