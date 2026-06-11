@@ -26,9 +26,7 @@ class TushareClient:
         settings = get_settings().tushare
         self.token = token or settings.token
         if not self.token:
-            raise RuntimeError(
-                "TUSHARE_TOKEN is empty. Please set it in the .env file or environment."
-            )
+            raise RuntimeError("TUSHARE_TOKEN is empty. Please set it in the .env file or environment.")
         self.rate_per_min = rate_per_min or settings.rate_per_min
         ts.set_token(self.token)
         self._pro = ts.pro_api()

@@ -358,7 +358,165 @@ def fetch_macro(
 
 
 # ---------------------------------------------------------------------------
-# fetch all (ETF + industry + trade calendar, one shot)
+# fetch stock
+# ---------------------------------------------------------------------------
+@fetch_app.command("stock")
+def fetch_stock(
+    stage: str = typer.Argument(
+        "all",
+        help="Stage: all|basic|daily|adj-factor|daily-basic|weekly|monthly|"
+        "suspend|namechange|income|balancesheet|cashflow|fina-indicator|"
+        "forecast|express|dividend|moneyflow-hsgt|margin|margin-detail|"
+        "stk-factor|stk-factor-pro|broker-recommend",
+    ),
+    incremental: bool = typer.Option(
+        True, "--incremental/--full", help="Incremental update vs full backfill"
+    ),
+    ts_code: Optional[str] = typer.Option(
+        None, "--ts-code", help="Comma-separated ts_codes (default: all listed in stock_basic)"
+    ),
+    skip: Optional[str] = typer.Option(
+        None, "--skip", help="Comma-separated stages to skip (only used with stage=all)"
+    ),
+) -> None:
+    """Fetch A-share stock data from Tushare into MySQL.
+
+    Stage=all runs: basic -> daily -> adj_factor -> daily_basic -> weekly ->
+    monthly -> suspend -> namechange -> income -> balancesheet -> cashflow ->
+    fina_indicator -> forecast -> express -> dividend -> moneyflow_hsgt ->
+    margin -> margin_detail -> stk_factor -> stk_factor_pro -> broker_recommend.
+
+    By default margin_detail, stk_factor, stk_factor_pro, broker_recommend,
+    weekly, monthly are skipped. Run individual stages to fetch them.
+    """
+    from quantify.fetcher.stock import StockFetcher
+
+    normalized = stage.replace("-", "_").lower()
+    codes = [c.strip() for c in ts_code.split(",")] if ts_code else None
+    skip_set = {s.strip() for s in skip.split(",")} if skip else None
+    fetcher = StockFetcher()
+
+    if normalized == "all":
+        fetcher.fetch_all(incremental=incremental, ts_codes=codes, skip=skip_set)
+        return
+
+    if normalized == "basic":
+        fetcher.fetch_basic()
+        return
+
+    universe = codes if codes else fetcher._load_universe()  # noqa: SLF001
+    if not universe:
+        log.warning("Stock universe is empty — run `quantify fetch stock basic` first.")
+        raise typer.Exit(code=1)
+
+    dispatch: dict = {
+        "daily": lambda: fetcher.fetch_daily(ts_codes=universe, incremental=incremental),
+        "adj_factor": lambda: fetcher.fetch_adj_factor(ts_codes=universe, incremental=incremental),
+        "daily_basic": lambda: fetcher.fetch_daily_basic(ts_codes=universe, incremental=incremental),
+        "weekly": lambda: fetcher.fetch_weekly(ts_codes=universe, incremental=incremental),
+        "monthly": lambda: fetcher.fetch_monthly(ts_codes=universe, incremental=incremental),
+        "suspend": lambda: fetcher.fetch_suspend(ts_codes=universe),
+        "namechange": lambda: fetcher.fetch_namechange(ts_codes=universe),
+        "income": lambda: fetcher.fetch_income(ts_codes=universe),
+        "balancesheet": lambda: fetcher.fetch_balancesheet(ts_codes=universe),
+        "cashflow": lambda: fetcher.fetch_cashflow(ts_codes=universe),
+        "fina_indicator": lambda: fetcher.fetch_fina_indicator(ts_codes=universe),
+        "forecast": lambda: fetcher.fetch_forecast(ts_codes=universe),
+        "express": lambda: fetcher.fetch_express(ts_codes=universe),
+        "dividend": lambda: fetcher.fetch_dividend(ts_codes=universe),
+        "moneyflow_hsgt": lambda: fetcher.fetch_moneyflow_hsgt(incremental=incremental),
+        "margin": lambda: fetcher.fetch_margin(incremental=incremental),
+        "margin_detail": lambda: fetcher.fetch_margin_detail(incremental=incremental),
+        "stk_factor": lambda: fetcher.fetch_stk_factor(ts_codes=universe),
+        "stk_factor_pro": lambda: fetcher.fetch_stk_factor_pro(ts_codes=universe),
+        "broker_recommend": lambda: fetcher.fetch_broker_recommend(ts_codes=universe),
+    }
+    if normalized not in dispatch:
+        raise typer.BadParameter(f"Unknown stage: {stage}")
+    dispatch[normalized]()
+
+
+# ---------------------------------------------------------------------------
+# fetch futures
+# ---------------------------------------------------------------------------
+@fetch_app.command("futures")
+def fetch_futures(
+    stage: str = typer.Argument(
+        "all",
+        help="Stage: all|fut-basic|fut-daily|fut-holding|fut-wsr|fut-settle",
+    ),
+    incremental: bool = typer.Option(
+        True, "--incremental/--full", help="Incremental update vs full backfill"
+    ),
+    skip: Optional[str] = typer.Option(
+        None, "--skip", help="Comma-separated stages to skip (only used with stage=all)"
+    ),
+) -> None:
+    """Fetch Tushare futures-theme datasets into MySQL.
+
+    Stage=all runs: fut_basic -> fut_daily.
+    By default fut_holding, fut_wsr, fut_settle are skipped.
+    """
+    from quantify.fetcher.future import FuturesFetcher
+
+    normalized = stage.replace("-", "_").lower()
+    skip_set = {s.strip() for s in skip.split(",")} if skip else None
+    fetcher = FuturesFetcher()
+
+    if normalized == "all":
+        fetcher.fetch_all(incremental=incremental, skip=skip_set)
+        return
+
+    symbols = fetcher._load_symbols()  # noqa: SLF001
+    if not symbols:
+        log.warning("Futures symbols empty — run `quantify fetch futures fut-basic` first.")
+        raise typer.Exit(code=1)
+
+    dispatch = {
+        "fut_basic": fetcher.fetch_basic,
+        "fut_daily": lambda: fetcher.fetch_daily(symbols=symbols, incremental=incremental),
+        "fut_holding": lambda: fetcher.fetch_holding(symbols=symbols, incremental=incremental),
+        "fut_wsr": lambda: fetcher.fetch_wsr(symbols=symbols, incremental=incremental),
+        "fut_settle": lambda: fetcher.fetch_settle(symbols=symbols, incremental=incremental),
+    }
+    if normalized not in dispatch:
+        raise typer.BadParameter(f"Unknown stage: {stage}")
+    dispatch[normalized]()
+
+
+# ---------------------------------------------------------------------------
+# fetch fund
+# ---------------------------------------------------------------------------
+@fetch_app.command("fund")
+def fetch_fund(
+    stage: str = typer.Argument(
+        "all",
+        help="Stage: all|company",
+    ),
+) -> None:
+    """Fetch public fund metadata from Tushare into MySQL."""
+    from quantify.database.models import FundCompany
+    from quantify.database.upsert import upsert_dataframe
+    from quantify.tushare_client.client import get_client
+
+    normalized = stage.replace("-", "_").lower()
+    client = get_client()
+
+    if normalized in ("all", "company"):
+        log.info("Fetching fund_company ...")
+        df = client.call("fund_company")
+        if df is None or df.empty:
+            log.warning("fund_company returned no rows")
+            return
+        n = upsert_dataframe(FundCompany, df)
+        log.info(f"fund_company done. rows={n}")
+        return
+
+    raise typer.BadParameter(f"Unknown stage: {stage}")
+
+
+# ---------------------------------------------------------------------------
+# fetch all (full pipeline, one shot)
 # ---------------------------------------------------------------------------
 @fetch_app.command("all")
 def fetch_all_data(
@@ -368,19 +526,25 @@ def fetch_all_data(
     exchange: str = typer.Option("SSE", "--exchange", help="Exchange(s) for trade calendar, comma-separated"),
     sw_src: str = typer.Option("SW2021", "--sw-src", help="SW classification source, e.g. SW2021"),
     skip: Optional[str] = typer.Option(
-        None, "--skip", help="Comma-separated top-level groups to skip: trade_cal|etf|industry|index|macro"
+        None,
+        "--skip",
+        help=(
+            "Comma-separated top-level groups to skip: trade_cal|etf|stock|industry|index|macro|futures|fund"
+        ),
     ),
 ) -> None:
     """Fetch EVERYTHING from Tushare into MySQL in dependency order.
 
-    Order: trade calendar -> ETF (basic first) -> industry (SW + CITIC)
-    -> index -> macro (yield curves / global indices / US rates).
+    Order: trade calendar -> ETF (basic first) -> stock -> industry (SW + CITIC)
+    -> index -> macro -> futures -> fund.
     Use ``--full`` to backfill all history, otherwise incremental.
     """
     from quantify.fetcher.etf import EtfFetcher
+    from quantify.fetcher.future import FuturesFetcher
     from quantify.fetcher.index import IndexFetcher
     from quantify.fetcher.industry import IndustryFetcher
     from quantify.fetcher.macro import MacroFetcher
+    from quantify.fetcher.stock import StockFetcher
 
     skip_set = {s.strip().lower() for s in skip.split(",")} if skip else set()
 
@@ -396,20 +560,43 @@ def fetch_all_data(
         log.info("=== fetch ETF (all stages) ===")
         EtfFetcher().fetch_all(incremental=incremental)
 
-    # 3) Industry (SW + CITIC): classification, members, daily
+    # 3) Stock (basic first, then time-series, then financials)
+    if "stock" not in skip_set:
+        log.info("=== fetch stock (all stages) ===")
+        StockFetcher().fetch_all(incremental=incremental)
+
+    # 4) Industry (SW + CITIC): classification, members, daily
     if "industry" not in skip_set:
         log.info("=== fetch industry (SW + CITIC) ===")
         IndustryFetcher().fetch_all(provider="all", incremental=incremental, sw_src=sw_src)
 
-    # 4) Index theme: basic, daily, dailybasic, weight, sector money flow
+    # 5) Index theme: basic, daily, dailybasic, weight, sector money flow
     if "index" not in skip_set:
         log.info("=== fetch index (basic/daily/dailybasic/weight/moneyflow) ===")
         IndexFetcher().fetch_all(incremental=incremental)
 
-    # 5) Macro / cross-asset: yield curves, global indices, US treasury rates
+    # 6) Macro / cross-asset: yield curves, global indices, US treasury rates
     if "macro" not in skip_set:
         log.info("=== fetch macro (yc_cb/index_global/us_tycr/us_trycr) ===")
         MacroFetcher().fetch_all(incremental=incremental)
+
+    # 7) Futures: basic, daily
+    if "futures" not in skip_set:
+        log.info("=== fetch futures (fut_basic/fut_daily) ===")
+        FuturesFetcher().fetch_all(incremental=incremental)
+
+    # 8) Fund company metadata
+    if "fund" not in skip_set:
+        log.info("=== fetch fund (fund_company) ===")
+        from quantify.database.models import FundCompany
+        from quantify.database.upsert import upsert_dataframe
+        from quantify.tushare_client.client import get_client
+
+        client = get_client()
+        df = client.call("fund_company")
+        if df is not None and not df.empty:
+            upsert_dataframe(FundCompany, df)
+            log.info(f"  fund_company: {len(df)} rows")
 
     log.info("=== fetch all: done ===")
 

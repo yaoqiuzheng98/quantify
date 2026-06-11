@@ -40,10 +40,7 @@ class MySQLConfig(BaseSettings):
     @property
     def server_url(self) -> str:
         """Connection URL without a target database (used to CREATE DATABASE)."""
-        return (
-            f"mysql+pymysql://{self.user}:{self.password}"
-            f"@{self.host}:{self.port}/?charset={self.charset}"
-        )
+        return f"mysql+pymysql://{self.user}:{self.password}@{self.host}:{self.port}/?charset={self.charset}"
 
 
 class LogConfig(BaseSettings):

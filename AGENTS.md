@@ -19,12 +19,18 @@ quantify fetch etf all                    # 拉取全部 ETF 数据（默认增�
 quantify fetch etf all --full             # 全量回填（忽略已有日期）
 quantify fetch etf all --skip portfolio,manager        # 跳过耗时阶段
 quantify fetch etf daily --ts-code 510300.SH,159915.SZ  # 单阶段，指定代码
+quantify fetch stock basic                # 填充 A 股基础列表（依赖所有后续阶段）
+quantify fetch stock all                  # 拉取全部个股数据(日线/财务/资金流等)
+quantify fetch stock all --full           # 全量回填
+quantify fetch stock daily --ts-code 600000.SH          # 单只股票日线
+quantify fetch futures all                # 拉取期货数据（合约列表+日线）
+quantify fetch fund all                   # 拉取公募基金公司信息
 quantify fetch industry all --provider sw               # 申万行业分类+成分+日线
 quantify fetch industry all --provider all              # 申万+中信
 quantify fetch index all                                # 指数（日线/权重/资金流）
 quantify fetch macro all                                # 宏观/跨资产（国债/美债/全球指数）
-quantify fetch all                                      # 一键拉全部数据组（顺序：日历→ETF→行业→指数→宏观）
-quantify fetch all --skip industry,macro                # 跳过指定数据组
+quantify fetch all                                      # 一键拉全部数据组（顺序：日历→ETF→个股→行业→指数→宏观→期货→基金）
+quantify fetch all --skip stock,industry,macro          # 跳过指定数据组
 quantify dashboard                                      # 启动 Streamlit 回测工作台
 quantify dashboard --port 8502                          # 指定端口
 quantify version                                        # 打印版本号
@@ -35,14 +41,13 @@ quantify version                                        # 打印版本号
 这是一个**单包 Python 项目**（`quantify/`）。入口点：`quantify cli:app`（Typer）。
 
 **当前已实现：**
-- 数据采集层：Tushare Pro 客户端（限流+重试）→ MySQL，覆盖 ETF、行业（SW/CITIC）、指数、宏观/跨资产
+- 数据采集层：Tushare Pro 客户端（限流+重试）→ MySQL，覆盖 ETF、个股（日线/财务/资金流）、行业（SW/CITIC）、指数、宏观/跨资产、期货、公募基金
 - 回测引擎：事件驱动逐 bar 模拟，兼容 JoinQuant 策略 API（`quantify/backtest/`）
 - Streamlit Web 回测工作台（`quantify/webapp/app.py`）
 - 策略持久化：`quantify/database/strategy_store.py` → `strategy` 表
 
 **尚未实现**：
 - `factor/`、`agent/`、`analysis/` 子包 —— 这些目录**还不存在**
-- 个股日线、财务报告 —— 仅接入了 ETF/指数/行业/宏观
 
 ## 数据库
 
@@ -91,13 +96,28 @@ quantify version                                        # 打印版本号
 - `quantify fetch etf all` → 增量模式（默认）
 - `quantify fetch etf all --full` → 全量回填
 
-并非所有阶段都受此开关影响：日线/净值/复权/份额/规模走增量；分红/持仓/基金经理/basic 表始终全量（接口本身无增量语义，靠 upsert 去重）。
+并非所有阶段都受此开关影响。`fetch etf all` 实际是"混合模式"：
+
+| 阶段 | 接口 | 默认行为 | `--full` 是否生效 |
+|------|------|---------|------------------|
+| `daily` | `fund_daily` | 增量（查 `max(trade_date)`，只拉之后） | ✅ |
+| `nav` | `fund_nav` | 增量（按 `nav_date`） | ✅ |
+| `adj` | `fund_adj` | 增量（按 `trade_date`） | ✅ |
+| `share` | `fund_share` | 增量（按 `trade_date`） | ✅ |
+| `share-size` | `etf_share_size` | 增量（按 `trade_date`） | ✅ |
+| `dividend` | `fund_div` | 始终全量 | ❌ |
+| `portfolio` | `fund_portfolio` | 始终全量（默认跳过） | ❌ |
+| `manager` | `fund_manager` | 始终全量 | ❌ |
+| `basic` / `etf-index-basic` | `fund_basic` / `etf_basic` | 始终全量刷新 | ❌ |
+
+即：日线/净值/复权/份额/规模走增量；分红/持仓/基金经理/basic 每次全量重拉（接口本身无增量语义，靠 upsert 去重）。
 
 ## 数据顺序依赖
 
 1. `quantify fetch etf basic` **必须先执行**。它会填充 `fund_basic` 表，其他 ETF 采集器从该表读取标的列表（排除已退市：`status != "D"`）。未先拉取则其他阶段标的列表为空。
-2. `quantify fetch all` 自动按依赖顺序：交易日历 → ETF（basic 优先）→ 行业 → 指数 → 宏观
-3. 行业/指数/宏观部分接口需 5000+ 积分；积分不足时用 `--skip` 跳过对应组
+2. `quantify fetch stock basic` **必须先执行**（在 stock 其他阶段之前）。填充 `stock_basic` 表，stock 的其他阶段（daily/adj_factor/财务等）从中读取标的列表。
+3. `quantify fetch all` 自动按依赖顺序：交易日历 → ETF（basic 优先）→ 个股 → 行业 → 指数 → 宏观 → 期货 → 基金
+4. 行业/指数/宏观部分接口需 5000+ 积分；个股财务/资金流亦需较高积分。积分不足时用 `--skip` 跳过对应组
 
 ## 测试
 
