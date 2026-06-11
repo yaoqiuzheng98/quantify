@@ -48,6 +48,7 @@ quantify version                                        # 打印版本号
 
 - MySQL 8.0+，连接信息在 `.env` 中配置（前缀 `MYSQL_`）
 - `quantify db init` 先调用 `ensure_database_exists()`（CREATE DATABASE IF NOT EXISTS），再调用 `Base.metadata.create_all()`
+- **表名与 Tushare 接口名一一对应**：例如 `fund_basic` 表 ← `fund_basic` 接口，`fund_daily` 表 ← `fund_daily` 接口。例外：`strategy` 表是本地表（策略存储），`etf_share_size` 表来自 `etf_share_size` 接口（仅 ETF 份额规模，有别于 `fund_share` 的基金份额）。全部定义见 `quantify/database/models.py` 顶部注释。
 - 所有写入使用 `INSERT ... ON DUPLICATE KEY UPDATE`（幂等，可重复执行）
 - 标准写入路径为 `quantify/database/upsert.py` 中的 `upsert_dataframe()`
 - `EtfManager` 使用自增 `BigInteger` 主键 + 独立唯一索引 `(ts_code, name, begin_date)` —— 与其他表直接使用联合主键不同
