@@ -67,6 +67,7 @@ quantify version                                        # 打印版本号
 - 成交价走真实开盘价，历史价格走前复权（对齐聚宽 `use_real_price=True`）
 - 默认预加载回测开始日前 365 天历史供信号计算
 - 策略源码保存到 MySQL `strategy` 表（`SavedStrategy` 模型），Dashboard 读取/写入该表
+- **⚠️ 写策略必避坑**：聚宽 `from jqdata import *` 会用 numpy 同名函数遮蔽内建 `sum`/`max`/`min`/`abs`/`round`。`np.sum(dict.values())` 不求和而是把 `dict_values` 包成 0 维 object 数组原样返回，导致 `s = sum(d.values()); x / s` 抛 `TypeError: unsupported operand type(s) for /: 'float' and 'dict_values'`。**本地引擎用原生 builtins（兼容层只注入下单/历史等少数函数，不含 numpy），所以本地能跑通、传到聚宽才报错**。凡对 `dict.values()`/推导式/生成器做聚合的策略，在 `from jqdata import *` 后显式 `import builtins` 并把 `sum = builtins.sum`（max/min/abs/round 同理）绑回。参考 `strategy` 表 id=26。
 
 ## 并发
 

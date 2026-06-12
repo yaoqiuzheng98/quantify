@@ -335,6 +335,26 @@ print(result.metrics.to_llm_prompt())
 
 总收益率、年化收益率、最大回撤（含持续天数）、年化波动率、Sharpe/Sortino/Calmar/信息比率、胜率、盈亏比、Profit Factor、累计佣金、累计滑点、Alpha/Beta。
 
+### 编写策略的坑（务必避开）
+
+> **`from jqdata import *` 会用 numpy 同名函数遮蔽 Python 内建的 `sum`/`max`/`min`/`abs`/`round`。**
+>
+> 这是聚宽线上环境特有的坑：`np.sum(dict.values())` 不会求和，而是把 `dict_values` 包成 0 维 object 数组原样返回，于是 `s = sum(d.values()); x / s` 会抛
+> `TypeError: unsupported operand type(s) for /: 'float' and 'dict_values'`。
+> 本地引擎用原生 builtins，**本地能跑通、传到聚宽才报错**，极易漏掉。
+>
+> 凡是对 `dict.values()` / 推导式 / 生成器做 `sum/max/min` 聚合的策略，在 `from jqdata import *` 之后显式绑回内建实现：
+>
+> ```python
+> from jqdata import *
+> import builtins
+> sum = builtins.sum
+> max = builtins.max
+> min = builtins.min
+> abs = builtins.abs
+> round = builtins.round
+> ```
+
 ---
 
 ## Streamlit 回测工作台
