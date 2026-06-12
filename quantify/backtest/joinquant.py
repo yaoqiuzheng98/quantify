@@ -8,6 +8,8 @@ from typing import Any, Callable
 
 import pandas as pd
 
+from quantify.utils.logger import log
+
 from .broker import make_commission, make_slippage
 from .codes import to_tushare_code
 
@@ -119,6 +121,7 @@ class JoinQuantCompat:
 
     def namespace(self) -> dict[str, Any]:
         return {
+            "log": log,
             "OrderCost": OrderCost,
             "PriceRelatedSlippage": PriceRelatedSlippage,
             "set_option": self.set_option,
