@@ -244,29 +244,16 @@ class StockFetcher:
         total = 0
         lock = threading.Lock()
 
-        EMPTY_RETRIES = 3
-
         def _run_one(idx_code: tuple[int, str]) -> int:
             nonlocal total
             i, code = idx_code
-            df = None
-            attempt = 0
             while True:
                 try:
                     df = fetch_one(i, code)
+                    break
                 except Exception as e:  # noqa: BLE001
                     log.error(f"{api} failed for {code}: {e}, retrying in 5s ...")
                     time.sleep(5)
-                    continue
-                # None = deliberate skip (already up-to-date); non-empty = success.
-                # Neither is retried. Only an empty DataFrame (possible transient HTTP
-                # error that returns nothing without raising) is retried a few times.
-                if df is None or not df.empty:
-                    break
-                attempt += 1
-                if attempt > EMPTY_RETRIES:
-                    break
-                time.sleep(2)
             if df is None or df.empty:
                 log.info(f"  {api} [{i}/{n}] {code} empty")
                 return 0

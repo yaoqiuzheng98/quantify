@@ -430,28 +430,17 @@ class IndustryFetcher:
 
         counter_lock = threading.Lock()
         total = 0
-        EMPTY_RETRIES = 3
 
         def run_one(index_code: tuple[int, str]) -> int:
             nonlocal total
             position, code = index_code
-            df = None
-            attempt = 0
             while True:
                 try:
                     df = fetch_one(position, code)
+                    break
                 except Exception as exc:  # noqa: BLE001
                     log.error(f"{api} failed for {code}: {exc}, retrying in 5s ...")
                     time.sleep(5)
-                    continue
-                # None = deliberate skip; non-empty = success. Only an empty
-                # DataFrame (possible transient HTTP error) is retried.
-                if df is None or not df.empty:
-                    break
-                attempt += 1
-                if attempt > EMPTY_RETRIES:
-                    break
-                time.sleep(2)
             if df is None or df.empty:
                 log.info(f"  {api} [{position}/{total_codes}] {code} empty")
                 return 0

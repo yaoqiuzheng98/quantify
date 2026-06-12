@@ -16,7 +16,7 @@ Quantify 是一个 **Python** 量化研究框架。它从 **Tushare Pro** 拉取
 - **幂等增量同步**：所有写入走 `INSERT ... ON DUPLICATE KEY UPDATE`，重复运行安全，断点续跑无需额外操作；时间序列阶段自动查库内最大日期仅拉增量
 - **事件驱动回测**：逐 bar 模拟，聚宽 `initialize`/`handle_data` 策略 API 兼容，前复权历史价格、真实开盘价撮合、佣金/滑点/分红/份额拆分全建模
 - **Streamlit 工作台**：代码编辑器 + 策略持久化 + 参数面板 + 交互式收益/回撤/持仓图表 + 20+ 指标卡片
-- **Tushare 客户端**：镜像站支持、滑动窗口限流、指数退避重试、并发硬上限 2 路的线程池安全调用
+- **Tushare 客户端**：直连镜像站 HTTP 接口（不走 SDK）、滑动窗口限流、指数退避重试、并发硬上限 2 路的线程池安全调用
 
 ---
 
@@ -406,7 +406,7 @@ quantify/
 │   │   ├── macro.py              # MacroFetcher
 │   │   └── future.py             # FuturesFetcher
 │   ├── tushare_client/
-│   │   ├── client.py             # TushareClient（限流 + 重试）
+│   │   ├── client.py             # TushareClient（直连 HTTP + 限流 + 重试）
 │   │   └── rate_limiter.py       # 滑动窗口限流器
 │   ├── backtest/
 │   │   ├── engine.py             # 核心引擎

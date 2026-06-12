@@ -73,14 +73,16 @@ quantify version                                        # 打印版本号
 
 - ETF 采集器使用 `ThreadPoolExecutor(max_workers=2)` 按代码并发调用 API（Tushare 镜像站并发硬上限为 2，超过会触发"并发请求过多"）
 - 限流器：滑动窗口、线程安全（`tushare_client/rate_limiter.py` 中的 `RateLimiter`）
-- Tushare 客户端失败重试 5 次，指数退避（tenacity）
-- `_fetch_concurrent()` 中无论单次请求有无数据，每行都打印进度（空数据 `"empty"`，有数据 `"+N rows"`），保持终端可见性。写新 fetcher 时要遵循相同模式。
+- Tushare 客户端**直接用 `requests.post` 调镜像站 HTTP 接口**，不走 `tushare` SDK。SDK 的 `DataApi.query` 会把非 2xx 响应静默吞成空 DataFrame，与"标的本就无数据"无法区分；本地实现用 `res.raise_for_status()` + `code != 0` 抛异常，让传输层/业务层错误都能触发重试，而真正的空结果（`items=[]` 或 `data=null`）才返回干净的空 DataFrame
+- Tushare 客户端失败重试 5 次，指数退避（tenacity，`retry_if_exception_type(Exception)` 覆盖 HTTPError/ChunkedEncodingError/JSONDecodeError 等镜像站大响应截断的瞬时错误）
+- `_fetch_concurrent()` 中无论单次请求有无数据，每行都打印进度（空数据 `"empty"`，有数据 `"+N rows"`），保持终端可见性。写新 fetcher 时要遵循相同模式。空 DataFrame 现在**只可能**是真没数据，故 `_run_one` 拿到空就直接跳过、不重试（重试已在 client 层用异常机制收口）
 
 ## 配置
 
 - 全部配置通过 Pydantic Settings 加载，环境变量前缀：`TUSHARE_`、`MYSQL_`、`LOG_`
 - `get_settings()` 是 `@lru_cache(maxsize=1)` 缓存的单例
 - `TUSHARE_HTTP_URL` 默认指向**镜像站**（`http://jiaoch.site`），而非 Tushare 官方 API
+- `TUSHARE_HTTP_TIMEOUT` 控制单次 HTTP 请求超时（默认 30 秒）
 - `PROJECT_ROOT` = `quantify/config.py` 的父目录（即仓库根目录）
 
 ## 代码风格

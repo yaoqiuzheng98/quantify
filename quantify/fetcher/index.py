@@ -141,26 +141,15 @@ class IndexFetcher:
         log.info(f"Fetching {api} for {len(code_list)} codes{log_extra} ...")
         total = 0
         lock = threading.Lock()
-        EMPTY_RETRIES = 3
 
         def run_one(position: int, code: str) -> int:
-            df = None
-            attempt = 0
             while True:
                 try:
                     df = fetch_one(position, code)
+                    break
                 except Exception as exc:  # noqa: BLE001
                     log.warning(f"  {api} [{position}] {code} failed: {exc}; retrying in 3s")
                     time.sleep(3)
-                    continue
-                # None = deliberate skip; non-empty = success. Only an empty
-                # DataFrame (possible transient HTTP error) is retried.
-                if df is None or not df.empty:
-                    break
-                attempt += 1
-                if attempt > EMPTY_RETRIES:
-                    break
-                time.sleep(2)
             if df is None or df.empty:
                 log.info(f"  {api} [{position}/{len(code_list)}] {code} empty")
                 return 0
