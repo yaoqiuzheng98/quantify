@@ -12,6 +12,7 @@ empty payload still returns a clean empty DataFrame that callers can treat as
 
 from __future__ import annotations
 
+import json
 from functools import lru_cache
 from typing import Any
 
@@ -71,7 +72,11 @@ class TushareClient:
         }
         res = requests.post(f"{self.http_url}/{api_name}", json=payload, timeout=self.http_timeout)
         res.raise_for_status()
-        result = res.json()
+        # Use the stdlib json parser, which tolerates the bare ``NaN`` / ``Infinity``
+        # literals the mirror site emits for null numeric cells. ``res.json()`` may
+        # delegate to simplejson (strict by default), which rejects them with
+        # "Expecting value" and breaks otherwise-valid responses.
+        result = json.loads(res.text)
         if result.get("code") != 0:
             raise RuntimeError(f"tushare API error for {api_name}: {result.get('msg')}")
         data = result.get("data")
