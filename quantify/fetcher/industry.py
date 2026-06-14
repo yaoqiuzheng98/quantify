@@ -66,8 +66,6 @@ class IndustryFetcher:
     """Pull SW/CITIC industry classification, members and daily quotes."""
 
     DEFAULT_START_DATE = "20000101"
-    # Tushare 实测并发上限为 2，超过会触发"并发请求过多"错误并可能返回空。
-    MAX_WORKERS = 2
     # ci_daily/sw_daily 单次最多约 4000 行；窗口按交易日折算需远低于该值。
     # ~800 自然日 ≈ 550 个交易日，单段稳定低于上限。
     MAX_DAILY_RANGE_DAYS = 800
@@ -464,7 +462,7 @@ class IndustryFetcher:
                 log.info(f"  {api} [{position}/{total_codes}] {code} +{written} rows (total={total})")
             return written
 
-        with ThreadPoolExecutor(max_workers=self.MAX_WORKERS) as executor:
+        with ThreadPoolExecutor(max_workers=self.client.max_workers) as executor:
             list(executor.map(run_one, enumerate(code_list, start=1)))
 
         log.info(f"{api} done. total rows={total}")

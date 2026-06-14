@@ -70,8 +70,6 @@ class IndexFetcher:
     """Pull Tushare index-theme datasets into MySQL."""
 
     DEFAULT_START_DATE = "20000101"
-    # 镜像站并发硬上限为 2，无法调高（超过会报"并发请求过多"）。
-    MAX_WORKERS = 2
     # index_daily 单次上限 8000 行。全历史(~26 年)约 5100 个交易日，
     # 远低于上限，故一次窗口即可拉完；只有极端情况才靠 _fetch_range 二分兜底。
     MAX_DAILY_RANGE_DAYS = 12000
@@ -161,7 +159,7 @@ class IndexFetcher:
                 log.info(f"  {api} [{position}/{len(code_list)}] {code} +{written} rows (total={total})")
             return written
 
-        with ThreadPoolExecutor(max_workers=self.MAX_WORKERS) as executor:
+        with ThreadPoolExecutor(max_workers=self.client.max_workers) as executor:
             futures = [executor.submit(run_one, i + 1, c) for i, c in enumerate(code_list)]
             for future in futures:
                 future.result()

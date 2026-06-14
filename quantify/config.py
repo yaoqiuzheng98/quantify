@@ -17,6 +17,12 @@ class TushareConfig(BaseSettings):
 
     token: str = Field(default="", description="Tushare Pro API token")
     rate_per_min: int = Field(default=480, ge=1, description="Max API calls per minute")
+    max_workers: int = Field(
+        default=2,
+        ge=1,
+        description="Concurrent fetch threads. The jiaoch.site mirror caps concurrency at 2; "
+        "the official API has no concurrency wall, only the per-minute rate limit.",
+    )
     http_url: str = Field(default="http://jiaoch.site", description="Tushare API base URL")
     http_timeout: float = Field(default=30.0, gt=0, description="HTTP request timeout in seconds")
 

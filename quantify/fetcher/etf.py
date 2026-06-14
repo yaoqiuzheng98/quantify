@@ -99,8 +99,6 @@ class EtfFetcher:
     """Pull every ETF-related dataset from Tushare into MySQL."""
 
     DEFAULT_START_DATE = "20000101"
-    # Tushare 实测并发上限为 2，超过会触发"并发请求过多"错误并可能返回空。
-    MAX_WORKERS = 2
     # fund_daily/fund_nav/fund_adj 单次行数上限（Tushare 通常单次 ≤8000 行）。
     # 达到该阈值视为可能被接口截断，需要缩小日期窗口重拉。
     TIMESERIES_ROW_CAP = 7800
@@ -267,7 +265,7 @@ class EtfFetcher:
                 log.info(f"  {api} [{i}/{n}] {code} +{written} rows (total={total})")
             return written
 
-        with ThreadPoolExecutor(max_workers=self.MAX_WORKERS) as executor:
+        with ThreadPoolExecutor(max_workers=self.client.max_workers) as executor:
             list(executor.map(_run_one, enumerate(codes, start=1)))
 
         log.info(f"{api} done. total rows={total}")

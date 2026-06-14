@@ -58,7 +58,6 @@ class FuturesFetcher:
     """Pull Tushare futures-theme datasets into MySQL."""
 
     DEFAULT_START_DATE = "20000101"
-    MAX_WORKERS = 2
     DAILY_ROW_CAP = 7800
     DEFAULT_SKIP_STAGES = frozenset({"fut_holding", "fut_wsr", "fut_settle"})
 
@@ -285,7 +284,7 @@ class FuturesFetcher:
                 log.info(f"  {api} [{i}/{n}] {code} +{written} rows (total={total})")
             return written
 
-        with ThreadPoolExecutor(max_workers=self.MAX_WORKERS) as executor:
+        with ThreadPoolExecutor(max_workers=self.client.max_workers) as executor:
             list(executor.map(run_one, enumerate(code_list, start=1)))
 
         log.info(f"{api} done. total rows={total}")

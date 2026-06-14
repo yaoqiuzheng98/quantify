@@ -94,7 +94,6 @@ class StockFetcher:
     """Pull A-share stock datasets from Tushare into MySQL."""
 
     DEFAULT_START_DATE = "19900101"
-    MAX_WORKERS = 2
     # daily 单次上限 8000 行
     DAILY_ROW_CAP = 7800
     # daily_basic 单次上限 6000 行
@@ -264,7 +263,7 @@ class StockFetcher:
                 log.info(f"  {api} [{i}/{n}] {code} +{written} rows (total={total})")
             return written
 
-        with ThreadPoolExecutor(max_workers=self.MAX_WORKERS) as executor:
+        with ThreadPoolExecutor(max_workers=self.client.max_workers) as executor:
             list(executor.map(_run_one, enumerate(codes, start=1)))
 
         log.info(f"{api} done. total rows={total}")

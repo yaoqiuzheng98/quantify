@@ -38,6 +38,7 @@ class TushareClient:
         if not self.token:
             raise RuntimeError("TUSHARE_TOKEN is empty. Please set it in the .env file or environment.")
         self.rate_per_min = rate_per_min or settings.rate_per_min
+        self.max_workers = settings.max_workers
         self.http_url = settings.http_url.rstrip("/")
         self.http_timeout = settings.http_timeout
         self._limiter = RateLimiter(max_calls=self.rate_per_min, period=60.0)
