@@ -903,7 +903,7 @@ class SuspendD(Base):
 
     ts_code: Mapped[str] = mapped_column(String(16), comment="股票代码")
     trade_date: Mapped[date] = mapped_column(Date, comment="停复牌日期")
-    suspend_timing: Mapped[str | None] = mapped_column(String(16), comment="日内停牌时间")
+    suspend_timing: Mapped[str | None] = mapped_column(String(64), comment="日内停牌时间")
     suspend_type: Mapped[str | None] = mapped_column(String(4), comment="停复牌类型 S停牌 R复牌")
 
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
