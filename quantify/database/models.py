@@ -1290,8 +1290,8 @@ class Forecast(Base):
     net_profit_max: Mapped[float | None] = mapped_column(Float, comment="预告净利润上限(万元)")
     last_parent_net: Mapped[float | None] = mapped_column(Float, comment="上年同期归属母公司净利润")
     first_ann_date: Mapped[date | None] = mapped_column(Date, comment="首次公告日")
-    summary: Mapped[str | None] = mapped_column(String(512), comment="业绩预告摘要")
-    change_reason: Mapped[str | None] = mapped_column(String(512), comment="业绩变动原因")
+    summary: Mapped[str | None] = mapped_column(Text, comment="业绩预告摘要")
+    change_reason: Mapped[str | None] = mapped_column(Text, comment="业绩变动原因")
 
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
@@ -1532,7 +1532,7 @@ class FundCompany(Base):
     setup_date: Mapped[date | None] = mapped_column(Date, comment="成立日期")
     end_date: Mapped[date | None] = mapped_column(Date, comment="公司终止日期")
     employees: Mapped[float | None] = mapped_column(Float, comment="员工总数")
-    main_business: Mapped[str | None] = mapped_column(String(512), comment="主要产品及业务")
+    main_business: Mapped[str | None] = mapped_column(Text, comment="主要产品及业务")
     org_code: Mapped[str | None] = mapped_column(String(32), comment="组织机构代码")
     credit_code: Mapped[str | None] = mapped_column(String(32), comment="统一社会信用代码")
 
