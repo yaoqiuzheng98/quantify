@@ -14,7 +14,7 @@ Quantify 是一个 **Python** 量化研究框架。它从 **Tushare Pro** 拉取
 
 - **全量数据接入**：A 股日线/周月线、复权因子、每日指标、三大财报、财务指标、分红送股、沪深港通、融资融券、技术指标、ETF、指数成分/权重、行业分类、宏观经济、期货——**50+ 张数据表**，覆盖量化研究全场景
 - **幂等增量同步**：所有写入走 `INSERT ... ON DUPLICATE KEY UPDATE`，重复运行安全，断点续跑无需额外操作；时间序列阶段自动查库内最大日期仅拉增量
-- **事件驱动回测**：逐 bar 模拟，聚宽 `initialize`/`handle_data` 策略 API 兼容，前复权历史价格、真实开盘价撮合、佣金/滑点/分红/份额拆分全建模
+- **事件驱动回测**：逐 bar 模拟，聚宽 `initialize`/`handle_data` 策略 API 兼容，支持 ETF/个股/指数多资产，前复权历史价格、真实开盘价撮合、佣金/滑点/分红/送转、A 股印花税/T+1/涨跌停全建模
 - **Streamlit 工作台**：代码编辑器 + 策略持久化 + 参数面板 + 交互式收益/回撤/持仓图表 + 20+ 指标卡片
 - **Tushare 客户端**：直连镜像站 HTTP 接口（不走 SDK）、滑动窗口限流、指数退避重试、并发硬上限 2 路的线程池安全调用
 
@@ -327,13 +327,15 @@ print(result.metrics.to_llm_prompt())
 - **前复权**：`attribute_history()` 返回的价格按复权因子前复权，避免分红除息跳空污染计算
 - **真实成交价**：订单按当天真实开盘价 + 滑点撮合
 - **整手取整**：100 份一手，不足一手忽略
-- **ETF 分红**：登记日锁定持仓，派息日现金入账
-- **ETF 拆股**：基于 accum_nav/unit_nav 比率自动检测并调整持仓
-- **佣金/滑点**：直接扣减现金并计入指标
+- **多资产路由**：按代码自动识别 ETF / 个股 / 指数，分别走对应数据表，一次回测可混合 ETF 与个股（指数仅作基准）
+- **ETF 分红/拆股**：登记日锁定持仓、派息日现金入账；份额折算基于 accum_nav/unit_nav 比率自动检测并调整持仓
+- **个股送转/分红**：送转比例取 `dividend.stk_div`（纯送转，比 adj_factor 跳变更准），现金分红取税后 `cash_div`
+- **A 股摩擦（仅个股生效，ETF/指数不受影响）**：卖出印花税 0.05% 单边、T+1（当日买入次日才可卖）、涨跌停（开盘涨停拒买/跌停拒卖，±10% 主板口径）
+- **佣金/滑点/印花税**：直接扣减现金并计入指标
 
 ### 指标输出
 
-总收益率、年化收益率、最大回撤（含持续天数）、年化波动率、Sharpe/Sortino/Calmar/信息比率、胜率、盈亏比、Profit Factor、累计佣金、累计滑点、Alpha/Beta。
+总收益率、年化收益率、最大回撤（含持续天数）、年化波动率、Sharpe/Sortino/Calmar/信息比率、胜率、盈亏比、Profit Factor、累计佣金、累计滑点、累计印花税、Alpha/Beta。
 
 ### 编写策略的坑（务必避开）
 
@@ -354,6 +356,21 @@ print(result.metrics.to_llm_prompt())
 > abs = builtins.abs
 > round = builtins.round
 > ```
+
+> **下单一律用 `order_target_value`，不要用 `order_target_percent`。**
+>
+> `order_*` 系列下单函数不来自 `jqdata`，而是由运行时注入到策略全局命名空间——本地兼容层和聚宽线上注入的集合不完全一致，`order_target_percent` 等按比例下单的变体可能在某一边抛 `NameError: name 'order_target_percent' is not defined`。
+> 统一改用按目标市值下单，两边都稳，且结果等价：
+>
+> ```python
+> # 不要：order_target_percent(code, weight)
+> order_target_value(code, context.portfolio.total_value * weight)
+> ```
+
+> **代码一律写聚宽格式 `.XSHG` / `.XSHE`（含基准和指数）。**
+>
+> 聚宽只认 `.XSHG`（上交所）/`.XSHE`（深交所），沪深300 指数是 `000300.XSHG` 而非 `000300.SH`；写成 Tushare 的 `.SH/.SZ` 会让聚宽报 `InvalidParam: 标的'xxx'不存在`。本地引擎两种格式都兼容，所以以聚宽格式为准即可两边通跑。
+> 另：`attribute_history(...)["close"]` 返回日期索引的 Series，取值用 `.iloc[-1]` / `.iloc[0]`（按位置），用 `closes[-1]` 会按标签查找而抛 `KeyError: -1`。
 
 ---
 

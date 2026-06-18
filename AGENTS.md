@@ -82,6 +82,8 @@ quantify version                                        # 打印版本号
 - 默认预加载回测开始日前 365 天历史供信号计算
 - 策略源码保存到 MySQL `strategy` 表（`SavedStrategy` 模型），Dashboard 读取/写入该表
 - **⚠️ 写策略必避坑**：聚宽 `from jqdata import *` 会用 numpy 同名函数遮蔽内建 `sum`/`max`/`min`/`abs`/`round`。`np.sum(dict.values())` 不求和而是把 `dict_values` 包成 0 维 object 数组原样返回，导致 `s = sum(d.values()); x / s` 抛 `TypeError: unsupported operand type(s) for /: 'float' and 'dict_values'`。**本地引擎用原生 builtins（兼容层只注入下单/历史等少数函数，不含 numpy），所以本地能跑通、传到聚宽才报错**。凡对 `dict.values()`/推导式/生成器做聚合的策略，在 `from jqdata import *` 后显式 `import builtins` 并把 `sum = builtins.sum`（max/min/abs/round 同理）绑回。参考 `strategy` 表 id=26。
+- **⚠️ 跨平台下单 API（本地 vs 聚宽）**：下单函数（`order` / `order_value` / `order_target_value` / `order_target_percent` 等）**不来自 `jqdata`**——它们在聚宽由运行时注入到策略全局命名空间，在本地由兼容层（`joinquant.py` 的 `namespace()`）注入。两边注入的集合**不完全一致**：本地兼容层目前只注入 `order`/`order_value`/`order_target_value`/`order_target_percent`，**没有** `order_target`/`order_percent`；聚宽则可能因运行时上下文导致某些 `order_*` 未注入而抛 `NameError`。**统一规范：下单一律只用 `order_target_value(code, context.portfolio.total_value * weight)`**（按目标市值下单），不要用 `order_target_percent` 等按比例的变体，避免两边注入差异。`order_target_percent(code, w)` 等价于 `order_target_value(code, total_value * w)`，回测结果完全一致（已验证）。参考 `strategy` 表 id=36。
+- **⚠️ 标的/基准代码格式**：聚宽**只认聚宽格式** `.XSHG`（上交所）/`.XSHE`（深交所），指数也是（沪深300 = `000300.XSHG`，不是 `000300.SH`）；本地引擎两种格式通吃（`to_tushare_code` 会把 `.XSHG/.XSHE` 转回 `.SH/.SZ`）。**统一规范：策略里所有代码（`universe`/`set_benchmark`/下单）一律写聚宽格式 `.XSHG/.XSHE`**，这样本地、聚宽都能跑；写 `.SH/.SZ` 则只有本地能跑、传聚宽报 `InvalidParam: 标的'xxx'不存在`。另注意 `attribute_history(...)["close"]` 返回的是日期索引的 Series，取值用 `.iloc[-1]`/`.iloc[0]`（按位置），**不能**用 `closes[-1]`（按标签会抛 `KeyError: -1`）。
 
 ## 并发
 
