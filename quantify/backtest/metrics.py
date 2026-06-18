@@ -101,7 +101,7 @@ def compute_metrics(
     slippage: float = 0,
     tax: float = 0,
     trade_count: int = 0,
-    risk_free_rate: float = 0.03,
+    risk_free_rate: float = 0.04,
 ) -> BacktestMetrics:
     """Derive a full suite of performance statistics from a daily equity curve.
 
@@ -132,8 +132,8 @@ def compute_metrics(
     # daily returns
     daily_returns = np.diff(values) / values[:-1]
 
-    # annual
-    years = trading_days / 252
+    # annual (compounded) — JoinQuant 用 250 个交易日年化
+    years = trading_days / 250
     if years > 0 and final_value > 0:
         annual_return_pct = ((final_value / initial_cash) ** (1 / years) - 1) * 100
     else:
@@ -154,14 +154,13 @@ def compute_metrics(
         else:
             current_duration = 0
 
-    # volatility
-    vol_pct = float(np.std(daily_returns) * 100 * math.sqrt(252)) if len(daily_returns) > 0 else 0.0
+    # volatility (annualised with 250 trading days, JoinQuant 口径)
+    vol_pct = float(np.std(daily_returns) * 100 * math.sqrt(250)) if len(daily_returns) > 0 else 0.0
 
-    # Sharpe
-    excess = daily_returns - (risk_free_rate / 252)
-    sharpe = (
-        float(np.mean(excess) / np.std(daily_returns) * math.sqrt(252)) if np.std(daily_returns) > 0 else 0.0
-    )
+    # Sharpe — 对齐聚宽：(年化收益率 - 无风险利率) / 年化波动率
+    # 分子用复利年化收益(非日收益算术均值)，年化波动率用 250 个交易日，无风险利率 4%。
+    annual_vol = np.std(daily_returns) * math.sqrt(250)
+    sharpe = float((annual_return_pct / 100 - risk_free_rate) / annual_vol) if annual_vol > 0 else 0.0
 
     # Calmar
     calmar = annual_return_pct / max_dd_pct if max_dd_pct > 0 else 0.0

@@ -86,7 +86,7 @@ def _max_drawdown_info(curve: np.ndarray, dates: pd.DatetimeIndex) -> tuple[floa
 
 
 def _sharpe_ratio(
-    annual_return_pct: float, annual_volatility: float | None, risk_free_rate: float = 0.03
+    annual_return_pct: float, annual_volatility: float | None, risk_free_rate: float = 0.04
 ) -> float | None:
     if annual_volatility is None or annual_volatility <= 0:
         return None
@@ -94,7 +94,7 @@ def _sharpe_ratio(
 
 
 def _sortino_ratio(
-    daily_returns: np.ndarray, annual_return_pct: float, risk_free_rate: float = 0.03
+    daily_returns: np.ndarray, annual_return_pct: float, risk_free_rate: float = 0.04
 ) -> float | None:
     if len(daily_returns) == 0:
         return None
@@ -245,7 +245,7 @@ def _compute_alpha_beta(
     benchmark_returns: np.ndarray,
     annual_return_pct: float,
     benchmark_annual_pct: float,
-    risk_free_rate: float = 0.03,
+    risk_free_rate: float = 0.04,
 ) -> tuple[float | None, float | None]:
     if len(strategy_returns) < 2 or len(benchmark_returns) < 2:
         return None, None
