@@ -72,9 +72,12 @@ class FuturesFetcher:
         *,
         incremental: bool = True,
         skip: Iterable[str] | None = None,
+        include_skipped: bool = False,
     ) -> list[FetchSummary]:
         """Run all futures sub-fetchers in order."""
-        skip = set(skip or []) | self.DEFAULT_SKIP_STAGES
+        skip = set(skip or [])
+        if not include_skipped:
+            skip |= self.DEFAULT_SKIP_STAGES
         results: list[FetchSummary] = []
 
         if "fut_basic" not in skip:

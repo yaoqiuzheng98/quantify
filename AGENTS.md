@@ -22,6 +22,10 @@ quantify fetch etf daily --ts-code 510300.SH,159915.SZ  # 单阶段，指定代�
 quantify fetch stock basic                # 填充 A 股基础列表（依赖所有后续阶段）
 quantify fetch stock all                  # 拉取全部个股数据(日线/财务/资金流等)
 quantify fetch stock all --full           # 全量回填
+quantify fetch stock all --include-skipped             # 拉全部个股数据（含默认跳过的周线/月线/因子/融券明细/券商推荐）
+quantify fetch futures all --include-skipped          # 拉全部期货数据（含默认跳过的持仓/仓单/结算）
+quantify fetch all --include-skipped                  # 一键拉全部（含各数据组默认跳过的阶段）
+quantify fetch skipped                                # 只拉各数据组默认跳过的阶段
 quantify fetch stock daily --ts-code 600000.SH          # 单只股票日线
 quantify fetch futures all                # 拉取期货数据（合约列表+日线）
 quantify fetch fund all                   # 拉取公募基金公司信息
@@ -120,8 +124,9 @@ quantify version                                        # 打印版本号
 
 1. `quantify fetch etf basic` **必须先执行**。它会填充 `fund_basic` 表，其他 ETF 采集器从该表读取标的列表（排除已退市：`status != "D"`）。未先拉取则其他阶段标的列表为空。
 2. `quantify fetch stock basic` **必须先执行**（在 stock 其他阶段之前）。填充 `stock_basic` 表，stock 的其他阶段（daily/adj_factor/财务等）从中读取标的列表。
-3. `quantify fetch all` 自动按依赖顺序：交易日历 → ETF（basic 优先）→ 个股 → 行业 → 指数 → 宏观 → 期货 → 基金
-4. 行业/指数/宏观部分接口需 5000+ 积分；个股财务/资金流亦需较高积分。积分不足时用 `--skip` 跳过对应组
+3. `fetch stock all` 默认跳过 `weekly/monthly/stk_factor/margin_detail/broker_recommend`；`fetch futures all` 默认跳过 `fut_holding/fut_wsr/fut_settle`。加 `--include-skipped` 一次性全部拉取。
+4. `quantify fetch all` 自动按依赖顺序：交易日历 → ETF（basic 优先）→ 个股 → 行业 → 指数 → 宏观 → 期货 → 基金
+5. 行业/指数/宏观部分接口需 5000+ 积分；个股财务/资金流亦需较高积分。积分不足时用 `--skip` 跳过对应组
 
 ## 测试
 

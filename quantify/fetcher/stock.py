@@ -117,9 +117,12 @@ class StockFetcher:
         incremental: bool = True,
         ts_codes: Iterable[str] | None = None,
         skip: Iterable[str] | None = None,
+        include_skipped: bool = False,
     ) -> list[FetchSummary]:
         """Run all stock sub-fetchers in order."""
-        skip = set(skip or []) | self.DEFAULT_SKIP_STAGES
+        skip = set(skip or [])
+        if not include_skipped:
+            skip |= self.DEFAULT_SKIP_STAGES
         results: list[FetchSummary] = []
 
         # 1. Basic info first

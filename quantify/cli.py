@@ -378,6 +378,12 @@ def fetch_stock(
     skip: Optional[str] = typer.Option(
         None, "--skip", help="Comma-separated stages to skip (only used with stage=all)"
     ),
+    include_skipped: bool = typer.Option(
+        False,
+        "--include-skipped",
+        help="Also fetch stages that are skipped by default: weekly, monthly, "
+        "margin_detail, stk_factor, broker_recommend",
+    ),
 ) -> None:
     """Fetch A-share stock data from Tushare into MySQL.
 
@@ -387,7 +393,7 @@ def fetch_stock(
     margin -> margin_detail -> stk_factor -> broker_recommend.
 
     By default margin_detail, stk_factor, broker_recommend,
-    weekly, monthly are skipped. Run individual stages to fetch them.
+    weekly, monthly are skipped. Run with ``--include-skipped`` to include them.
     """
     from quantify.fetcher.stock import StockFetcher
 
@@ -397,7 +403,7 @@ def fetch_stock(
     fetcher = StockFetcher()
 
     if normalized == "all":
-        fetcher.fetch_all(incremental=incremental, ts_codes=codes, skip=skip_set)
+        fetcher.fetch_all(incremental=incremental, ts_codes=codes, skip=skip_set, include_skipped=include_skipped)
         return
 
     if normalized == "basic":
@@ -450,11 +456,17 @@ def fetch_futures(
     skip: Optional[str] = typer.Option(
         None, "--skip", help="Comma-separated stages to skip (only used with stage=all)"
     ),
+    include_skipped: bool = typer.Option(
+        False,
+        "--include-skipped",
+        help="Also fetch stages skipped by default: fut_holding, fut_wsr, fut_settle",
+    ),
 ) -> None:
     """Fetch Tushare futures-theme datasets into MySQL.
 
     Stage=all runs: fut_basic -> fut_daily.
     By default fut_holding, fut_wsr, fut_settle are skipped.
+    Run with ``--include-skipped`` to include them.
     """
     from quantify.fetcher.future import FuturesFetcher
 
@@ -463,7 +475,7 @@ def fetch_futures(
     fetcher = FuturesFetcher()
 
     if normalized == "all":
-        fetcher.fetch_all(incremental=incremental, skip=skip_set)
+        fetcher.fetch_all(incremental=incremental, skip=skip_set, include_skipped=include_skipped)
         return
 
     symbols = fetcher._load_symbols()  # noqa: SLF001
@@ -531,6 +543,13 @@ def fetch_all_data(
             "Comma-separated top-level groups to skip: trade_cal|etf|stock|industry|index|macro|futures|fund"
         ),
     ),
+    include_skipped: bool = typer.Option(
+        False,
+        "--include-skipped",
+        help="Propagate --include-skipped to stock and futures groups, fetching their "
+        "normally-skipped stages (weekly, monthly, stk_factor, margin_detail, broker_recommend, "
+        "fut_holding, fut_wsr, fut_settle)",
+    ),
 ) -> None:
     """Fetch EVERYTHING from Tushare into MySQL in dependency order.
 
@@ -562,7 +581,7 @@ def fetch_all_data(
     # 3) Stock (basic first, then time-series, then financials)
     if "stock" not in skip_set:
         log.info("=== fetch stock (all stages) ===")
-        StockFetcher().fetch_all(incremental=incremental)
+        StockFetcher().fetch_all(incremental=incremental, include_skipped=include_skipped)
 
     # 4) Industry (SW + CITIC): classification, members, daily
     if "industry" not in skip_set:
@@ -579,10 +598,10 @@ def fetch_all_data(
         log.info("=== fetch macro (yc_cb/index_global/us_tycr/us_trycr) ===")
         MacroFetcher().fetch_all(incremental=incremental)
 
-    # 7) Futures: basic, daily
+    # 7) Futures: basic, daily, and optionally holding/wsr/settle
     if "futures" not in skip_set:
         log.info("=== fetch futures (fut_basic/fut_daily) ===")
-        FuturesFetcher().fetch_all(incremental=incremental)
+        FuturesFetcher().fetch_all(incremental=incremental, include_skipped=include_skipped)
 
     # 8) Fund company metadata
     if "fund" not in skip_set:
@@ -598,6 +617,83 @@ def fetch_all_data(
             log.info(f"  fund_company: {len(df)} rows")
 
     log.info("=== fetch all: done ===")
+
+
+# ---------------------------------------------------------------------------
+# fetch skipped — 只拉各数据组默认跳过的阶段
+# ---------------------------------------------------------------------------
+@fetch_app.command("skipped")
+def fetch_skipped(
+    incremental: bool = typer.Option(
+        True, "--incremental/--full", help="Incremental update vs full backfill"
+    ),
+) -> None:
+    """Sync only the stages skipped by default across all data groups.
+
+    Stock:  weekly, monthly, margin_detail, stk_factor, broker_recommend
+    Futures: fut_holding, fut_wsr, fut_settle
+    Fund:   fund_company
+    """
+    from quantify.fetcher.stock import StockFetcher
+    from quantify.fetcher.future import FuturesFetcher
+    from quantify.database.models import FundCompany
+    from quantify.database.upsert import upsert_dataframe
+    from quantify.tushare_client.client import get_client
+
+    # --- Stock skipped stages ---
+    log.info("=== fetch skipped: stock stages ===")
+    stock = StockFetcher()
+    universe = stock._load_universe()  # noqa: SLF001
+    if not universe:
+        log.warning("stock_basic is empty, run `quantify fetch stock basic` first, "
+                     "skipping stock skipped stages")
+    else:
+        log.info(f"  stock universe: {len(universe)} codes")
+        for name, method in [
+            ("weekly", stock.fetch_weekly),
+            ("monthly", stock.fetch_monthly),
+        ]:
+            n = method(ts_codes=universe, incremental=incremental)
+            log.info(f"  {name}: {n} rows")
+
+        for name, method in [
+            ("stk_factor", stock.fetch_stk_factor),
+            ("broker_recommend", stock.fetch_broker_recommend),
+        ]:
+            n = method(ts_codes=universe)
+            log.info(f"  {name}: {n} rows")
+
+        n = stock.fetch_margin_detail(incremental=incremental)
+        log.info(f"  margin_detail: {n} rows")
+
+    # --- Futures skipped stages ---
+    log.info("=== fetch skipped: futures stages ===")
+    fut = FuturesFetcher()
+    symbols = fut._load_symbols()  # noqa: SLF001
+    if not symbols:
+        log.warning("fut_basic is empty, run `quantify fetch futures fut-basic` first, "
+                     "skipping futures skipped stages")
+    else:
+        log.info(f"  futures symbols: {len(symbols)}")
+        for name, method in [
+            ("fut_holding", fut.fetch_holding),
+            ("fut_wsr", fut.fetch_wsr),
+            ("fut_settle", fut.fetch_settle),
+        ]:
+            n = method(symbols=symbols, incremental=incremental)
+            log.info(f"  {name}: {n} rows")
+
+    # --- Fund company ---
+    log.info("=== fetch skipped: fund_company ===")
+    client = get_client()
+    df = client.call("fund_company")
+    if df is not None and not df.empty:
+        n = upsert_dataframe(FundCompany, df)
+        log.info(f"  fund_company: {n} rows")
+    else:
+        log.info("  fund_company: empty")
+
+    log.info("=== fetch skipped: done ===")
 
 
 # ---------------------------------------------------------------------------
