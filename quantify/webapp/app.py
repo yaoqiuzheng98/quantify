@@ -55,9 +55,9 @@ def rebalance(context):
 """
 
 
-# 匹配 6 位数字 + 交易所后缀的 ETF/证券代码：
-# 聚宽格式 510300.XSHG / 159915.XSHE，或 Tushare 格式 510300.SH / 159915.SZ。
-_CODE_PATTERN = re.compile(r"\b(\d{6})\.(XSHG|XSHE|SH|SZ)\b", re.IGNORECASE)
+# 匹配 6 位数字 + 交易所后缀的证券代码（ETF / 个股 / 指数）：
+# 聚宽格式 510300.XSHG / 159915.XSHE，或 Tushare 格式 600519.SH / 000001.SZ / 830799.BJ。
+_CODE_PATTERN = re.compile(r"\b(\d{6})\.(XSHG|XSHE|SH|SZ|BJ)\b", re.IGNORECASE)
 
 
 def _extract_codes_from_source(strategy_source: str) -> list[str]:
@@ -582,7 +582,9 @@ def _render_metrics(report: dict[str, Any]) -> None:
 def _render_result(result: BacktestResult) -> None:
     report = result.to_report_dict()
     if not report["curves"]:
-        st.warning("没有读取到行情数据，请先确认 `fund_daily` 已入库且日期范围有效。")
+        st.warning(
+            "没有读取到行情数据，请先确认日线表（ETF 用 `fund_daily`，个股用 `daily`）已入库且日期范围有效。"
+        )
         return
 
     _render_metrics(report)
@@ -649,7 +651,7 @@ def main() -> None:
     records = _load_strategy_records()
     if st.session_state.get("strategy_view") == "list":
         st.title("Quantify 回测工作台")
-        st.caption("编辑 JoinQuant 风格策略，运行 ETF 日线回测，并用交互图表查看收益、回撤、盈亏和成交。")
+        st.caption("编辑 JoinQuant 风格策略，运行 ETF/个股日线回测，并用交互图表查看收益、回撤、盈亏和成交。")
         _render_strategy_list(records)
         return
 
@@ -660,7 +662,7 @@ def main() -> None:
         return_clicked = st.button("返回列表", width="stretch")
     with header_cols[2]:
         save_clicked = st.button("保存策略", type="primary", width="stretch")
-    st.caption("编辑 JoinQuant 风格策略，运行 ETF 日线回测，并用交互图表查看收益、回撤、盈亏和成交。")
+    st.caption("编辑 JoinQuant 风格策略，运行 ETF/个股日线回测，并用交互图表查看收益、回撤、盈亏和成交。")
     if return_clicked:
         st.session_state["strategy_view"] = "list"
         st.rerun()
