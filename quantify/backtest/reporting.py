@@ -246,10 +246,11 @@ def build_report_items(
         excess_max_drawdown, _ = _max_drawdown_info(excess_curve, dates)
         excess_volatility = _annualized_volatility(excess_daily)
         excess_annual = _annualized_return(excess_return, trading_days)
-        excess_downside_volatility = _downside_volatility(excess_daily)
+        # 超额收益夏普 = (超额年化收益 − 无风险利率) / 超额收益年化波动率(全波动，非下行)，
+        # 对齐聚宽口径。无风险利率 4%，年化波动率用 250 交易日(见 _annualized_volatility)。
         excess_sharpe = (
-            excess_annual / 100 / excess_downside_volatility
-            if excess_downside_volatility is not None
+            (excess_annual / 100 - 0.04) / excess_volatility
+            if excess_volatility is not None and excess_volatility > 0
             else None
         )
         information_ratio = (
