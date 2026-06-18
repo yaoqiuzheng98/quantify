@@ -4,9 +4,92 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 import pandas as pd
+
+
+@dataclass(frozen=True)
+class TradeStats:
+    """已平仓交易统计(round-trip，聚宽口径)。
+
+    胜负与盈亏比均按**毛盈亏**(卖出额 − 买入成本，不扣佣金/印花税/滑点、不含分红)
+    统计，与聚宽"盈亏比 = 总盈利额 / 总亏损额"一致。
+    """
+
+    profit_count: int
+    loss_count: int
+    win_rate: float | None  # 0~1，盈利交易占已平仓交易的比例
+    profit_loss_ratio: float | None  # 总毛盈利 / |总毛亏损|
+    avg_win: float | None  # 平均每笔毛盈利(元)
+    avg_loss: float | None  # 平均每笔毛亏损(元，负数)
+    avg_win_pct: float | None  # 平均每笔盈利交易的毛收益率(%)
+    avg_loss_pct: float | None  # 平均每笔亏损交易的毛收益率(%，负数)
+
+
+def realized_trade_stats(trades: list[Any] | None) -> TradeStats:
+    """按平仓交易(round-trip)统计盈亏，对齐聚宽口径。
+
+    用平均成本法跟踪每只标的持仓，卖出时按比例结算一笔平仓盈亏。胜负归类和盈亏比
+    都用**毛盈亏**(卖出额 − 买入成本，不扣任何费用、不含分红)，与聚宽
+    "盈亏比 = 总盈利额 / 总亏损额(按已实现交易)"一致。命令行(`metrics`)与 Web 报表
+    (`reporting`)共用此函数，确保胜率/盈亏比/盈利次数两处同源同值。
+    """
+    if not trades:
+        return TradeStats(0, 0, None, None, None, None, None, None)
+
+    positions: dict[str, dict[str, float]] = {}
+    profits: list[float] = []
+    losses: list[float] = []
+    profit_pcts: list[float] = []
+    loss_pcts: list[float] = []
+
+    def _sort_key(t: Any) -> Any:
+        d = getattr(t, "filled_date", None)
+        return pd.Timestamp(d) if d is not None else pd.Timestamp.min
+
+    for trade in sorted(trades, key=_sort_key):
+        code = getattr(trade, "ts_code", "")
+        amount = int(getattr(trade, "amount", 0) or 0)
+        price = getattr(trade, "filled_price", None)
+        if not code or amount == 0 or price is None:
+            continue
+        pos = positions.setdefault(code, {"amount": 0.0, "cost": 0.0})
+        current = int(pos["amount"])
+        if amount > 0:
+            pos["amount"] = current + amount
+            pos["cost"] += amount * float(price)
+            continue
+        sell = min(current, abs(amount))
+        if sell <= 0:
+            continue
+        ratio = sell / current
+        cost = pos["cost"] * ratio
+        gross_pnl = sell * float(price) - cost
+        pnl_pct = (gross_pnl / cost * 100) if cost > 0 else 0.0
+        eps = 1e-6
+        if gross_pnl > eps:
+            profits.append(gross_pnl)
+            profit_pcts.append(pnl_pct)
+        elif gross_pnl < -eps:
+            losses.append(gross_pnl)
+            loss_pcts.append(pnl_pct)
+        pos["amount"] = current - sell
+        pos["cost"] -= cost
+
+    profit_count = len(profits)
+    loss_count = len(losses)
+    total_closed = profit_count + loss_count
+    win_rate = profit_count / total_closed if total_closed > 0 else None
+    profit_loss_ratio = float(sum(profits) / abs(sum(losses))) if profits and losses else None
+    avg_win = float(np.mean(profits)) if profits else None
+    avg_loss = float(np.mean(losses)) if losses else None
+    avg_win_pct = float(np.mean(profit_pcts)) if profit_pcts else None
+    avg_loss_pct = float(np.mean(loss_pcts)) if loss_pcts else None
+    return TradeStats(
+        profit_count, loss_count, win_rate, profit_loss_ratio, avg_win, avg_loss, avg_win_pct, avg_loss_pct
+    )
 
 
 @dataclass
@@ -29,6 +112,8 @@ class BacktestMetrics:
     avg_win_pct: float
     avg_loss_pct: float
     profit_factor: float
+    profit_count: int
+    loss_count: int
     total_commission: float
     total_slippage: float
     total_tax: float
@@ -52,6 +137,8 @@ class BacktestMetrics:
             "avg_win_pct": round(self.avg_win_pct, 4),
             "avg_loss_pct": round(self.avg_loss_pct, 4),
             "profit_factor": round(self.profit_factor, 2),
+            "profit_count": self.profit_count,
+            "loss_count": self.loss_count,
             "total_commission": round(self.total_commission, 2),
             "total_slippage": round(self.total_slippage, 2),
             "total_tax": round(self.total_tax, 2),
@@ -81,10 +168,10 @@ class BacktestMetrics:
             "",
             "--- Trading ---",
             f"Trade count:    {d['trade_count']}",
-            f"Win rate:       {d['win_rate_pct']:.2f}%",
-            f"Avg win:        {d['avg_win_pct']:.4f}%",
-            f"Avg loss:       {d['avg_loss_pct']:.4f}%",
-            f"Profit factor:  {d['profit_factor']:.2f}",
+            f"Win rate:       {d['win_rate_pct']:.2f}% ({d['profit_count']}W/{d['loss_count']}L round-trips)",
+            f"Avg win:        {d['avg_win_pct']:.4f}% per trade",
+            f"Avg loss:       {d['avg_loss_pct']:.4f}% per trade",
+            f"Profit factor:  {d['profit_factor']:.2f} (total gross profit / loss)",
             "",
             "--- Costs ---",
             f"Commission:     ¥{d['total_commission']:,.2f}",
@@ -102,6 +189,7 @@ def compute_metrics(
     tax: float = 0,
     trade_count: int = 0,
     risk_free_rate: float = 0.04,
+    trades: list[Any] | None = None,
 ) -> BacktestMetrics:
     """Derive a full suite of performance statistics from a daily equity curve.
 
@@ -165,13 +253,15 @@ def compute_metrics(
     # Calmar
     calmar = annual_return_pct / max_dd_pct if max_dd_pct > 0 else 0.0
 
-    # win / loss
-    wins = daily_returns[daily_returns > 0]
-    losses = daily_returns[daily_returns < 0]
-    win_rate = (len(wins) / len(daily_returns) * 100) if len(daily_returns) > 0 else 0.0
-    avg_win = float(np.mean(wins) * 100) if len(wins) > 0 else 0.0
-    avg_loss = float(np.mean(losses) * 100) if len(losses) > 0 else 0.0
-    profit_factor = abs(wins.sum() / losses.sum()) if len(losses) > 0 and losses.sum() != 0 else float("inf")
+    # win / loss —— 按平仓交易(round-trip)统计，对齐聚宽口径，与 Web 报表同源。
+    stats = realized_trade_stats(trades)
+    win_rate = (stats.win_rate * 100) if stats.win_rate is not None else 0.0
+    avg_win = stats.avg_win_pct if stats.avg_win_pct is not None else 0.0
+    avg_loss = stats.avg_loss_pct if stats.avg_loss_pct is not None else 0.0
+    # profit_factor 即聚宽"盈亏比" = 总毛盈利 / |总毛亏损|。
+    profit_factor = stats.profit_loss_ratio if stats.profit_loss_ratio is not None else float("inf")
+    profit_count = stats.profit_count
+    loss_count = stats.loss_count
 
     return BacktestMetrics(
         start_date=start_date,
@@ -190,6 +280,8 @@ def compute_metrics(
         avg_win_pct=avg_win,
         avg_loss_pct=avg_loss,
         profit_factor=profit_factor,
+        profit_count=profit_count,
+        loss_count=loss_count,
         total_commission=commission,
         total_slippage=slippage,
         total_tax=tax,
@@ -217,6 +309,8 @@ def _empty_metrics(
         avg_win_pct=0.0,
         avg_loss_pct=0.0,
         profit_factor=0.0,
+        profit_count=0,
+        loss_count=0,
         total_commission=commission,
         total_slippage=slippage,
         total_tax=tax,

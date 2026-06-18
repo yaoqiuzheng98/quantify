@@ -7,6 +7,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from .metrics import realized_trade_stats
+
 
 def _clean_value(value: Any) -> Any:
     if isinstance(value, dict):
@@ -116,89 +118,6 @@ def _downside_volatility(values: np.ndarray) -> float | None:
     return volatility if volatility > 0 else None
 
 
-def _realized_trade_stats(
-    trades: list[Any] | None,
-    dividends: list[Any] | None = None,
-) -> tuple[int, int, float | None, float | None]:
-    if not trades:
-        return 0, 0, None, None
-
-    positions: dict[str, dict[str, float]] = {}
-    profits: list[float] = []
-    losses: list[float] = []
-
-    events = []
-    for trade in trades:
-        event_date = getattr(trade, "filled_date", None)
-        if event_date is not None:
-            events.append((event_date, 1, trade))
-    for dividend in dividends or []:
-        event_date = getattr(dividend, "pay_date", None)
-        if event_date is not None:
-            events.append((event_date, 0, dividend))
-
-    for _, event_type, event in sorted(events, key=lambda item: (pd.Timestamp(item[0]), item[1])):
-        if event_type == 0:
-            code = getattr(event, "ts_code", "")
-            position = positions.get(code)
-            if position is not None and position["amount"] > 0:
-                position["dividend"] += float(getattr(event, "cash", 0.0) or 0.0)
-            continue
-
-        trade = event
-        code = getattr(trade, "ts_code", "")
-        amount = int(getattr(trade, "amount", 0) or 0)
-        price = getattr(trade, "filled_price", None)
-        if not code or amount == 0 or price is None:
-            continue
-
-        position = positions.setdefault(code, {"amount": 0.0, "cost": 0.0, "dividend": 0.0, "fees": 0.0})
-        current_amount = int(position["amount"])
-
-        # 该笔交易的实际成本(佣金 + 滑点 + 印花税),用于扣费后的净盈亏判定(对齐聚宽口径)。
-        trade_fees = (
-            float(getattr(trade, "commission", 0.0) or 0.0)
-            + float(getattr(trade, "slippage", 0.0) or 0.0)
-            + float(getattr(trade, "tax", 0.0) or 0.0)
-        )
-
-        if amount > 0:
-            position["amount"] = current_amount + amount
-            position["cost"] += amount * float(price)
-            position["fees"] += trade_fees  # 买入费用累计,卖出时按比例分摊
-            continue
-
-        sell_amount = min(current_amount, abs(amount))
-        if sell_amount <= 0:
-            continue
-
-        ratio = sell_amount / current_amount
-        cost = position["cost"] * ratio
-        dividend_cash = position["dividend"] * ratio
-        buy_fees = position["fees"] * ratio  # 买入费用按平仓比例分摊
-        proceeds = sell_amount * float(price) + dividend_cash
-        # 净盈亏 = 卖出所得 + 分红 - 买入成本 - 买入费用分摊 - 本次卖出费用
-        pnl = proceeds - cost - buy_fees - trade_fees
-        # 浮点容差:接近 0(同价进出等)视为平,不计入盈亏,避免残差误判。
-        eps = 1e-6
-        if pnl > eps:
-            profits.append(pnl)
-        elif pnl < -eps:
-            losses.append(pnl)
-
-        position["amount"] = current_amount - sell_amount
-        position["cost"] -= cost
-        position["dividend"] -= dividend_cash
-        position["fees"] -= buy_fees
-
-    profit_count = len(profits)
-    loss_count = len(losses)
-    total_closed = profit_count + loss_count
-    win_rate = profit_count / total_closed if total_closed > 0 else None
-    profit_loss_ratio = float(np.mean(profits) / abs(np.mean(losses))) if profits and losses else None
-    return profit_count, loss_count, win_rate, profit_loss_ratio
-
-
 def benchmark_return_series(
     dates: pd.DatetimeIndex,
     benchmark_df: pd.DataFrame | None,
@@ -285,7 +204,11 @@ def build_report_items(
     sharpe = _sharpe_ratio(annual_return, strategy_volatility)
     max_drawdown, max_drawdown_period = _max_drawdown_info(values / values[0], dates)
     sortino = _sortino_ratio(strategy_daily, annual_return)
-    profit_count, loss_count, trade_win_rate, profit_loss_ratio = _realized_trade_stats(trades, dividends)
+    _trade_stats = realized_trade_stats(trades)
+    profit_count = _trade_stats.profit_count
+    loss_count = _trade_stats.loss_count
+    trade_win_rate = _trade_stats.win_rate
+    profit_loss_ratio = _trade_stats.profit_loss_ratio
 
     benchmark_total_return = None
     benchmark_annual = None

@@ -449,6 +449,7 @@ class BacktestEngine:
             slippage=portfolio.total_slippage,
             tax=portfolio.total_tax,
             trade_count=portfolio.trade_count,
+            trades=broker.trades,
         )
 
         log.info("Backtest complete.")
