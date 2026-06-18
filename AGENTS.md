@@ -67,8 +67,18 @@ quantify version                                        # 打印版本号
 - 入口：`quantify/backtest/engine.py` → `BacktestEngine`
 - 策略 API 对齐 JoinQuant（`initialize(context)` / `handle_data(context)`），兼容层在 `quantify/backtest/joinquant.py`
 - 示例策略源码在 `quantify/backtest/examples.py` 的 `DEFAULT_STRATEGY_SOURCE`
-- 数据源：`fund_daily` 表（OHLCV），复权因子来自 `fund_adj`
+- **数据源抽象层**（`quantify/backtest/datasource.py`）：引擎不再硬编码 ETF 表，按代码自动路由：
+  - `EtfDataSource` → `fund_daily`/`fund_adj`/`fund_nav`/`fund_div`（份额折算比例由 `accum_nav/unit_nav` 推算，剔除分红污染）
+  - `StockDataSource` → `daily`/`adj_factor`/`dividend`（送转比例直接取 `dividend.stk_div`，纯送转 `1+stk_div`，比 adj_factor 跳变更准；现金分红取税后 `cash_div`，仅 `div_proc='实施'`）
+  - `IndexDataSource` → `index_daily`（无复权/分红，仅作基准）
+  - `CompositeDataSource` 按 `classify_asset()`（codes.py，按代码前缀+后缀判 stock/etf/index）路由，**一次回测可混合 ETF 与个股**
 - 成交价走真实开盘价，历史价格走前复权（对齐聚宽 `use_real_price=True`）
+- **A 股摩擦建模（仅对个股生效，ETF/指数不受影响，由 broker 按 `classify_asset` 判定）**：
+  - **印花税**：卖出单边 0.05%（`STOCK_STAMP_DUTY_RATE`）；聚宽 `OrderCost.close_tax` 经 `set_order_cost` 透传覆盖；计入 `portfolio.total_tax` → metrics `total_tax` → 报表"印花税"列
+  - **T+1**：`Position.locked_amount`（当日买入锁定）/ `closeable_amount`（可卖=总持仓-锁定）；引擎每个交易日开盘前清零 locked，隔夜解锁；卖出受 `closeable_amount` 约束
+  - **涨跌停**：以 `pre_close` 推 ±10% 限价（`STOCK_PRICE_LIMIT_PCT`，主板口径；创业板/科创板 20%、北交所 30% 暂用 10% 保守近似），开盘涨停拒买、跌停拒卖
+  - 三项开关：`Broker(enforce_t_plus_1=, enforce_price_limit=, stamp_duty_rate=)`，默认全开
+  - **停牌**：沿用"缺 bar"隐式机制——停牌日 `daily`/`fund_daily` 表本就无该行，当日无法成交
 - 默认预加载回测开始日前 365 天历史供信号计算
 - 策略源码保存到 MySQL `strategy` 表（`SavedStrategy` 模型），Dashboard 读取/写入该表
 - **⚠️ 写策略必避坑**：聚宽 `from jqdata import *` 会用 numpy 同名函数遮蔽内建 `sum`/`max`/`min`/`abs`/`round`。`np.sum(dict.values())` 不求和而是把 `dict_values` 包成 0 维 object 数组原样返回，导致 `s = sum(d.values()); x / s` 抛 `TypeError: unsupported operand type(s) for /: 'float' and 'dict_values'`。**本地引擎用原生 builtins（兼容层只注入下单/历史等少数函数，不含 numpy），所以本地能跑通、传到聚宽才报错**。凡对 `dict.values()`/推导式/生成器做聚合的策略，在 `from jqdata import *` 后显式 `import builtins` 并把 `sum = builtins.sum`（max/min/abs/round 同理）绑回。参考 `strategy` 表 id=26。

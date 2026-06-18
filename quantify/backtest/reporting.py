@@ -155,9 +155,11 @@ def _realized_trade_stats(
         position = positions.setdefault(code, {"amount": 0.0, "cost": 0.0, "dividend": 0.0, "fees": 0.0})
         current_amount = int(position["amount"])
 
-        # 该笔交易的实际成本(佣金 + 滑点),用于扣费后的净盈亏判定(对齐聚宽口径)。
-        trade_fees = float(getattr(trade, "commission", 0.0) or 0.0) + float(
-            getattr(trade, "slippage", 0.0) or 0.0
+        # 该笔交易的实际成本(佣金 + 滑点 + 印花税),用于扣费后的净盈亏判定(对齐聚宽口径)。
+        trade_fees = (
+            float(getattr(trade, "commission", 0.0) or 0.0)
+            + float(getattr(trade, "slippage", 0.0) or 0.0)
+            + float(getattr(trade, "tax", 0.0) or 0.0)
         )
 
         if amount > 0:
@@ -399,8 +401,9 @@ def _trade_records(trades: list[Any] | None) -> list[dict[str, Any]]:
         trade_value = abs(amount) * price if price is not None else None
         commission = _as_float(getattr(trade, "commission", 0.0))
         slippage = _as_float(getattr(trade, "slippage", 0.0))
+        tax = _as_float(getattr(trade, "tax", 0.0))
         code = getattr(trade, "ts_code", "")
-        trade_fees = (commission or 0.0) + (slippage or 0.0)
+        trade_fees = (commission or 0.0) + (slippage or 0.0) + (tax or 0.0)
 
         realized_pnl: float | None = None
         position = positions.setdefault(code, {"amount": 0.0, "cost": 0.0, "fees": 0.0})
@@ -431,6 +434,7 @@ def _trade_records(trades: list[Any] | None) -> list[dict[str, Any]]:
                 "value": trade_value,
                 "commission": commission,
                 "slippage": slippage,
+                "tax": tax,
                 "realized_pnl": _as_float(realized_pnl),
             }
         )

@@ -349,6 +349,7 @@ def _trades_frame(report: dict[str, Any]) -> pd.DataFrame:
             "成交额": trade["value"],
             "佣金": trade["commission"],
             "滑点": trade["slippage"],
+            "印花税": trade.get("tax", 0.0),
             "平仓盈亏": trade.get("realized_pnl"),
         }
         for trade in report.get("trades", [])

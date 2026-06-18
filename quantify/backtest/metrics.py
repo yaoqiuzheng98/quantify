@@ -31,6 +31,7 @@ class BacktestMetrics:
     profit_factor: float
     total_commission: float
     total_slippage: float
+    total_tax: float
     trade_count: int
 
     def to_dict(self) -> dict:
@@ -53,6 +54,7 @@ class BacktestMetrics:
             "profit_factor": round(self.profit_factor, 2),
             "total_commission": round(self.total_commission, 2),
             "total_slippage": round(self.total_slippage, 2),
+            "total_tax": round(self.total_tax, 2),
             "trade_count": self.trade_count,
         }
 
@@ -87,6 +89,7 @@ class BacktestMetrics:
             "--- Costs ---",
             f"Commission:     ¥{d['total_commission']:,.2f}",
             f"Slippage:       ¥{d['total_slippage']:,.2f}",
+            f"Stamp duty:     ¥{d['total_tax']:,.2f}",
         ]
         return "\n".join(lines)
 
@@ -96,6 +99,7 @@ def compute_metrics(
     initial_cash: float,
     commission: float = 0,
     slippage: float = 0,
+    tax: float = 0,
     trade_count: int = 0,
     risk_free_rate: float = 0.03,
 ) -> BacktestMetrics:
@@ -189,11 +193,14 @@ def compute_metrics(
         profit_factor=profit_factor,
         total_commission=commission,
         total_slippage=slippage,
+        total_tax=tax,
         trade_count=trade_count,
     )
 
 
-def _empty_metrics(initial_cash: float, commission: float, slippage: float, trades: int) -> BacktestMetrics:
+def _empty_metrics(
+    initial_cash: float, commission: float, slippage: float, trades: int, tax: float = 0.0
+) -> BacktestMetrics:
     return BacktestMetrics(
         start_date="",
         end_date="",
@@ -213,5 +220,6 @@ def _empty_metrics(initial_cash: float, commission: float, slippage: float, trad
         profit_factor=0.0,
         total_commission=commission,
         total_slippage=slippage,
+        total_tax=tax,
         trade_count=trades,
     )

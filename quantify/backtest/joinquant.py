@@ -112,9 +112,10 @@ class JoinQuantCompat:
     def set_order_cost(self, order_cost: OrderCost, type: str = "stock") -> None:  # noqa: A002
         del type
         rate = max(order_cost.open_commission, order_cost.close_commission)
-        self._require_context()._broker.set_commission_fn(  # noqa: SLF001
-            make_commission(rate=rate, minimum=order_cost.min_commission)
-        )
+        broker = self._require_context()._broker  # noqa: SLF001
+        broker.set_commission_fn(make_commission(rate=rate, minimum=order_cost.min_commission))
+        # 聚宽 OrderCost.close_tax 即卖出印花税率；透传给 broker(仅对股票生效)。
+        broker.set_stamp_duty_rate(order_cost.close_tax)
 
     def set_slippage(self, slippage: PriceRelatedSlippage) -> None:
         self._require_context()._broker.set_slippage_fn(make_slippage(slippage.rate))  # noqa: SLF001

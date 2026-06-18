@@ -21,6 +21,9 @@ class Position:
     amount: int = 0
     avg_cost: float = 0.0
     current_price: float = 0.0
+    # 当日买入、受 T+1 限制当日不可卖出的股数。每个交易日开盘前由引擎清零
+    # (隔夜后解锁)，股票买入成交时累加。ETF/指数不设限，恒为 0。
+    locked_amount: int = 0
 
     @property
     def market_value(self) -> float:
@@ -34,6 +37,11 @@ class Position:
     @property
     def total_amount(self) -> int:
         return self.amount
+
+    @property
+    def closeable_amount(self) -> int:
+        """可平仓(可卖出)数量 = 总持仓 - 当日锁定 (聚宽同名字段语义)。"""
+        return max(0, self.amount - self.locked_amount)
 
     @property
     def pnl(self) -> float:
@@ -73,6 +81,7 @@ class Portfolio:
     positions: PositionBook = field(default_factory=PositionBook)
     total_commission: float = 0.0
     total_slippage: float = 0.0
+    total_tax: float = 0.0
     trade_count: int = 0
 
     @property
@@ -120,6 +129,7 @@ class Order:
     filled_amount: int = 0
     commission: float = 0.0
     slippage: float = 0.0
+    tax: float = 0.0
 
 
 # ---------------------------------------------------------------------------

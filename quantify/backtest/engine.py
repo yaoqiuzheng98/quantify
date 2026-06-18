@@ -353,6 +353,12 @@ class BacktestEngine:
                 else:
                     data_proxy._current_idx[code] = -1  # noqa: SLF001
 
+            # T+1 解锁：新交易日开盘前，把上一日买入而锁定的股数全部释放为可卖。
+            # 个股买入时 broker 累加 locked_amount，隔夜即可卖出，符合 A 股 T+1。
+            # ETF/指数不会被锁定(broker 按资产类型判定)，此处清零对其无副作用。
+            for pos in portfolio.positions.values():
+                pos.locked_amount = 0
+
             # 份额折算/送转股处理(对齐聚宽 use_real_price=True 的动态复权账户处理)：
             # 在除权日开盘前，按 split_ratio 调整持仓数量与成本价，使持仓市值在除权
             # 前后保持连续(只反映当日真实涨跌)。除权不涉及现金，与分红现金链路相互
@@ -441,6 +447,7 @@ class BacktestEngine:
             initial_cash=self.initial_cash,
             commission=portfolio.total_commission,
             slippage=portfolio.total_slippage,
+            tax=portfolio.total_tax,
             trade_count=portfolio.trade_count,
         )
 
