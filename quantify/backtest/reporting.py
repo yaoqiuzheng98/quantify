@@ -98,16 +98,17 @@ def _sharpe_ratio(
 def _sortino_ratio(
     daily_returns: np.ndarray, annual_return_pct: float, risk_free_rate: float = 0.04
 ) -> float | None:
+    # 聚宽口径:索提诺 = (年化收益 − 无风险利率) / 下行波动率。
+    # 下行波动率 σ_d = sqrt( (1/N) · Σ min(R_i − R_target, 0)^2 ) · sqrt(250)，
+    # 其中 R_target = 日无风险利率，**分母除以全部 N 天**(不是仅下行天数)，年化用 250。
     if len(daily_returns) == 0:
         return None
     daily_risk_free = risk_free_rate / 250
-    downside_returns = daily_returns[daily_returns < daily_risk_free] - daily_risk_free
-    if len(downside_returns) == 0:
-        return None
-    downside_volatility = float(np.sqrt(np.mean(np.square(downside_returns))) * np.sqrt(250))
+    downside = np.minimum(daily_returns - daily_risk_free, 0.0)
+    downside_volatility = float(np.sqrt(np.mean(np.square(downside))) * np.sqrt(250))
     if downside_volatility <= 0:
         return None
-    return (annual_return_pct / 100) / downside_volatility
+    return (annual_return_pct / 100 - risk_free_rate) / downside_volatility
 
 
 def _downside_volatility(values: np.ndarray) -> float | None:
