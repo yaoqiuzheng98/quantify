@@ -14,7 +14,7 @@ Quantify 是一个 **Python** 量化研究框架。它从 **Tushare Pro** 拉取
 
 - **全量数据接入**：A 股日线/周月线、复权因子、每日指标、三大财报、财务指标、分红送股、沪深港通、融资融券、技术指标、ETF、指数成分/权重、行业分类、宏观经济、期货——**50+ 张数据表**，覆盖量化研究全场景
 - **幂等增量同步**：所有写入走 `INSERT ... ON DUPLICATE KEY UPDATE`，重复运行安全，断点续跑无需额外操作；时间序列阶段自动查库内最大日期仅拉增量
-- **事件驱动回测**：逐 bar 模拟，聚宽 `initialize`/`handle_data` 策略 API 兼容，支持 ETF/个股/指数多资产，前复权历史价格、真实开盘价撮合、佣金/滑点/分红/送转、A 股印花税/T+1/涨跌停全建模
+- **事件驱动回测**：逐 bar 模拟，聚宽 `initialize`/`handle_data` 策略 API 兼容，支持 ETF/个股/指数多资产，前复权历史价格、真实开盘价撮合、佣金/滑点/分红/送转、A 股印花税/T+1/涨跌停全建模，并提供聚宽同款 `get_index_stocks` 指数成分点到点选股
 - **Streamlit 工作台**：代码编辑器 + 策略持久化 + 参数面板 + 交互式收益/回撤/持仓图表 + 20+ 指标卡片
 - **Tushare 客户端**：直连镜像站 HTTP 接口（不走 SDK）、滑动窗口限流、指数退避重试、并发硬上限 2 路的线程池安全调用
 
@@ -322,12 +322,21 @@ print(result.metrics.to_llm_prompt())
 | `context.portfolio.cash / .total_value` | 现金/总资产 |
 | `context.portfolio.positions[code]` | 持仓（amount, avg_cost, value, pnl） |
 
+### 选股 API（指数成分，聚宽同款）
+
+| 函数 | 说明 |
+|------|------|
+| `get_index_stocks(index, date=None)` | 按 `date`（缺省=当前回测日）返回指数**点到点**成分股（聚宽格式代码），数据来自 `index_weight` 表的最近一期月度快照。沪深300 = `000300.XSHG` |
+
+> ⚠️ 本地引擎只加载传入引擎的 `ts_codes`，而 `get_index_stocks` 运行时才动态选股。跑指数成分策略需把**成分并集**预加载为 `ts_codes`：直接调引擎时用 `quantify.backtest.universe.index_constituents_union(index, start, end)`（见 `strategies/run_loop17.py`）；Streamlit 工作台会自动识别源码里的 `get_index_stocks` 并把指数展开为成分并集后加载。完整示例见 `strategies/loop17_cross_sectional_reg.py`（沪深300 截面滚动回归选股）。
+
 ### 关键行为
 
 - **前复权**：`attribute_history()` 返回的价格按复权因子前复权，避免分红除息跳空污染计算
 - **真实成交价**：订单按当天真实开盘价 + 滑点撮合
 - **整手取整**：100 份一手，不足一手忽略
 - **多资产路由**：按代码自动识别 ETF / 个股 / 指数，分别走对应数据表，一次回测可混合 ETF 与个股（指数仅作基准）
+- **指数成分股票池**：`get_index_stocks("000300.XSHG", date)` 读 `index_weight` 表取**点到点**成分，按调仓日动态选股，避免幸存者偏差（详见上文「选股 API」）
 - **ETF 分红/拆股**：登记日锁定持仓、派息日现金入账；份额折算基于 accum_nav/unit_nav 比率自动检测并调整持仓
 - **个股送转/分红**：送转比例取 `dividend.stk_div`（纯送转，比 adj_factor 跳变更准），现金分红取税后 `cash_div`
 - **A 股摩擦（仅个股生效，ETF/指数不受影响）**：卖出印花税 0.05% 单边、T+1（当日买入次日才可卖）、涨跌停（开盘涨停拒买/跌停拒卖，±10% 主板口径）
@@ -382,6 +391,8 @@ quantify dashboard --port 8501
 
 功能：策略代码编辑器（ACE）、策略库 CRUD（MySQL `strategy` 表）、回测参数面板（基准/日期/现金/佣金/滑点）、交互式收益曲线/日盈亏/回撤/持仓占比图、20+ 指标卡片、交易明细表。
 
+> 标的自动从源码解析加载。若策略用了 `get_index_stocks`（指数成分选股），工作台会把源码里的指数代码展开为回测区间内的**成分并集**后加载（如沪深300 约 300–500 只）；此类多股策略首次运行预加载较多、稍慢，且初始资金需设得足够大（Top-N 等权下每只至少买得起一手）。
+
 ---
 
 ## 技术栈
@@ -433,11 +444,13 @@ quantify/
 │   │   ├── metrics.py            # 绩效指标计算
 │   │   ├── reporting.py          # 报表生成
 │   │   ├── codes.py              # 代码格式转换
-│   │   └── examples.py           # 内置示例策略
+│   │   ├── examples.py           # 内置示例策略
+│   │   └── universe.py           # 指数成分查询（get_index_stocks 后端，读 index_weight）
 │   ├── webapp/
 │   │   └── app.py                # Streamlit 工作台
 │   └── utils/
 │       └── logger.py             # Loguru 配置
+├── strategies/                   # 聚宽风格策略脚本 + 运行器（如 loop17 沪深300 截面滚动回归）
 ├── logs/                         # 日志输出
 ├── pyproject.toml
 └── README.md
