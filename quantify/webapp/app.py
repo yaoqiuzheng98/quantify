@@ -342,48 +342,6 @@ def _turnover_frame(report: dict[str, Any]) -> pd.DataFrame:
     return frame.loc[:, ["date", "turnover"]].copy()
 
 
-# 持仓占比图最多单列显示的标的数；超出则按峰值占比取前 N、其余并入「其他」。
-# 持有数百只股票的策略（如沪深300 截面选股）若每只画一条堆叠 bar，会产生上千条
-# Plotly trace，叠加 hovermode="x unified" 会直接卡死浏览器，故在此封顶。
-_MAX_POSITION_SERIES = 15
-
-
-def _cap_position_series(frame: pd.DataFrame, code_cols: list[str]) -> pd.DataFrame:
-    """标的过多时只保留峰值占比最高的前 N 只，其余汇总成一列「其他」。"""
-    if len(code_cols) <= _MAX_POSITION_SERIES:
-        return frame
-    peak = frame[code_cols].max().sort_values(ascending=False)
-    keep = list(peak.index[:_MAX_POSITION_SERIES])
-    others = [col for col in code_cols if col not in keep]
-    capped = frame[["date", *keep]].copy()
-    if others:
-        capped["其他"] = frame[others].sum(axis=1)
-    return capped
-
-
-def _position_ratio_frame(report: dict[str, Any]) -> pd.DataFrame:
-    """每日各标的持仓占总资产比例(宽表:每列一个标的代码)。
-
-    标的数超过 ``_MAX_POSITION_SERIES`` 时只单列展示峰值占比最高的前 N 只，其余
-    并入「其他」——避免成百上千条堆叠 bar trace 拖垮前端（回测跑完后卡死的根因）。
-    """
-    curves = report.get("curves", [])
-    if not curves:
-        return pd.DataFrame(columns=["date"])
-    rows: list[dict[str, Any]] = []
-    for point in curves:
-        row: dict[str, Any] = {"date": point["date"]}
-        row.update(point.get("position_ratios_pct") or {})
-        rows.append(row)
-    frame = pd.DataFrame(rows)
-    frame["date"] = pd.to_datetime(frame["date"])
-    code_cols = [col for col in frame.columns if col != "date"]
-    if code_cols:
-        frame[code_cols] = frame[code_cols].fillna(0.0)
-        frame = _cap_position_series(frame, code_cols)
-    return frame
-
-
 def _trades_frame(report: dict[str, Any]) -> pd.DataFrame:
     records = [
         {
@@ -503,32 +461,6 @@ def _bar_chart(frame: pd.DataFrame, value_col: str, title: str, yaxis_title: str
     return fig
 
 
-def _position_ratio_chart(frame: pd.DataFrame) -> go.Figure:
-    code_cols = [col for col in frame.columns if col != "date"]
-    fig = go.Figure()
-    for code in code_cols:
-        fig.add_trace(
-            go.Bar(
-                x=frame["date"],
-                y=frame[code],
-                name=code,
-                hovertemplate="%{x|%Y-%m-%d}<br>" + escape(code) + " %{y:.2f}%<extra></extra>",
-            )
-        )
-    fig.update_layout(
-        title="每日持仓比例",
-        barmode="stack",
-        hovermode="x unified",
-        template="plotly_white",
-        legend={"orientation": "h", "yanchor": "bottom", "y": 1.02, "xanchor": "right", "x": 1},
-        margin={"l": 10, "r": 10, "t": 70, "b": 10},
-        yaxis_title="持仓比例",
-        yaxis={"ticksuffix": "%"},
-        xaxis=_time_xaxis(),
-    )
-    return fig
-
-
 def _drawdown_chart(frame: pd.DataFrame) -> go.Figure:
     fig = go.Figure(
         go.Scatter(
@@ -641,7 +573,6 @@ def _render_result(result: BacktestResult) -> None:
 
     st.plotly_chart(_bar_chart(_daily_pnl_frame(report), "daily_pnl", "每日盈亏", "金额"), width="stretch")
     st.plotly_chart(_bar_chart(_turnover_frame(report), "turnover", "每日成交", "成交额"), width="stretch")
-    st.plotly_chart(_position_ratio_chart(_position_ratio_frame(report)), width="stretch")
     st.plotly_chart(_drawdown_chart(_drawdown_frame(report)), width="stretch")
 
     trades_df = _trades_frame(report)

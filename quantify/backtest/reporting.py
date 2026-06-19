@@ -404,21 +404,6 @@ def build_report_payload(
     drawdown = wealth / np.maximum.accumulate(wealth) - 1
     turnover = trade_turnover_series(dates, trades)
 
-    # 每日持仓市值占总资产比例(持仓比例),总资产为 0 时记为 0。
-    if "position_value" in equity_df.columns:
-        position_value = equity_df["position_value"].astype(float).to_numpy()
-    else:
-        position_value = np.zeros_like(values)
-    with np.errstate(divide="ignore", invalid="ignore"):
-        position_ratio = np.where(values != 0, position_value / values, 0.0)
-
-    # 每日各标的持仓市值(用于堆叠展示各标的占总资产比例)。
-    per_code_values: list[dict[str, float]] = (
-        list(equity_df["position_values"])
-        if "position_values" in equity_df.columns
-        else [{} for _ in range(len(values))]
-    )
-
     benchmark_return = pd.Series(np.nan, index=dates)
     benchmark_curve = benchmark_return_series(dates, benchmark_df)
     if benchmark_curve is not None:
@@ -429,12 +414,6 @@ def build_report_payload(
         benchmark_value = _as_float(benchmark_return.iloc[index])
         excess_return = strategy_return[index] - benchmark_value if benchmark_value is not None else None
         benchmark_equity = initial_value * (1 + benchmark_value) if benchmark_value is not None else None
-        total_value = values[index]
-        code_values = per_code_values[index] if index < len(per_code_values) else {}
-        position_ratios = {
-            code: _as_float((market_value / total_value * 100) if total_value else 0.0)
-            for code, market_value in (code_values or {}).items()
-        }
         curves.append(
             {
                 "date": curve_date.strftime("%Y-%m-%d"),
@@ -452,10 +431,6 @@ def build_report_payload(
                 "drawdown_pct": _as_float(drawdown[index] * 100),
                 "daily_pnl": _as_float(daily_pnl[index]),
                 "turnover": _as_float(turnover.iloc[index]),
-                "position_value": _as_float(position_value[index]),
-                "position_ratio": _as_float(position_ratio[index]),
-                "position_ratio_pct": _as_float(position_ratio[index] * 100),
-                "position_ratios_pct": position_ratios,
             }
         )
 

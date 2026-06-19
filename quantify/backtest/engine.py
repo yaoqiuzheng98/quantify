@@ -57,14 +57,14 @@ def _group_to_bars(df: pd.DataFrame) -> dict[str, list[Bar]]:
     return bars
 
 
-def _position_values_at_close(
+def _position_value_at_close(
     portfolio: Portfolio,
     all_bars: dict[str, list[Bar]],
     next_indices: dict[str, int],
     bar_date: date,
-) -> dict[str, float]:
-    """当日收盘时各标的的持仓市值(不含现金),按标的代码拆分。"""
-    values: dict[str, float] = {}
+) -> float:
+    """当日收盘时的持仓市值(不含现金)。"""
+    total = 0.0
     for code, position in portfolio.positions.items():
         if position.amount == 0:
             continue
@@ -77,27 +77,8 @@ def _position_values_at_close(
         # yet applied to the holding — using it would distort the equity curve.
         if 0 <= idx < len(bars) and bars[idx].date == bar_date:
             price = bars[idx].close
-        values[code] = position.amount * price
-    return values
-
-
-def _position_value_at_close(
-    portfolio: Portfolio,
-    all_bars: dict[str, list[Bar]],
-    next_indices: dict[str, int],
-    bar_date: date,
-) -> float:
-    """当日收盘时的持仓市值(不含现金)。"""
-    return sum(_position_values_at_close(portfolio, all_bars, next_indices, bar_date).values())
-
-
-def _portfolio_value_at_close(
-    portfolio: Portfolio,
-    all_bars: dict[str, list[Bar]],
-    next_indices: dict[str, int],
-    bar_date: date,
-) -> float:
-    return portfolio.cash + _position_value_at_close(portfolio, all_bars, next_indices, bar_date)
+        total += position.amount * price
+    return total
 
 
 def _schedule_fire_dates(unified_dates: list, period: str) -> dict[int, set]:
@@ -424,14 +405,11 @@ class BacktestEngine:
                     dividend_entitlements[event] = position.amount
 
             # Record daily snapshot
-            position_values = _position_values_at_close(portfolio, all_bars, next_indices, bar_date)
-            position_value = sum(position_values.values())
+            position_value = _position_value_at_close(portfolio, all_bars, next_indices, bar_date)
             equity_records.append(
                 {
                     "date": bar_date,
                     "value": portfolio.cash + position_value,
-                    "position_value": position_value,
-                    "position_values": position_values,
                 }
             )
 
