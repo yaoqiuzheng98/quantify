@@ -102,18 +102,25 @@ def _compute_split_ratios_from_nav(group: pd.DataFrame) -> list[float]:
     """Per-bar ETF share-split ratios for one code (1.0 on non-split days).
 
     A split (份额折算) is detected on the day ``adj_factor`` jumps relative to the
-    previous trading day. The magnitude is taken from the jump in
-    ``accum_nav/unit_nav`` (记为 au), which reflects pure share folding and excludes
-    the cash-dividend contamination present in ``adj_factor``. Because ``fund_nav``
-    and ``fund_daily`` can be misaligned by one day, the ratio compares the au value
-    on the jump day against a stable au value two trading days earlier. Falls back to
-    the ``adj_factor`` jump ratio when net-asset-value data is missing.
+    previous trading day. The ``adj_factor`` jump conflates cash dividends and share
+    splits; the pure split component is isolated by dividing the ``adj_factor`` jump
+    ratio by the ``accum_nav/unit_nav`` (au) jump ratio — both move together for a
+    cash dividend, but only ``adj_factor`` moves for a pure share split. Because
+    ``fund_nav`` and ``fund_daily`` can be misaligned by one day, the au ratio
+    compares the value on the jump day against a stable value two trading days
+    earlier. Falls back to **1.0** (no split) when net-asset-value data is missing,
+    since the adj_factor jump alone cannot distinguish dividends from splits.
     """
     n = len(group)
     ratios = [1.0] * n
     adj = group["adj_factor"].tolist()
     unit = group["unit_nav"].tolist()
     accum = group["accum_nav"].tolist()
+
+    # Threshold: residual market-movement noise in au makes adj_ratio/au_ratio
+    # deviate slightly from 1.0 even for pure cash dividends. Anything within
+    # ±0.5% is treated as "no split" (ratio = 1.0).
+    _NOISE_THRESHOLD = 0.005
 
     def _au(i: int) -> float | None:
         try:
@@ -130,13 +137,16 @@ def _compute_split_ratios_from_nav(group: pd.DataFrame) -> list[float]:
         cur_adj = float(adj[i]) if adj[i] else 1.0
         if prev_adj <= 0 or abs(cur_adj - prev_adj) < 1e-9:
             continue
+        adj_ratio = cur_adj / prev_adj
         au_now = _au(i)
         au_ref = _au(max(0, i - 2))
-        if au_now is not None and au_ref is not None and au_ref > 0:
-            ratio = au_now / au_ref
+        if au_now is not None and au_ref is not None and au_ref > 0 and au_now > 0:
+            au_ratio = au_now / au_ref
+            ratio = adj_ratio / au_ratio
         else:
-            ratio = cur_adj / prev_adj
-        if ratio > 0 and abs(ratio - 1.0) > 1e-6:
+            # No NAV data to distinguish dividend from split — assume no split.
+            ratio = 1.0
+        if ratio > 0 and abs(ratio - 1.0) > _NOISE_THRESHOLD:
             ratios[i] = ratio
     return ratios
 

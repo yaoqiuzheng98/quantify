@@ -162,6 +162,7 @@ class Broker:
         return order
 
     def _round_to_lot(self, amount: int) -> int:
+        """Truncate to lot size (对齐聚宽 order 取整口径:向下取整)."""
         if self._lot_size <= 1:
             return amount
         sign = 1 if amount > 0 else -1

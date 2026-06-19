@@ -298,12 +298,27 @@ class Context:
         return self.order(ts_code, amount)
 
     def order_target_value(self, ts_code: str, target_value: float) -> Order | None:
+        """对齐聚宽口径:先算 diff=(target_value-current_value)/price,再向零取整到 lot。
+
+        聚宽 order_target_value 的计算方式是:
+        1. delta = int((target_value - current_value) / price)  # int() 向零截断
+        2. delta = int(delta / lot_size) * lot_size  # 向零取整到 lot
+
+        不能用"先算 target_shares 再减持仓"——对卖出时 floor() 向负无穷截断会多卖 100 股
+        (如 delta=-1990, floor→-2000, 而 int()→-1900)。
+        """
         ts_code = to_tushare_code(ts_code)
-        current_value = self.portfolio.get_position(ts_code).market_value
-        diff = target_value - current_value
-        if abs(diff) < 1:
+        price = self._broker.current_price(ts_code)
+        if price is None or price <= 0:
             return None
-        return self.order_value(ts_code, diff)
+        pos = self.portfolio.get_position(ts_code)
+        lot_size = self._broker._lot_size  # noqa: SLF001
+        current_value = pos.amount * price
+        delta = int((target_value - current_value) / price)
+        delta = int(delta / lot_size) * lot_size
+        if delta == 0:
+            return None
+        return self.order(ts_code, delta)
 
     def order_target_percent(self, ts_code: str, pct: float) -> Order | None:
         ts_code = to_tushare_code(ts_code)
