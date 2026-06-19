@@ -14,8 +14,8 @@ import pandas as pd
 class TradeStats:
     """已平仓交易统计(round-trip，聚宽口径)。
 
-    胜负与盈亏比均按**毛盈亏**(卖出额 − 买入成本，不扣佣金/印花税/滑点、不含分红)
-    统计，与聚宽"盈亏比 = 总盈利额 / 总亏损额"一致。
+    胜负与盈亏比均按**毛盈亏**统计，聚宽口径：分红除息日调低 avg_cost
+    (减去每股分红)，卖出时用调整后的成本算盈亏。
     """
 
     profit_count: int
@@ -28,16 +28,29 @@ class TradeStats:
     avg_loss_pct: float | None  # 平均每笔亏损交易的毛收益率(%，负数)
 
 
-def realized_trade_stats(trades: list[Any] | None) -> TradeStats:
+def realized_trade_stats(
+    trades: list[Any] | None,
+    dividends: list[Any] | None = None,
+) -> TradeStats:
     """按平仓交易(round-trip)统计盈亏，对齐聚宽口径。
 
-    用平均成本法跟踪每只标的持仓，卖出时按比例结算一笔平仓盈亏。胜负归类和盈亏比
-    都用**毛盈亏**(卖出额 − 买入成本，不扣任何费用、不含分红)，与聚宽
-    "盈亏比 = 总盈利额 / 总亏损额(按已实现交易)"一致。命令行(`metrics`)与 Web 报表
-    (`reporting`)共用此函数，确保胜率/盈亏比/盈利次数两处同源同值。
+    用平均成本法跟踪每只标的持仓，卖出时按比例结算一笔平仓盈亏。聚宽在
+    分红除息日将 ``avg_cost`` 调低 ``div_cash``（每股分红），这会降低后续
+    卖出的成本基、提高已实现盈亏。本函数在遍历交易时，遇到除息日即对持仓
+    成本做同等调整，确保盈亏比与聚宽一致。命令行(``metrics``)与 Web 报表
+    (``reporting``)共用此函数，确保胜率/盈亏比/盈利次数两处同源同值。
     """
     if not trades:
         return TradeStats(0, 0, None, None, None, None, None, None)
+
+    # Build (ts_code) -> [(ex_date, div_cash)] map for cost-basis adjustment.
+    div_by_code: dict[str, list[tuple[Any, float]]] = {}
+    for d in dividends or []:
+        code = getattr(d, "ts_code", None)
+        ex_date = getattr(d, "ex_date", None) or getattr(d, "record_date", None)
+        div_cash = getattr(d, "div_cash", None)
+        if code and ex_date and div_cash:
+            div_by_code.setdefault(code, []).append((ex_date, float(div_cash)))
 
     positions: dict[str, dict[str, float]] = {}
     profits: list[float] = []
@@ -56,6 +69,18 @@ def realized_trade_stats(trades: list[Any] | None) -> TradeStats:
         if not code or amount == 0 or price is None:
             continue
         pos = positions.setdefault(code, {"amount": 0.0, "cost": 0.0})
+
+        # Apply pending dividend cost-basis adjustments (JQ adjusts avg_cost on ex_date).
+        trade_date = getattr(trade, "filled_date", None)
+        if code in div_by_code and pos["amount"] > 0 and trade_date is not None:
+            remaining: list[tuple[Any, float]] = []
+            for ex_date, div_cash in div_by_code[code]:
+                if pd.Timestamp(trade_date) >= pd.Timestamp(ex_date):
+                    pos["cost"] -= div_cash * pos["amount"]
+                else:
+                    remaining.append((ex_date, div_cash))
+            div_by_code[code] = remaining
+
         current = int(pos["amount"])
         if amount > 0:
             pos["amount"] = current + amount
@@ -192,6 +217,7 @@ def compute_metrics(
     trade_count: int = 0,
     risk_free_rate: float = 0.04,
     trades: list[Any] | None = None,
+    dividends: list[Any] | None = None,
 ) -> BacktestMetrics:
     """Derive a full suite of performance statistics from a daily equity curve.
 
@@ -256,7 +282,8 @@ def compute_metrics(
     calmar = annual_return_pct / max_dd_pct if max_dd_pct > 0 else 0.0
 
     # win / loss —— 按平仓交易(round-trip)统计，对齐聚宽口径，与 Web 报表同源。
-    stats = realized_trade_stats(trades)
+    # 聚宽在除息日调低 avg_cost (减去每股分红)，影响已实现盈亏，需传入分红事件。
+    stats = realized_trade_stats(trades, dividends)
     win_rate = (stats.win_rate * 100) if stats.win_rate is not None else 0.0
     avg_win = stats.avg_win_pct if stats.avg_win_pct is not None else 0.0
     avg_loss = stats.avg_loss_pct if stats.avg_loss_pct is not None else 0.0

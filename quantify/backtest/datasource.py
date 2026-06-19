@@ -57,12 +57,17 @@ OHLCV_COLUMNS = [
 
 @dataclass(frozen=True)
 class DividendEvent:
-    """A cash dividend entitlement (per-share cash paid on ``pay_date``)."""
+    """A cash dividend entitlement (per-share cash paid on ``pay_date``).
+
+    ``ex_date`` is the ex-dividend date — the day JQ adjusts ``avg_cost`` down
+    by ``div_cash``, which affects realized P&L for subsequent sells.
+    """
 
     ts_code: str
     record_date: date
     pay_date: date
     div_cash: float
+    ex_date: date | None = None
 
 
 def _empty_ohlcv() -> pd.DataFrame:
@@ -233,6 +238,7 @@ class EtfDataSource(MarketDataSource):
                     EtfDividend.record_date,
                     EtfDividend.pay_date,
                     EtfDividend.div_cash,
+                    EtfDividend.ex_date,
                 )
                 .where(EtfDividend.ts_code.in_(ts_codes))
                 .where(EtfDividend.record_date >= start_date)
@@ -247,6 +253,7 @@ class EtfDataSource(MarketDataSource):
                 record_date=row.record_date,
                 pay_date=row.pay_date,
                 div_cash=float(row.div_cash),
+                ex_date=row.ex_date,
             )
             for row in rows
             if row.ts_code and row.record_date and row.pay_date and row.div_cash
@@ -406,6 +413,7 @@ class StockDataSource(MarketDataSource):
                     StockDividend.record_date,
                     StockDividend.pay_date,
                     StockDividend.cash_div,
+                    StockDividend.ex_date,
                 )
                 .where(StockDividend.ts_code.in_(ts_codes))
                 .where(StockDividend.div_proc.like("实施%"))
@@ -422,6 +430,7 @@ class StockDataSource(MarketDataSource):
                 record_date=row.record_date,
                 pay_date=row.pay_date,
                 div_cash=float(row.cash_div),
+                ex_date=row.ex_date,
             )
             for row in rows
             if row.ts_code and row.record_date and row.pay_date and row.cash_div

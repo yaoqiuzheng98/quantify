@@ -428,6 +428,7 @@ class BacktestEngine:
             tax=portfolio.total_tax,
             trade_count=portfolio.trade_count,
             trades=broker.trades,
+            dividends=dividend_events,
         )
 
         log.info("Backtest complete.")
