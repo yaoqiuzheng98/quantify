@@ -29,6 +29,15 @@ class DividendPayment:
     cash: float
 
 
+@dataclass(frozen=True)
+class SplitEvent:
+    """A share split/折算 on ``ex_date`` multiplying share count by ``ratio``."""
+
+    ts_code: str
+    ex_date: date
+    ratio: float
+
+
 def _group_to_bars(df: pd.DataFrame) -> dict[str, list[Bar]]:
     """Convert a DataFrame of OHLCV rows into per-code Bar lists.
 
@@ -253,6 +262,13 @@ class BacktestEngine:
             dividends_by_record.setdefault(event.record_date, []).append(event)
             dividends_by_pay.setdefault(event.pay_date, []).append(event)
 
+        # Extract share-split events from bars (split_ratio != 1.0).
+        split_events: list[SplitEvent] = []
+        for code, bars in all_bars.items():
+            for bar in bars:
+                if abs(bar.split_ratio - 1.0) > 1e-6:
+                    split_events.append(SplitEvent(ts_code=code, ex_date=bar.date, ratio=bar.split_ratio))
+
         # 4. Build unified date index (sorted union of all bar dates)
         unified_dates = sorted(
             {
@@ -429,6 +445,7 @@ class BacktestEngine:
             trade_count=portfolio.trade_count,
             trades=broker.trades,
             dividends=dividend_events,
+            splits=split_events,
         )
 
         log.info("Backtest complete.")

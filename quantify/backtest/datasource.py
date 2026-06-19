@@ -103,28 +103,34 @@ class MarketDataSource(ABC):
         """Return a benchmark close*adj series; carries ``attrs['base_value']``."""
 
 
-def _compute_split_ratios_from_nav(group: pd.DataFrame) -> list[float]:
+def _compute_split_ratios_from_nav(
+    group: pd.DataFrame,
+    div_map: dict[str, float] | None = None,
+) -> list[float]:
     """Per-bar ETF share-split ratios for one code (1.0 on non-split days).
 
-    A split (份额折算) is detected on the day ``adj_factor`` jumps relative to the
-    previous trading day. The ``adj_factor`` jump conflates cash dividends and share
-    splits; the pure split component is isolated by dividing the ``adj_factor`` jump
-    ratio by the ``accum_nav/unit_nav`` (au) jump ratio — both move together for a
-    cash dividend, but only ``adj_factor`` moves for a pure share split. Because
-    ``fund_nav`` and ``fund_daily`` can be misaligned by one day, the au ratio
-    compares the value on the jump day against a stable value two trading days
-    earlier. Falls back to **1.0** (no split) when net-asset-value data is missing,
-    since the adj_factor jump alone cannot distinguish dividends from splits.
+    On an ex-date, ``adj_factor`` jumps. The jump conflates cash dividends and
+    share splits (份额折算). To isolate the pure split component:
+
+    * **Cash dividend** (no split): ``adj_ratio ≈ prev_close / (prev_close − div_cash)``.
+      The split component is ``adj_ratio / dividend_ratio ≈ 1.0``.
+    * **Share split** (no dividend): ``au_ratio = (accum_nav/unit_nav) jump`` gives
+      the exact split factor (e.g. 2.0 for a 2-for-1 split), more accurate than
+      ``adj_ratio`` which includes market movement on the ex-date. Falls back to
+      ``adj_ratio`` when NAV data is unavailable.
+    * **Combined**: ``split_ratio = adj_ratio / dividend_ratio``.
+
+    The ``div_map`` maps ``ex_date`` strings to per-share ``div_cash``. Falls back
+    to **1.0** when the residual is within ±0.5 % of 1.0 (noise).
     """
     n = len(group)
     ratios = [1.0] * n
     adj = group["adj_factor"].tolist()
-    unit = group["unit_nav"].tolist()
-    accum = group["accum_nav"].tolist()
+    close = group["close"].tolist()
+    dates = group["date"].tolist()
+    unit = group["unit_nav"].tolist() if "unit_nav" in group.columns else [None] * n
+    accum = group["accum_nav"].tolist() if "accum_nav" in group.columns else [None] * n
 
-    # Threshold: residual market-movement noise in au makes adj_ratio/au_ratio
-    # deviate slightly from 1.0 even for pure cash dividends. Anything within
-    # ±0.5% is treated as "no split" (ratio = 1.0).
     _NOISE_THRESHOLD = 0.005
 
     def _au(i: int) -> float | None:
@@ -143,14 +149,23 @@ def _compute_split_ratios_from_nav(group: pd.DataFrame) -> list[float]:
         if prev_adj <= 0 or abs(cur_adj - prev_adj) < 1e-9:
             continue
         adj_ratio = cur_adj / prev_adj
-        au_now = _au(i)
-        au_ref = _au(max(0, i - 2))
-        if au_now is not None and au_ref is not None and au_ref > 0 and au_now > 0:
-            au_ratio = au_now / au_ref
-            ratio = adj_ratio / au_ratio
+
+        # Check for a cash dividend on this date.
+        date_str = str(dates[i])[:10] if dates[i] is not None else ""
+        div_cash = (div_map or {}).get(date_str, 0.0)
+
+        if div_cash > 0:
+            prev_close = float(close[i - 1]) if close[i - 1] and close[i - 1] > 0 else 0.0
+            if prev_close > 0:
+                dividend_ratio = prev_close / (prev_close - div_cash)
+                ratio = adj_ratio / dividend_ratio
+            else:
+                ratio = 1.0
         else:
-            # No NAV data to distinguish dividend from split — assume no split.
-            ratio = 1.0
+            # No dividend → any adj_factor jump is a pure share split.
+            # adj_factor ratio matches JQ's behavior (includes ex-date market move).
+            ratio = adj_ratio
+
         if ratio > 0 and abs(ratio - 1.0) > _NOISE_THRESHOLD:
             ratios[i] = ratio
     return ratios
@@ -163,7 +178,7 @@ class EtfDataSource(MarketDataSource):
         if not ts_codes:
             return _empty_ohlcv()
         start_str = start_date.strftime("%Y%m%d")
-        end_str = end_date.strftime("%Y%m%d")
+        end_str = end_str = end_date.strftime("%Y%m%d")
         with session_scope() as sess:
             rows = sess.execute(
                 select(
@@ -220,10 +235,23 @@ class EtfDataSource(MarketDataSource):
         df["unit_nav"] = pd.to_numeric(df["unit_nav"], errors="coerce")
         df["accum_nav"] = pd.to_numeric(df["accum_nav"], errors="coerce")
         df = df.sort_values(["ts_code", "date"]).reset_index(drop=True)
+
+        # Load dividend ex-dates to separate cash dividends from share splits.
+        div_map: dict[str, dict[str, float]] = {}
+        with session_scope() as sess:
+            div_rows = sess.execute(
+                select(EtfDividend.ts_code, EtfDividend.ex_date, EtfDividend.div_cash)
+                .where(EtfDividend.ts_code.in_(ts_codes))
+                .where(EtfDividend.ex_date >= start_str)
+                .where(EtfDividend.ex_date <= end_str)
+            ).all()
+        for r in div_rows:
+            div_map.setdefault(r.ts_code, {})[str(r.ex_date)] = float(r.div_cash)
+
         parts = []
-        for _code, group in df.groupby("ts_code"):
+        for code, group in df.groupby("ts_code"):
             group = group.copy()
-            group["split_ratio"] = _compute_split_ratios_from_nav(group)
+            group["split_ratio"] = _compute_split_ratios_from_nav(group, div_map.get(code, {}))
             parts.append(group)
         df = pd.concat(parts, ignore_index=True)
         return _finalize_ohlcv(df)
