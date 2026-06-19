@@ -297,24 +297,6 @@ def build_report_items(
     ]
 
 
-def trade_turnover_series(equity_dates: pd.DatetimeIndex, trades: list[Any] | None) -> pd.Series:
-    """Return signed daily traded value for filled orders."""
-    turnover = pd.Series(0.0, index=equity_dates)
-    if not trades:
-        return turnover
-
-    for trade in trades:
-        filled_date = getattr(trade, "filled_date", None)
-        filled_price = getattr(trade, "filled_price", None)
-        amount = getattr(trade, "amount", 0)
-        if filled_date is None or filled_price is None or amount == 0:
-            continue
-        trade_date = pd.Timestamp(filled_date)
-        if trade_date in turnover.index:
-            turnover.loc[trade_date] += amount * float(filled_price)
-    return turnover
-
-
 def _trade_records(trades: list[Any] | None) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     # 按平均成本法跟踪每个标的的持仓,卖出时结算平仓盈亏(扣除买入费用分摊
@@ -399,10 +381,6 @@ def build_report_payload(
     values = equity_df["value"].astype(float).to_numpy()
     initial_value = float(values[0])
     strategy_return = values / initial_value - 1
-    daily_pnl = np.diff(values, prepend=values[0])
-    wealth = values / initial_value
-    drawdown = wealth / np.maximum.accumulate(wealth) - 1
-    turnover = trade_turnover_series(dates, trades)
 
     benchmark_return = pd.Series(np.nan, index=dates)
     benchmark_curve = benchmark_return_series(dates, benchmark_df)
@@ -427,10 +405,6 @@ def build_report_payload(
                 ),
                 "excess_return": _as_float(excess_return),
                 "excess_return_pct": _as_float(excess_return * 100 if excess_return is not None else None),
-                "drawdown": _as_float(drawdown[index]),
-                "drawdown_pct": _as_float(drawdown[index] * 100),
-                "daily_pnl": _as_float(daily_pnl[index]),
-                "turnover": _as_float(turnover.iloc[index]),
             }
         )
 

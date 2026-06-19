@@ -321,27 +321,6 @@ def _returns_frame(report: dict[str, Any]) -> pd.DataFrame:
     return returns
 
 
-def _drawdown_frame(report: dict[str, Any]) -> pd.DataFrame:
-    frame = _payload_frame(report)
-    if frame.empty:
-        return pd.DataFrame(columns=["date", "drawdown"])
-    return pd.DataFrame({"date": frame["date"], "drawdown": frame["drawdown_pct"]})
-
-
-def _daily_pnl_frame(report: dict[str, Any]) -> pd.DataFrame:
-    frame = _payload_frame(report)
-    if frame.empty:
-        return pd.DataFrame(columns=["date", "daily_pnl"])
-    return frame.loc[:, ["date", "daily_pnl"]].copy()
-
-
-def _turnover_frame(report: dict[str, Any]) -> pd.DataFrame:
-    frame = _payload_frame(report)
-    if frame.empty:
-        return pd.DataFrame(columns=["date", "turnover"])
-    return frame.loc[:, ["date", "turnover"]].copy()
-
-
 def _trades_frame(report: dict[str, Any]) -> pd.DataFrame:
     records = [
         {
@@ -439,51 +418,6 @@ def _line_chart(frame: pd.DataFrame) -> go.Figure:
     return fig
 
 
-def _bar_chart(frame: pd.DataFrame, value_col: str, title: str, yaxis_title: str) -> go.Figure:
-    colors = np.where(frame[value_col].astype(float) >= 0, "#8aa851", "#7e6aa0")
-    fig = go.Figure(
-        go.Bar(
-            x=frame["date"],
-            y=frame[value_col],
-            marker_color=colors,
-            hovertemplate="%{x|%Y-%m-%d}<br>%{y:,.2f}<extra></extra>",
-        )
-    )
-    fig.add_hline(y=0, line_color="#444", line_width=1)
-    fig.update_layout(
-        title=title,
-        hovermode="x unified",
-        template="plotly_white",
-        margin={"l": 10, "r": 10, "t": 70, "b": 10},
-        yaxis_title=yaxis_title,
-        xaxis=_time_xaxis(),
-    )
-    return fig
-
-
-def _drawdown_chart(frame: pd.DataFrame) -> go.Figure:
-    fig = go.Figure(
-        go.Scatter(
-            x=frame["date"],
-            y=frame["drawdown"],
-            name="回撤",
-            mode="lines",
-            fill="tozeroy",
-            line={"color": "#ff7f0e", "width": 1.2},
-            hovertemplate="%{x|%Y-%m-%d}<br>回撤 %{y:.2f}%<extra></extra>",
-        )
-    )
-    fig.update_layout(
-        title="回撤曲线",
-        hovermode="x unified",
-        template="plotly_white",
-        margin={"l": 10, "r": 10, "t": 70, "b": 10},
-        yaxis_title="回撤",
-        xaxis=_time_xaxis(),
-    )
-    return fig
-
-
 def _metric_value_class(value: Any) -> str:
     if isinstance(value, int | float | np.integer | np.floating) and np.isfinite(value):
         if value > 0:
@@ -570,10 +504,6 @@ def _render_result(result: BacktestResult) -> None:
 
     returns = _returns_frame(report)
     st.plotly_chart(_line_chart(returns), width="stretch")
-
-    st.plotly_chart(_bar_chart(_daily_pnl_frame(report), "daily_pnl", "每日盈亏", "金额"), width="stretch")
-    st.plotly_chart(_bar_chart(_turnover_frame(report), "turnover", "每日成交", "成交额"), width="stretch")
-    st.plotly_chart(_drawdown_chart(_drawdown_frame(report)), width="stretch")
 
     trades_df = _trades_frame(report)
     st.subheader("交易明细")
