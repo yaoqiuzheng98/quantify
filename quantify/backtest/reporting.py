@@ -7,8 +7,6 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from .metrics import realized_trade_stats
-
 
 def _clean_value(value: Any) -> Any:
     if isinstance(value, dict):
@@ -87,14 +85,6 @@ def _max_drawdown_info(curve: np.ndarray, dates: pd.DatetimeIndex) -> tuple[floa
     return float(drawdown[trough_idx] * 100), period
 
 
-def _sharpe_ratio(
-    annual_return_pct: float, annual_volatility: float | None, risk_free_rate: float = 0.04
-) -> float | None:
-    if annual_volatility is None or annual_volatility <= 0:
-        return None
-    return (annual_return_pct / 100 - risk_free_rate) / annual_volatility
-
-
 def _sortino_ratio(
     daily_returns: np.ndarray, annual_return_pct: float, risk_free_rate: float = 0.04
 ) -> float | None:
@@ -109,14 +99,6 @@ def _sortino_ratio(
     if downside_volatility <= 0:
         return None
     return (annual_return_pct / 100 - risk_free_rate) / downside_volatility
-
-
-def _downside_volatility(values: np.ndarray) -> float | None:
-    downside = np.minimum(values, 0.0)
-    if len(downside) == 0:
-        return None
-    volatility = float(np.sqrt(np.mean(np.square(downside))) * np.sqrt(250))
-    return volatility if volatility > 0 else None
 
 
 def benchmark_return_series(
@@ -189,27 +171,24 @@ def build_report_items(
     trades: list[Any] | None = None,
     dividends: list[Any] | None = None,
 ) -> list[tuple[str, str, float | None]]:
-    """Return JoinQuant-style metrics for interactive report views."""
-    del metrics
-    if equity_df.empty:
+    """Return JoinQuant-style metrics for interactive report views.
+
+    策略侧指标(收益/年化/夏普/波动率/回撤/胜率/盈亏比等)一律从传入的 ``metrics``
+    对象取值,与 ``compute_metrics`` / ``to_llm_prompt`` **同源**,确保 Web 与 LLM
+    两端数值完全一致。基准相关指标(超额收益/alpha/beta/信息比率等)和最大回撤区间、
+    索提诺比率、日胜率等 Web 独有项在此函数内补充计算。
+    """
+    del trades, dividends
+    if equity_df.empty or metrics is None:
         return []
 
     values = equity_df["value"].astype(float).to_numpy()
-    strategy_daily = _daily_returns(values, base_value=values[0])
-    trading_days = len(values)
     dates = pd.DatetimeIndex(pd.to_datetime(equity_df["date"]))
+    strategy_daily = _daily_returns(values, base_value=values[0])
 
-    strategy_return = values[-1] / values[0] - 1
-    annual_return = _annualized_return(strategy_return, trading_days)
-    strategy_volatility = _annualized_volatility(strategy_daily)
-    sharpe = _sharpe_ratio(annual_return, strategy_volatility)
-    max_drawdown, max_drawdown_period = _max_drawdown_info(values / values[0], dates)
-    sortino = _sortino_ratio(strategy_daily, annual_return)
-    _trade_stats = realized_trade_stats(trades)
-    profit_count = _trade_stats.profit_count
-    loss_count = _trade_stats.loss_count
-    trade_win_rate = _trade_stats.win_rate
-    profit_loss_ratio = _trade_stats.profit_loss_ratio
+    max_drawdown_pct = metrics.max_drawdown_pct
+    _, max_drawdown_period = _max_drawdown_info(values / values[0], dates)
+    sortino = _sortino_ratio(strategy_daily, metrics.annual_return_pct)
 
     benchmark_total_return = None
     benchmark_annual = None
@@ -225,14 +204,14 @@ def build_report_items(
     benchmark_curve = benchmark_return_series(dates, benchmark_df)
     if benchmark_curve is not None:
         benchmark_total_return = float(benchmark_curve.iloc[-1])
-        benchmark_annual = _annualized_return(benchmark_total_return, trading_days)
+        benchmark_annual = _annualized_return(benchmark_total_return, metrics.trading_days)
         benchmark_daily = benchmark_daily_return_series(dates, benchmark_df)
         benchmark_volatility = (
             _annualized_volatility(benchmark_daily) if benchmark_daily is not None else None
         )
         if benchmark_daily is not None:
             alpha, beta = _compute_alpha_beta(
-                strategy_daily, benchmark_daily, annual_return, benchmark_annual
+                strategy_daily, benchmark_daily, metrics.annual_return_pct, benchmark_annual
             )
         benchmark_wealth = (1 + benchmark_curve).to_numpy(dtype=float)
         strategy_wealth = values / values[0]
@@ -246,7 +225,7 @@ def build_report_items(
         excess_mean = float(np.mean(excess_daily) * 100) if len(excess_daily) > 0 else None
         excess_max_drawdown, _ = _max_drawdown_info(excess_curve, dates)
         excess_volatility = _annualized_volatility(excess_daily)
-        excess_annual = _annualized_return(excess_return, trading_days)
+        excess_annual = _annualized_return(excess_return, metrics.trading_days)
         # 超额收益夏普 = (超额年化收益 − 无风险利率) / 超额收益年化波动率(全波动，非下行)，
         # 对齐聚宽口径。无风险利率 4%，年化波动率用 250 交易日(见 _annualized_volatility)。
         excess_sharpe = (
@@ -255,7 +234,7 @@ def build_report_items(
             else None
         )
         information_ratio = (
-            ((annual_return - benchmark_annual) / 100) / excess_volatility
+            ((metrics.annual_return_pct - benchmark_annual) / 100) / excess_volatility
             if excess_volatility is not None and excess_volatility > 0
             else None
         )
@@ -269,8 +248,8 @@ def build_report_items(
             daily_win_rate = float(np.mean(strategy_daily > 0))
 
     return [
-        ("策略收益", _format_pct(strategy_return * 100), strategy_return),
-        ("年化收益", _format_pct(annual_return), annual_return),
+        ("策略收益", _format_pct(metrics.total_return_pct), metrics.total_return_pct),
+        ("年化收益", _format_pct(metrics.annual_return_pct), metrics.annual_return_pct),
         ("超额收益", _format_pct(excess_return * 100 if excess_return is not None else None), excess_return),
         (
             "基准收益",
@@ -278,21 +257,29 @@ def build_report_items(
             benchmark_total_return,
         ),
         ("阿尔法", _format_float(alpha), alpha),
-        ("贝塔", _format_float(beta), None),
-        ("夏普比率", _format_float(sharpe), None),
-        ("胜率", _format_float(trade_win_rate), None),
-        ("盈亏比", _format_float(profit_loss_ratio), None),
-        ("最大回撤", _format_pct(max_drawdown), None),
-        ("索提诺比率", _format_float(sortino), None),
+        ("贝塔", _format_float(beta), beta),
+        ("夏普比率", _format_float(metrics.sharpe_ratio), metrics.sharpe_ratio),
+        ("胜率", _format_pct(metrics.win_rate_pct), metrics.win_rate_pct),
+        ("盈亏比", _format_float(metrics.profit_factor), metrics.profit_factor),
+        ("最大回撤", _format_pct(max_drawdown_pct), max_drawdown_pct),
+        ("索提诺比率", _format_float(sortino), sortino),
         ("日均超额收益", _format_pct(excess_mean), excess_mean),
-        ("超额收益最大回撤", _format_pct(excess_max_drawdown), None),
-        ("超额收益夏普比率", _format_float(excess_sharpe), None),
-        ("日胜率", _format_float(daily_win_rate), None),
-        ("盈利次数", _format_int(profit_count), None),
-        ("亏损次数", _format_int(loss_count), None),
-        ("信息比率", _format_float(information_ratio), None),
-        ("策略波动率", _format_float(strategy_volatility), None),
-        ("基准波动率", _format_float(benchmark_volatility), None),
+        ("超额收益最大回撤", _format_pct(excess_max_drawdown), excess_max_drawdown),
+        ("超额收益夏普比率", _format_float(excess_sharpe), excess_sharpe),
+        (
+            "日胜率",
+            _format_pct(daily_win_rate * 100 if daily_win_rate is not None else None),
+            daily_win_rate * 100 if daily_win_rate is not None else None,
+        ),
+        ("盈利次数", _format_int(metrics.profit_count), metrics.profit_count),
+        ("亏损次数", _format_int(metrics.loss_count), metrics.loss_count),
+        ("信息比率", _format_float(information_ratio), information_ratio),
+        ("策略波动率", _format_pct(metrics.volatility_pct), metrics.volatility_pct),
+        (
+            "基准波动率",
+            _format_pct(benchmark_volatility * 100 if benchmark_volatility is not None else None),
+            benchmark_volatility * 100 if benchmark_volatility is not None else None,
+        ),
         ("最大回撤区间", max_drawdown_period, None),
     ]
 
