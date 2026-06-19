@@ -162,12 +162,17 @@ class Broker:
         return order
 
     def _round_to_lot(self, amount: int) -> int:
-        """Truncate to lot size (对齐聚宽 order 取整口径:向下取整)."""
+        """Round buy orders to lot size; sells allow odd lots (A 股可卖零股).
+
+        A 股买入必须为 100 股整数倍，但**卖出允许零股**（送转后持仓常非整手）。
+        聚宽 ``order``/``order_target_value`` 同此口径：买取整、卖不取整。
+        """
         if self._lot_size <= 1:
             return amount
-        sign = 1 if amount > 0 else -1
-        lots = abs(amount) // self._lot_size
-        return sign * lots * self._lot_size
+        if amount < 0:
+            return amount  # sell: allow odd lots
+        lots = amount // self._lot_size
+        return lots * self._lot_size
 
     def _round_price(self, price: float) -> float:
         if self._price_tick <= 0:

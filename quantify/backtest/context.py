@@ -304,6 +304,10 @@ class Context:
         1. delta = int((target_value - current_value) / price)  # int() 向零截断
         2. delta = int(delta / lot_size) * lot_size  # 向零取整到 lot
 
+        **特例**: ``target_value == 0``（清仓）时聚宽不做 lot 取整，直接卖出全部持仓
+        （含送转产生的零股），避免残留零股持仓。参见聚宽文档"要卖出全部股票时,
+        可以使用 order_target_value(security, 0), 不需要考虑零股问题"。
+
         不能用"先算 target_shares 再减持仓"——对卖出时 floor() 向负无穷截断会多卖 100 股
         (如 delta=-1990, floor→-2000, 而 int()→-1900)。
         """
@@ -314,6 +318,9 @@ class Context:
         pos = self.portfolio.get_position(ts_code)
         lot_size = self._broker._lot_size  # noqa: SLF001
         current_value = pos.amount * price
+        if target_value == 0 and pos.amount > 0:
+            # 清仓特例:卖出全部持仓(含零股),不取整到 lot。
+            return self.order(ts_code, -pos.amount)
         delta = int((target_value - current_value) / price)
         delta = int(delta / lot_size) * lot_size
         if delta == 0:
