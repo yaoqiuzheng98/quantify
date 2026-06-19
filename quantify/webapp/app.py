@@ -15,7 +15,8 @@ import streamlit as st
 from sqlalchemy import select
 
 from quantify.backtest import BacktestEngine, BacktestResult
-from quantify.backtest.codes import normalize_codes
+from quantify.backtest.codes import classify_asset, normalize_codes
+from quantify.backtest.universe import index_constituents_union
 from quantify.database.engine import session_scope
 from quantify.database.models import EtfDaily
 from quantify.database.strategy_store import (
@@ -72,6 +73,27 @@ def _extract_codes_from_source(strategy_source: str) -> list[str]:
     # 归一化为 Tushare 格式并去重：.XSHG/.XSHE 与 .SH/.SZ 视为同一标的，
     # 避免源码注释里同时出现两种写法导致重复加载。
     return normalize_codes(list(seen))
+
+
+def _resolve_universe(strategy_source: str, start_date: date, end_date: date) -> list[str]:
+    """解析策略股票池；若策略用了 ``get_index_stocks``，把指数展开为区间内成分股并集。
+
+    本地引擎只加载传入的 ts_codes，而 ``get_index_stocks`` 在运行时才动态选股，
+    因此需先把指数(如 000300.XSHG)在 [start, end] 内的成分**并集**预加载进来；
+    策略内部仍按调仓日做点到点选股，选股口径不受影响。未用 ``get_index_stocks``
+    的策略行为完全不变。
+    """
+    codes = _extract_codes_from_source(strategy_source)
+    if "get_index_stocks" not in strategy_source:
+        return codes
+    resolved: list[str] = []
+    for code in codes:
+        if classify_asset(code) == "index":
+            members = index_constituents_union(code, start_date.isoformat(), end_date.isoformat())
+            resolved.extend(members or [code])
+        else:
+            resolved.append(code)
+    return normalize_codes(resolved)
 
 
 def _init_strategy_state() -> None:
@@ -695,7 +717,13 @@ def main() -> None:
     st.session_state["strategy_source"] = strategy_source
 
     preview_codes = _extract_codes_from_source(strategy_source)
-    if preview_codes:
+    if "get_index_stocks" in strategy_source:
+        idx = [c for c in preview_codes if classify_asset(c) == "index"]
+        idx_str = " ".join(f"`{c}`" for c in idx) if idx else "指数"
+        st.caption(
+            f"策略用 get_index_stocks 动态选股：运行时会把 {idx_str} 展开为回测区间内的成分股并集后加载。"
+        )
+    elif preview_codes:
         st.caption(f"将从源码加载 {len(preview_codes)} 个标的：" + " ".join(f"`{c}`" for c in preview_codes))
     else:
         st.caption("未在源码中解析到标的代码（形如 510300.XSHG / 159915.SZ）。")
@@ -712,7 +740,7 @@ def main() -> None:
                 st.error("数据库中没有任何 ETF 日线行情，无法压测加载。")
                 return
         else:
-            ts_codes = _extract_codes_from_source(strategy_source)
+            ts_codes = _resolve_universe(strategy_source, start_date, end_date)
             if not ts_codes:
                 st.error("未能从策略源码中解析到任何标的代码（形如 510300.XSHG / 159915.SZ）。")
                 return
