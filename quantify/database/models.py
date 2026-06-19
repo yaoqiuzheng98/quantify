@@ -1523,7 +1523,7 @@ class FundCompany(Base):
     province: Mapped[str | None] = mapped_column(String(32), comment="省份")
     city: Mapped[str | None] = mapped_column(String(32), comment="城市")
     address: Mapped[str | None] = mapped_column(String(256), comment="注册地址")
-    phone: Mapped[str | None] = mapped_column(String(32), comment="电话")
+    phone: Mapped[str | None] = mapped_column(String(128), comment="电话")
     office: Mapped[str | None] = mapped_column(String(256), comment="办公地址")
     website: Mapped[str | None] = mapped_column(String(256), comment="公司网址")
     chairman: Mapped[str | None] = mapped_column(String(64), comment="法人代表")

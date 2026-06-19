@@ -403,7 +403,9 @@ def fetch_stock(
     fetcher = StockFetcher()
 
     if normalized == "all":
-        fetcher.fetch_all(incremental=incremental, ts_codes=codes, skip=skip_set, include_skipped=include_skipped)
+        fetcher.fetch_all(
+            incremental=incremental, ts_codes=codes, skip=skip_set, include_skipped=include_skipped
+        )
         return
 
     if normalized == "basic":
@@ -639,14 +641,16 @@ def fetch_skipped(
     from quantify.database.models import FundCompany
     from quantify.database.upsert import upsert_dataframe
     from quantify.tushare_client.client import get_client
+    import pandas as pd
 
     # --- Stock skipped stages ---
     log.info("=== fetch skipped: stock stages ===")
     stock = StockFetcher()
     universe = stock._load_universe()  # noqa: SLF001
     if not universe:
-        log.warning("stock_basic is empty, run `quantify fetch stock basic` first, "
-                     "skipping stock skipped stages")
+        log.warning(
+            "stock_basic is empty, run `quantify fetch stock basic` first, skipping stock skipped stages"
+        )
     else:
         log.info(f"  stock universe: {len(universe)} codes")
         for name, method in [
@@ -671,8 +675,10 @@ def fetch_skipped(
     fut = FuturesFetcher()
     symbols = fut._load_symbols()  # noqa: SLF001
     if not symbols:
-        log.warning("fut_basic is empty, run `quantify fetch futures fut-basic` first, "
-                     "skipping futures skipped stages")
+        log.warning(
+            "fut_basic is empty, run `quantify fetch futures fut-basic` first, "
+            "skipping futures skipped stages"
+        )
     else:
         log.info(f"  futures symbols: {len(symbols)}")
         for name, method in [
@@ -688,6 +694,14 @@ def fetch_skipped(
     client = get_client()
     df = client.call("fund_company")
     if df is not None and not df.empty:
+        # Tushare setup_date/end_date may be YYYY(4)/YYYYMM(6)/YYYYMMDD(8);
+        # pad short forms to 8 chars (→ first of year/month), coerce bad to None.
+        for col in ("setup_date", "end_date"):
+            if col in df.columns:
+                s = df[col].astype(str).str.strip()
+                s = s.where(s.str.match(r"^\d{4,8}$"), None)
+                s = s.str.ljust(8, "0")
+                df[col] = pd.to_datetime(s, format="%Y%m%d", errors="coerce").dt.date
         n = upsert_dataframe(FundCompany, df)
         log.info(f"  fund_company: {n} rows")
     else:
