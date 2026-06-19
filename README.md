@@ -328,7 +328,7 @@ print(result.metrics.to_llm_prompt())
 |------|------|
 | `get_index_stocks(index, date=None)` | 按 `date`（缺省=当前回测日）返回指数**点到点**成分股（聚宽格式代码），数据来自 `index_weight` 表的最近一期月度快照。沪深300 = `000300.XSHG` |
 
-> ⚠️ 本地引擎只加载传入引擎的 `ts_codes`，而 `get_index_stocks` 运行时才动态选股。跑指数成分策略需把**成分并集**预加载为 `ts_codes`：直接调引擎时用 `quantify.backtest.universe.index_constituents_union(index, start, end)`（见 `strategies/run_loop17.py`）；Streamlit 工作台会自动识别源码里的 `get_index_stocks` 并把指数展开为成分并集后加载。完整示例见 `strategies/loop17_cross_sectional_reg.py`（沪深300 截面滚动回归选股）。
+> ⚠️ 本地引擎只加载传入引擎的 `ts_codes`，而 `get_index_stocks` 运行时才动态选股。跑指数成分策略需把**成分并集**预加载为 `ts_codes`：直接调引擎时用 `quantify.backtest.universe.index_constituents_union(index, start, end)` 取并集传入；Streamlit 工作台会自动识别源码里的 `get_index_stocks` 并把指数展开为成分并集后加载。完整示例已存入 `strategy` 表（沪深300 截面滚动回归选股）。
 
 ### 关键行为
 
@@ -393,6 +393,8 @@ quantify dashboard --port 8501
 
 > 标的自动从源码解析加载。若策略用了 `get_index_stocks`（指数成分选股），工作台会把源码里的指数代码展开为回测区间内的**成分并集**后加载（如沪深300 约 300–500 只）；此类多股策略首次运行预加载较多、稍慢，且初始资金需设得足够大（Top-N 等权下每只至少买得起一手）。
 
+> **策略落库约定**：策略统一以 `strategy` 表为权威来源——通过 Dashboard 的「保存策略」或 `quantify.database.strategy_store.save_strategy(name=, source=, description=)` 入库，由该表读取并运行。生成策略时如在本地临时创建了 `.py` 文件（仅用于编写/跑通验证），**入库后应删除**该临时文件，避免仓库与库内版本不一致。
+
 ---
 
 ## 技术栈
@@ -450,7 +452,6 @@ quantify/
 │   │   └── app.py                # Streamlit 工作台
 │   └── utils/
 │       └── logger.py             # Loguru 配置
-├── strategies/                   # 聚宽风格策略脚本 + 运行器（如 loop17 沪深300 截面滚动回归）
 ├── logs/                         # 日志输出
 ├── pyproject.toml
 └── README.md
