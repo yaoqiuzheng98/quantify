@@ -61,10 +61,11 @@ def _daily_returns(values: np.ndarray, base_value: float | None = None) -> np.nd
     return (values - previous) / previous
 
 
-def _annualized_return(total_return: float, trading_days: int) -> float:
-    if trading_days <= 0 or total_return <= -1:
+def _annualized_return(total_return: float, calendar_days: int) -> float:
+    """年化收益率(聚宽口径): (1 + 总收益率)^(365/回测自然天数) - 1"""
+    if calendar_days <= 0 or total_return <= -1:
         return 0.0
-    return ((1 + total_return) ** (250 / trading_days) - 1) * 100
+    return ((1 + total_return) ** (365 / calendar_days) - 1) * 100
 
 
 def _annualized_volatility(daily_returns: np.ndarray) -> float | None:
@@ -204,7 +205,7 @@ def build_report_items(
     benchmark_curve = benchmark_return_series(dates, benchmark_df)
     if benchmark_curve is not None:
         benchmark_total_return = float(benchmark_curve.iloc[-1])
-        benchmark_annual = _annualized_return(benchmark_total_return, metrics.trading_days)
+        benchmark_annual = _annualized_return(benchmark_total_return, metrics.calendar_days)
         benchmark_daily = benchmark_daily_return_series(dates, benchmark_df)
         benchmark_volatility = (
             _annualized_volatility(benchmark_daily) if benchmark_daily is not None else None
@@ -225,7 +226,7 @@ def build_report_items(
         excess_mean = float(np.mean(excess_daily) * 100) if len(excess_daily) > 0 else None
         excess_max_drawdown, _ = _max_drawdown_info(excess_curve, dates)
         excess_volatility = _annualized_volatility(excess_daily)
-        excess_annual = _annualized_return(excess_return, metrics.trading_days)
+        excess_annual = _annualized_return(excess_return, metrics.calendar_days)
         # 超额收益夏普 = (超额年化收益 − 无风险利率) / 超额收益年化波动率(全波动，非下行)，
         # 对齐聚宽口径。无风险利率 4%，年化波动率用 250 交易日(见 _annualized_volatility)。
         excess_sharpe = (

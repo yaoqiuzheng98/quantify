@@ -99,6 +99,7 @@ class BacktestMetrics:
     start_date: str
     end_date: str
     trading_days: int
+    calendar_days: int
     initial_cash: float
     final_value: float
     total_return_pct: float
@@ -124,6 +125,7 @@ class BacktestMetrics:
             "start_date": self.start_date,
             "end_date": self.end_date,
             "trading_days": self.trading_days,
+            "calendar_days": self.calendar_days,
             "initial_cash": round(self.initial_cash, 2),
             "final_value": round(self.final_value, 2),
             "total_return_pct": round(self.total_return_pct, 2),
@@ -150,7 +152,7 @@ class BacktestMetrics:
         d = self.to_dict()
         lines = [
             "=== Backtest Results ===",
-            f"Period: {d['start_date']} → {d['end_date']} ({d['trading_days']} trading days)",
+            f"Period: {d['start_date']} → {d['end_date']} ({d['trading_days']} trading days, {d['calendar_days']} calendar days)",
             f"Initial capital: ¥{d['initial_cash']:,.2f}",
             f"Final value:    ¥{d['final_value']:,.2f}",
             "",
@@ -213,6 +215,7 @@ def compute_metrics(
     start_date = pd.Timestamp(dates[0]).strftime("%Y-%m-%d")
     end_date = pd.Timestamp(dates[-1]).strftime("%Y-%m-%d")
     trading_days = len(values)
+    calendar_days = (pd.Timestamp(dates[-1]) - pd.Timestamp(dates[0])).days
 
     final_value = float(values[-1])
     total_return_pct = (final_value / initial_cash - 1) * 100
@@ -220,10 +223,9 @@ def compute_metrics(
     # daily returns
     daily_returns = np.diff(values) / values[:-1]
 
-    # annual (compounded) — JoinQuant 用 250 个交易日年化
-    years = trading_days / 250
-    if years > 0 and final_value > 0:
-        annual_return_pct = ((final_value / initial_cash) ** (1 / years) - 1) * 100
+    # 年化收益率(聚宽口径): (1 + 总收益率)^(365/回测自然天数) - 1
+    if calendar_days > 0 and final_value > 0:
+        annual_return_pct = ((final_value / initial_cash) ** (365 / calendar_days) - 1) * 100
     else:
         annual_return_pct = 0.0
 
@@ -242,11 +244,11 @@ def compute_metrics(
         else:
             current_duration = 0
 
-    # volatility (annualised with 250 trading days, JoinQuant 口径)
+    # volatility (annualised with 250 trading days)
     vol_pct = float(np.std(daily_returns) * 100 * math.sqrt(250)) if len(daily_returns) > 0 else 0.0
 
-    # Sharpe — 对齐聚宽：(年化收益率 - 无风险利率) / 年化波动率
-    # 分子用复利年化收益(非日收益算术均值)，年化波动率用 250 个交易日，无风险利率 4%。
+    # Sharpe (聚宽口径): (年化收益率 - 无风险利率) / 年化波动率
+    # 年化收益率用 365 自然日复利,年化波动率用 250 交易日,无风险利率 4%。
     annual_vol = np.std(daily_returns) * math.sqrt(250)
     sharpe = float((annual_return_pct / 100 - risk_free_rate) / annual_vol) if annual_vol > 0 else 0.0
 
@@ -267,6 +269,7 @@ def compute_metrics(
         start_date=start_date,
         end_date=end_date,
         trading_days=trading_days,
+        calendar_days=calendar_days,
         initial_cash=initial_cash,
         final_value=final_value,
         total_return_pct=total_return_pct,
@@ -296,6 +299,7 @@ def _empty_metrics(
         start_date="",
         end_date="",
         trading_days=0,
+        calendar_days=0,
         initial_cash=initial_cash,
         final_value=initial_cash,
         total_return_pct=0.0,
