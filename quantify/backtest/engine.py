@@ -469,10 +469,6 @@ class BacktestResult:
             self.dividends,
         )
 
-    def to_llm_dict(self) -> dict:
-        """Return the same canonical payload consumed by the Web dashboard."""
-        return self.to_report_dict()
-
 
 # ---------------------------------------------------------------------------
 # Helpers
