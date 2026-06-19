@@ -11,7 +11,8 @@ import pandas as pd
 from quantify.utils.logger import log
 
 from .broker import make_commission, make_slippage
-from .codes import to_tushare_code
+from .codes import to_joinquant_code, to_tushare_code
+from .universe import index_constituents
 
 
 @dataclass
@@ -97,6 +98,21 @@ class JoinQuantCompat:
         }
         return pd.DataFrame(data) if df else data
 
+    def get_index_stocks(self, index_symbol: str, date: Any = None) -> list[str]:
+        """JoinQuant-style index membership, backed by the ``index_weight`` table.
+
+        Returns constituent codes (JoinQuant format ``.XSHG``/``.XSHE``) for
+        ``index_symbol`` as of ``date``. When ``date`` is ``None`` the current
+        backtest date (``context.current_dt``) is used, matching JoinQuant's
+        point-in-time semantics; the latest available snapshot is used as a last
+        resort. Resolution falls back to the most recent monthly snapshot on or
+        before the requested date.
+        """
+        as_of = date
+        if as_of is None and self.context is not None:
+            as_of = getattr(self.context, "current_dt", None)
+        return [to_joinquant_code(code) for code in index_constituents(index_symbol, as_of)]
+
     def order(self, security: str, amount: int):
         return self._require_context().order(security, amount)
 
@@ -133,6 +149,7 @@ class JoinQuantCompat:
             "run_weekly": self.run_weekly,
             "run_monthly": self.run_monthly,
             "attribute_history": self.attribute_history,
+            "get_index_stocks": self.get_index_stocks,
             "order": self.order,
             "order_value": self.order_value,
             "order_target_value": self.order_target_value,

@@ -46,3 +46,9 @@ packages = ["quantify"]
 [tool.ruff]
 line-length = 110
 target-version = "py311"
+
+[tool.ruff.lint.per-file-ignores]
+# JoinQuant 策略脚本用 `from jqdata import *`：引擎注入的全局函数
+# (set_benchmark/order_target_value/get_index_stocks/...) 对静态分析不可见；
+# numpy/pandas 在 builtins 重绑之后导入(E402)亦是该写法的固有形态。
+"strategies/*.py" = ["E402", "F403", "F405"]
