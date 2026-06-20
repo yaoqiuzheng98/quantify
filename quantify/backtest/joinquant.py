@@ -15,6 +15,53 @@ from .codes import to_joinquant_code, to_tushare_code
 from .universe import index_constituents
 
 
+def _sw_industry_map(ts_codes: list[str], as_of: Any = None) -> dict[str, str]:
+    """Return {joinquant_code: sw_l1_name} for *ts_codes* (tushare format).
+
+    Uses the ``index_member_all`` table (SW 2021 classification).  When
+    *as_of* is given, only memberships active on that date are considered
+    (``in_date <= as_of`` and (``out_date`` is null or ``out_date > as_of``)).
+    Otherwise the latest ``is_new='Y'`` membership is used.
+    """
+    from sqlalchemy import text as sa_text
+
+    from quantify.database.engine import session_scope
+
+    if not ts_codes:
+        return {}
+
+    codes_str = "','".join(ts_codes)
+    if as_of is not None:
+        query = sa_text(
+            f"""
+            SELECT ts_code, l1_name
+            FROM index_member_all
+            WHERE ts_code IN ('{codes_str}')
+              AND in_date <= :asof
+              AND (out_date IS NULL OR out_date > :asof)
+            """
+        )
+        params = {"asof": as_of}
+    else:
+        query = sa_text(
+            f"""
+            SELECT ts_code, l1_name
+            FROM index_member_all
+            WHERE ts_code IN ('{codes_str}')
+              AND is_new = 'Y'
+              AND out_date IS NULL
+            """
+        )
+        params = {}
+
+    mapping: dict[str, str] = {}
+    with session_scope() as sess:
+        rows = sess.execute(query, params).fetchall()
+    for ts_code, l1_name in rows:
+        mapping[to_joinquant_code(ts_code)] = l1_name
+    return mapping
+
+
 @dataclass
 class OrderCost:
     open_tax: float = 0.0
@@ -113,6 +160,31 @@ class JoinQuantCompat:
             as_of = getattr(self.context, "current_dt", None)
         return [to_joinquant_code(code) for code in index_constituents(index_symbol, as_of)]
 
+    def get_industry(
+        self,
+        securities: list[str] | str,
+        date: Any = None,
+        level: str = "sw_l1",
+    ) -> dict[str, dict[str, str]]:
+        """JoinQuant-style ``get_industry`` backed by the SW classification table.
+
+        Returns ``{code: {"sw_l1": industry_name, "industry": industry_name}}``
+        for each requested security (JoinQuant format).  Only SW L1 is
+        supported; *level* is accepted for API compatibility but ignored.
+        """
+        if isinstance(securities, str):
+            securities = [securities]
+        ts_codes = [to_tushare_code(s) for s in securities]
+        as_of = date
+        if as_of is None and self.context is not None:
+            as_of = getattr(self.context, "current_dt", None)
+        mapping = _sw_industry_map(ts_codes, as_of=as_of)
+        result: dict[str, dict[str, str]] = {}
+        for jq_code in securities:
+            ind = mapping.get(jq_code, "未知")
+            result[jq_code] = {"sw_l1": ind, "industry": ind}
+        return result
+
     def order(self, security: str, amount: int):
         return self._require_context().order(security, amount)
 
@@ -150,6 +222,7 @@ class JoinQuantCompat:
             "run_monthly": self.run_monthly,
             "attribute_history": self.attribute_history,
             "get_index_stocks": self.get_index_stocks,
+            "get_industry": self.get_industry,
             "order": self.order,
             "order_value": self.order_value,
             "order_target_value": self.order_target_value,
