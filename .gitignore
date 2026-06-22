@@ -36,3 +36,4 @@ go.work.sum
 .venv
 
 output/*
+qlib_data
