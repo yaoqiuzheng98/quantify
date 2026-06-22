@@ -43,6 +43,7 @@ _SYSTEM_PROMPT = """你是一名顶尖的量化研究员，精通 Qlib 因子表
   - `Rank($close, 20)` 时序滚动百分位；`($close-Mean($close,20))/Std($close,20)` 标准分
   - 反转因子示例: `-1 * (($close - Ref($close, 20)) / Ref($close, 20))`
   - 量价背离示例: `Corr(Rank($close, 5), Rank($volume, 5), 10)`
+- ⚠️ 语法限制：**不支持一元负号 `-X`**（如 `-Delta(...)`、`-$amount` 会报 "bad operand type for unary -"）。需要取反/负向时一律写成 `-1 * X` 或 `0 - X`。
 
 # 因子设计要求
 1. 截面有效：用相对/标准化形式（比值、差分、滚动 zscore、rank），避免量纲依赖的裸价格。
@@ -95,7 +96,7 @@ class LLMClient:
         self._client = OpenAI(api_key=cfg.api_key, base_url=cfg.base_url, timeout=cfg.timeout)
 
     @retry(reraise=True, stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=20))
-    def _chat(self, messages: list[dict[str, str]]) -> str:
+    def _chat(self, messages: list[dict[str, str]]) -> tuple[str, str | None]:
         resp = self._client.chat.completions.create(
             model=self._cfg.model,
             messages=messages,
@@ -103,7 +104,8 @@ class LLMClient:
             max_tokens=self._cfg.max_tokens,
             response_format={"type": "json_object"},
         )
-        return resp.choices[0].message.content or ""
+        choice = resp.choices[0]
+        return (choice.message.content or ""), getattr(choice, "finish_reason", None)
 
     def generate_factors(
         self,
@@ -117,10 +119,48 @@ class LLMClient:
             {"role": "system", "content": _system_prompt()},
             {"role": "user", "content": _user_prompt(n, existing or [], feedback, extra_instruction)},
         ]
-        content = self._chat(messages)
+        content, finish_reason = self._chat(messages)
         candidates = parse_factor_response(content)
-        log.info(f"LLM proposed {len(candidates)} candidate factors")
+        if candidates:
+            log.info(f"LLM proposed {len(candidates)} candidate factors")
+        else:
+            # Surface *why* a round produced nothing instead of failing silently:
+            # empty content / truncation (finish_reason="length") / unexpected JSON shape.
+            preview = " ".join(content.split())[:500] or "<空回复>"
+            log.warning(
+                f"LLM 未产出可用候选（finish_reason={finish_reason}, content_len={len(content)}）。"
+                f"原始返回片段: {preview}"
+            )
+            if finish_reason == "length":
+                log.warning("回复因 max_tokens 截断（finish_reason=length），建议调大 LLM_MAX_TOKENS。")
         return candidates
+
+
+def _extract_factor_items(payload: object) -> list:
+    """Dig the list of factor dicts out of the assorted JSON shapes LLMs emit.
+
+    Handles ``[...]``, ``{"factors": [...]}`` and common aliases, plus one level
+    of nesting like ``{"data": {"factors": [...]}}``; finally falls back to the
+    first value that is itself a list of dict-like entries. This keeps a round
+    from silently yielding 0 candidates just because the model nested its output.
+    """
+    if isinstance(payload, list):
+        return payload
+    if not isinstance(payload, dict):
+        return []
+    for key in ("factors", "data", "results", "result", "candidates", "items"):
+        if key in payload:
+            nested = _extract_factor_items(payload[key])
+            if nested:
+                return nested
+    for value in payload.values():
+        if isinstance(value, list) and any(isinstance(v, dict) for v in value):
+            return value
+        if isinstance(value, dict):
+            nested = _extract_factor_items(value)
+            if nested:
+                return nested
+    return []
 
 
 def parse_factor_response(content: str) -> list[FactorCandidate]:
@@ -147,12 +187,7 @@ def parse_factor_response(content: str) -> list[FactorCandidate]:
             log.warning("LLM 回复 JSON 解析失败")
             return []
 
-    if isinstance(payload, dict):
-        items = payload.get("factors") or payload.get("data") or []
-    elif isinstance(payload, list):
-        items = payload
-    else:
-        items = []
+    items = _extract_factor_items(payload)
 
     candidates: list[FactorCandidate] = []
     for item in items:

@@ -87,3 +87,18 @@ class TestParseFactorResponse:
     def test_garbage_returns_empty(self):
         assert parse_factor_response("not json at all") == []
         assert parse_factor_response("") == []
+
+    def test_nested_data_factors(self):
+        content = '{"data": {"factors": [{"name": "x", "expression": "Mean($close, 5)"}]}}'
+        out = parse_factor_response(content)
+        assert len(out) == 1
+        assert out[0].expression == "Mean($close, 5)"
+
+    def test_alias_key(self):
+        content = '{"results": [{"name": "x", "expression": "$volume"}]}'
+        out = parse_factor_response(content)
+        assert len(out) == 1
+        assert out[0].expression == "$volume"
+
+    def test_empty_factors_array(self):
+        assert parse_factor_response('{"factors": []}') == []
