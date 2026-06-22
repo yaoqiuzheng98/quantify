@@ -14,7 +14,7 @@ from dataclasses import dataclass
 
 from quantify.factor.qlib_data import QLIB_FIELDS
 
-# Qlib Expression operators (element-wise + rolling + pair-wise + cross-section).
+# Qlib Expression operators (element-wise + rolling + pair-wise).
 # Mirrors qlib.data.ops; kept as a allowlist so typos surface early.
 QLIB_OPERATORS: frozenset[str] = frozenset(
     {
@@ -68,9 +68,12 @@ QLIB_OPERATORS: frozenset[str] = frozenset(
         # pair rolling (two series, window)
         "Corr",
         "Cov",
-        # cross-sectional
-        "CSRank",
-        "CSZScore",
+        # NOTE: Qlib evaluates each instrument's series independently, so there are
+        # NO cross-sectional operators (e.g. CSRank/CSZScore) — they are not in
+        # qlib.data.ops and fail at eval. Cross-sectional scoring is handled
+        # downstream by the evaluator (per-day IC/RankIC), which is invariant to
+        # per-day rank/affine transforms anyway, so wrapping is both impossible
+        # here and pointless for the metrics. Do not re-add them to this allowlist.
     }
 )
 
