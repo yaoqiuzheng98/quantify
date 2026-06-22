@@ -44,6 +44,12 @@ _SYSTEM_PROMPT = """你是一名顶尖的量化研究员，精通 Qlib 因子表
   - 反转因子示例: `-1 * (($close - Ref($close, 20)) / Ref($close, 20))`
   - 量价背离示例: `Corr(Rank($close, 5), Rank($volume, 5), 10)`
 - ⚠️ 语法限制：**不支持一元负号 `-X`**（如 `-Delta(...)`、`-$amount` 会报 "bad operand type for unary -"）。需要取反/负向时一律写成 `-1 * X` 或 `0 - X`。
+- 算子签名（**参数个数必须严格匹配**，否则报错 "takes N positional arguments"）:
+  - 一元 `Op($x)`: Abs, Log, Sign, Not
+  - 逐元素二元 `Op($x, $y)`: Add, Sub, Mul, Div, Power, Greater, Less, Gt, Ge, Lt, Le, Eq, Ne, And, Or
+  - 单序列+窗口 `Op($x, N)`: Mean, Sum, Std, Var, Max, Min, Med, Mad, Skew, Kurt, Delta, Ref, EMA, WMA, Slope, Rsquare, Resi, Rank, Count, IdxMax, IdxMin —— 注意 **WMA / Slope / Rsquare / Resi 都是单序列**，不接第二个序列、也不接权重（如残差 `Resi($x, N)`、加权均线 `WMA($x, N)`）
+  - 双序列+窗口 `Op($x, $y, N)`: **仅 Corr、Cov** 两个
+  - 三参数: `If($cond, $a, $b)`、`Quantile($x, N, qscore)`
 
 # 因子设计要求
 1. 截面有效：用相对/标准化形式（比值、差分、滚动 zscore、rank），避免量纲依赖的裸价格。

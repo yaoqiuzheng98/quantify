@@ -25,7 +25,6 @@ QLIB_OPERATORS: frozenset[str] = frozenset(
         "Power",
         "Mask",
         "Not",
-        "Exp",
         # binary arithmetic / logic helpers
         "Add",
         "Sub",
