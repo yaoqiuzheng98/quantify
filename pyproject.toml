@@ -32,6 +32,12 @@ web = [
     "plotly>=5.22.0",
     "streamlit-ace>=0.1.1",
 ]
+mining = [
+    "pyqlib>=0.9.5",
+    "alphalens-reloaded>=0.4.3",
+    "openai>=1.30.0",
+    "scipy>=1.13.0",
+]
 
 [project.scripts]
 quantify = "quantify.cli:app"

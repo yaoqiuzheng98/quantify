@@ -4,8 +4,9 @@
 
 - **Python 3.11.9**（通过 pyenv 锁定在 `.python-version`）
 - 虚拟环境：项目根目录的 `.venv/`
-- 安装命令：`pip install -e ".[dev]"`；Web 依赖：`pip install -e ".[web]"`
+- 安装命令：`pip install -e ".[dev]"`；Web 依赖：`pip install -e ".[web]"`；因子挖掘依赖：`pip install -e ".[mining]"`（Qlib + Alphalens + OpenAI SDK）
 - `.env` 文件**必须**放在项目根目录（已 gitignore），从 `.env.example` 复制
+- **☠️ 运行环境（重要）**：本仓在 **WSL** 下开发。run_command 的 shell 是 **bash（WSL）**，Cwd 传 Windows 路径 `D:\learning\quantify`（映射为 `/mnt/d/learning/quantify`）。Windows PATH 上的 `python` 是 3.14（无 ruff）；**可用解释器是 WSL venv `.venv/bin/python`**（Python 3.11.9，含 ruff/pytest）。`.venv/Scripts/*.exe`（Windows 端 shim）**已损坏**（指向 Linux pyenv 路径），**勿用**。质量检查：`.venv/bin/python -m ruff check quantify tests`、`-m ruff format`、`-m pytest tests/ -q`。
 
 ## 常用命令
 
@@ -37,6 +38,12 @@ quantify fetch all                                      # 一键拉全部数据�
 quantify fetch all --skip stock,industry,macro          # 跳过指定数据组
 quantify dashboard                                      # 启动 Streamlit 回测工作台
 quantify dashboard --port 8502                          # 指定端口
+quantify factor dump-data                               # 【因子挖掘前置】MySQL 个股日线(前复权) → Qlib .bin
+quantify factor dump-data --ts-code 600000.SH,000001.SZ # 仅导出指定标的(快速验证)
+quantify factor mine --universe 000300.SH --rounds 3 --per-round 5  # LLM 因子挖掘闭环
+quantify factor mine --min-ic 0.03 --min-icir 0.5       # 自定义入库门槛
+quantify factor eval "Mean(\$close,5)/Mean(\$close,20)" --universe 000300.SH  # 评估单个表达式
+quantify factor list                                    # 列出已入库因子
 quantify version                                        # 打印版本号
 ```
 
@@ -49,15 +56,16 @@ quantify version                                        # 打印版本号
 - 回测引擎：事件驱动逐 bar 模拟，兼容 JoinQuant 策略 API（`quantify/backtest/`）
 - Streamlit Web 回测工作台（`quantify/webapp/app.py`）
 - 策略持久化：`quantify/database/strategy_store.py` → `strategy` 表
+- **LLM 因子挖掘（`quantify/factor/`）**：DeepSeek 生成 Qlib 表达式 → 语法校验 → 质量过滤 → Qlib 求值 + Alphalens IC/分层评估 → 反馈闭环 → 入库 `factor_library`（详见下文「因子挖掘」）
 
 **尚未实现**：
-- `factor/`、`agent/`、`analysis/` 子包 —— 这些目录**还不存在**
+- `agent/`、`analysis/` 子包 —— 这些目录**还不存在**（`factor/` 已实现）
 
 ## 数据库
 
 - MySQL 8.0+，连接信息在 `.env` 中配置（前缀 `MYSQL_`）
 - `quantify db init` 先调用 `ensure_database_exists()`（CREATE DATABASE IF NOT EXISTS），再调用 `Base.metadata.create_all()`
-- **表名与 Tushare 接口名一一对应**：例如 `fund_basic` 表 ← `fund_basic` 接口，`fund_daily` 表 ← `fund_daily` 接口。例外：`strategy` 表是本地表（策略存储），`etf_share_size` 表来自 `etf_share_size` 接口（仅 ETF 份额规模，有别于 `fund_share` 的基金份额）。全部定义见 `quantify/database/models.py` 顶部注释。
+- **表名与 Tushare 接口名一一对应**：例如 `fund_basic` 表 ← `fund_basic` 接口，`fund_daily` 表 ← `fund_daily` 接口。例外：`strategy`（策略存储）、`factor_library`（LLM 挖掘出的因子库）是**本地表**（非 Tushare 接口）；`etf_share_size` 表来自 `etf_share_size` 接口（仅 ETF 份额规模，有别于 `fund_share` 的基金份额）。全部定义见 `quantify/database/models.py` 顶部注释。
 - 所有写入使用 `INSERT ... ON DUPLICATE KEY UPDATE`（幂等，可重复执行）
 - 标准写入路径为 `quantify/database/upsert.py` 中的 `upsert_dataframe()`
 - `EtfManager` 使用自增 `BigInteger` 主键 + 独立唯一索引 `(ts_code, name, begin_date)` —— 与其他表直接使用联合主键不同
@@ -90,6 +98,21 @@ quantify version                                        # 打印版本号
 - **⚠️ `order_target_value` 取整口径（对齐聚宽）**：聚宽 `order_target_value(code, value)` 的计算方式是**先算 diff 再向零取整到 lot**——`delta = int((target_value - current_value) / price)`（`int()` 向零截断），再 `delta = int(delta / lot) * lot`（同样向零截断到 lot）。**不能**先算 `target_shares = floor(target_value/price/lot)*lot` 再减持仓——对卖出时 `floor()` 向负无穷截断会多卖 100 股（如 delta=-1990, `int`→-1900, `floor`→-2000）。本地 `context.py` 的 `order_target_value` 已按聚宽口径实现。
 - **⚠️ 标的/基准代码格式**：聚宽**只认聚宽格式** `.XSHG`（上交所）/`.XSHE`（深交所），指数也是（沪深300 = `000300.XSHG`，不是 `000300.SH`）；本地引擎两种格式通吃（`to_tushare_code` 会把 `.XSHG/.XSHE` 转回 `.SH/.SZ`）。**统一规范：策略里所有代码（`universe`/`set_benchmark`/下单）一律写聚宽格式 `.XSHG/.XSHE`**，这样本地、聚宽都能跑；写 `.SH/.SZ` 则只有本地能跑、传聚宽报 `InvalidParam: 标的'xxx'不存在`。另注意 `attribute_history(...)["close"]` 返回的是日期索引的 Series，取值用 `.iloc[-1]`/`.iloc[0]`（按位置），**不能**用 `closes[-1]`（按标签会抛 `KeyError: -1`）。
 
+## 因子挖掘
+
+- 入口：`quantify/factor/pipeline.py` → `mine_factors(MiningConfig)`；CLI 子命令 `quantify factor dump-data|mine|eval|list`（定义在 `cli.py` 的 `factor_app`）。
+- **决策基线**：真·Qlib 数据层（导出 `.bin`）+ DeepSeek LLM。重依赖（`qlib`/`alphalens`/`openai`/`scipy`，装在 `[mining]` 可选组）**全部惰性导入**——`import quantify.factor` 及其子模块顶层都不 import 这些，只在函数体内 import，故不装 `[mining]` 也能 import 包、跑 `tests/test_factor.py`。
+- **数据导出（`factor/qlib_data.py`）**：`dump_qlib_data()` 读 MySQL `daily`+`adj_factor`+`daily_basic`，写**前复权** OHLC/vwap（`raw * adj_factor / 最新adj_factor`）+ 原始 volume/amount + `factor`(复权比例) + `turn/pe/pb/ps/total_mv/circ_mv` 到 Qlib `.bin`。
+  - **`.bin` 格式（字节级对齐 qlib `scripts/dump_bin.py`，务必勿改）**：`features/<code_lower>/<field_lower>.day.bin` = 小端 `float32` 数组，**首元素 = 该标的首日在全局日历中的索引**，其后是按日历切片 `[min,max]` reindex 的字段值（缺日 NaN）；`calendars/day.txt` 每行一个 `%Y-%m-%d`（排序去重）；`instruments/all.txt` 每行 `CODE\tSTART\tEND`（tab 分隔、CODE 大写）。
+  - **标的命名**：Tushare `600000.SH` ↔ Qlib `SH600000`（`ts_code_to_qlib`/`qlib_to_ts_code`）。
+  - `init_qlib()` 幂等初始化（`qlib.init(provider_uri, region=cn)`）；数据缺失会抛错提示先 `dump-data`。
+- **语法校验（`factor/validator.py`）**：`validate_expression()` 用字段/算子白名单（`QLIB_FIELDS`/`QLIB_OPERATORS`）+ 括号/非法字符检查，失败即给 LLM 精确报错，省下求值开销。LLM 新增字段/算子时要同步更新这两个白名单。
+- **评估（`factor/evaluator.py`）**：`evaluate_expression()` → `D.features([expr, "$close"])` 求值 → 统计质量门槛（覆盖率/常数）→ Alphalens `get_clean_factor_and_forward_returns` → **逐日横截面**算 IC(Pearson)+RankIC(Spearman)，`IR=mean/std`、`t=IR*sqrt(n)`、多空分层收益差、顶层换手率。默认门槛 `QualityThresholds`：`|IC|≥0.02`、`|IC_IR|≥0.3`、`|RankIC|≥0.02`、覆盖率≥0.6（CLI `--min-ic/--min-icir` 可调）。⚠️ Qlib 返回 `(instrument, datetime)` MultiIndex，alphalens 要 `(date, asset)`——已在 `_compute_factor_data` 里 `reorder_levels` 转换，改动注意别弄反。
+- **闭环（`factor/pipeline.py`）**：每轮把**现有因子库表达式 + 上一轮评估反馈文本**喂给 LLM → 去重(`_normalize_expr` 去空白)→ 校验 → 评估 → 通过门槛的 `save_factor()` 入库 `factor_library`（按因子名唯一 upsert，名字 = `slug(name)_sha1(expr)[:6]`）。反馈文本来自 `FactorEvaluation.to_feedback_text()`（含通过+未通过原因）。
+- **DB（`database/factor_store.py`）**：`FactorRecord` dataclass + `save_factor`/`list_factors`/`existing_expressions`/`delete_factor`；`factor_library` 表是**因子的唯一权威来源**（本地表，模型在 `models.py`）。
+- **LLM（`factor/llm.py`）**：`LLMClient` 用 openai SDK 指向 DeepSeek（`response_format=json_object` + tenacity 重试）；`parse_factor_response()` 容错解析（去 ```json 围栏、提取首个 JSON 对象）。prompt 在 `_SYSTEM_PROMPT`，要求 LLM 组合已有 alpha 或基于数据提假说，并产出严格 JSON。
+- **典型流程**：`pip install -e ".[mining]"` → `.env` 配 `LLM_API_KEY` → `quantify factor dump-data`（先 `fetch stock all`）→ `quantify factor mine --universe 000300.SH`。
+
 ## 并发
 
 - ETF 采集器使用 `ThreadPoolExecutor(max_workers=...)` 按代码并发调用 API，并发线程数由 `TUSHARE_MAX_WORKERS` 配置（默认 2）统一控制，5 个 fetcher 都读 `self.client.max_workers`，不再各自硬编码。镜像站 `jiaoch.site` 并发硬上限为 2（超过会触发"并发请求过多"）；官方 API 无并发墙，切到官方后可调大，但仍受每分钟频次限制约束
@@ -100,7 +123,7 @@ quantify version                                        # 打印版本号
 
 ## 配置
 
-- 全部配置通过 Pydantic Settings 加载，环境变量前缀：`TUSHARE_`、`MYSQL_`、`LOG_`
+- 全部配置通过 Pydantic Settings 加载，环境变量前缀：`TUSHARE_`、`MYSQL_`、`LOG_`、`LLM_`（因子挖掘 LLM，默认 DeepSeek：`LLM_API_KEY`/`LLM_BASE_URL=https://api.deepseek.com`/`LLM_MODEL=deepseek-chat`）、`QLIB_`（`QLIB_PROVIDER_URI` 留空回落 `<root>/qlib_data/cn_data`、`QLIB_REGION=cn`）
 - `get_settings()` 是 `@lru_cache(maxsize=1)` 缓存的单例
 - `TUSHARE_HTTP_URL` 默认指向**镜像站**（`http://jiaoch.site`），而非 Tushare 官方 API
 - `TUSHARE_HTTP_TIMEOUT` 控制单次 HTTP 请求超时（默认 30 秒）
@@ -147,4 +170,6 @@ quantify version                                        # 打印版本号
 
 ## 测试
 
-暂无测试。`ruff check . && ruff format --check .` 是当前唯一的代码质量检查。Ruff 配置在 `pyproject.toml` 中。
+- `tests/test_factor.py`：覆盖因子模块的**无重依赖**部分（`validator` 语法校验、`qlib_data` 代码转换、`llm.parse_factor_response` JSON 解析），不 import qlib/alphalens/openai，可直接 `.venv/bin/python -m pytest tests/ -q` 跑（当前 15 个用例）。
+- 涉及 Qlib 求值/Alphalens/DeepSeek 的端到端路径需真实数据+API，未纳入单测，改这些模块时手动用 `quantify factor eval "<expr>"` 验证。
+- 代码质量：`.venv/bin/python -m ruff check quantify tests && .venv/bin/python -m ruff format --check .`。Ruff 配置在 `pyproject.toml`（行宽 110，目标 py311）。

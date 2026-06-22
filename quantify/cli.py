@@ -17,8 +17,10 @@ from quantify.utils.logger import log
 app = typer.Typer(help="Quantify CLI", no_args_is_help=True)
 db_app = typer.Typer(help="Database management")
 fetch_app = typer.Typer(help="Data fetching tasks")
+factor_app = typer.Typer(help="LLM factor mining (Qlib + Alphalens)", no_args_is_help=True)
 app.add_typer(db_app, name="db")
 app.add_typer(fetch_app, name="fetch")
+app.add_typer(factor_app, name="factor")
 
 
 @app.command("dashboard")
@@ -708,6 +710,145 @@ def fetch_skipped(
         log.info("  fund_company: empty")
 
     log.info("=== fetch skipped: done ===")
+
+
+# ---------------------------------------------------------------------------
+# factor mining (LLM + Qlib + Alphalens)
+# ---------------------------------------------------------------------------
+def _parse_codes(value: Optional[str]) -> Optional[list[str]]:
+    if not value:
+        return None
+    return [c.strip() for c in value.split(",") if c.strip()]
+
+
+@factor_app.command("dump-data")
+def factor_dump_data(
+    ts_code: Optional[str] = typer.Option(
+        None, "--ts-code", help="逗号分隔的股票代码（默认 stock_basic 全市场）"
+    ),
+    start_date: Optional[str] = typer.Option(None, "--start-date", help="起始日 YYYY-MM-DD/YYYYMMDD"),
+    end_date: Optional[str] = typer.Option(None, "--end-date", help="结束日 YYYY-MM-DD/YYYYMMDD"),
+    provider_uri: Optional[str] = typer.Option(None, "--provider-uri", help="Qlib 输出目录（默认配置）"),
+) -> None:
+    """把 MySQL 个股日线（前复权）导出为 Qlib .bin 数据。"""
+    from quantify.factor.qlib_data import dump_qlib_data
+
+    summary = dump_qlib_data(
+        ts_codes=_parse_codes(ts_code),
+        start_date=start_date,
+        end_date=end_date,
+        provider_uri=provider_uri,
+    )
+    typer.echo(
+        f"导出完成：{summary.instruments} 只标的，{summary.calendar_days} 个交易日 -> {summary.provider_uri}"
+    )
+    typer.echo(f"字段：{', '.join(summary.fields)}")
+
+
+@factor_app.command("mine")
+def factor_mine(
+    rounds: int = typer.Option(3, "--rounds", help="LLM 迭代轮数"),
+    per_round: int = typer.Option(5, "--per-round", help="每轮生成候选因子数"),
+    universe: Optional[str] = typer.Option(None, "--universe", help="股票池：all / 指数代码(如 000300.SH)"),
+    start_date: Optional[str] = typer.Option(None, "--start-date", help="评估起始日"),
+    end_date: Optional[str] = typer.Option(None, "--end-date", help="评估结束日"),
+    periods: str = typer.Option("1,5,10", "--periods", help="前瞻收益周期，逗号分隔"),
+    quantiles: int = typer.Option(5, "--quantiles", help="分层数"),
+    min_ic: float = typer.Option(0.02, "--min-ic", help="最小 |IC| 门槛"),
+    min_icir: float = typer.Option(0.3, "--min-icir", help="最小 |IC_IR| 门槛"),
+    instruction: Optional[str] = typer.Option(None, "--instruction", help="给 LLM 的额外要求"),
+) -> None:
+    """运行 LLM 因子挖掘闭环，把通过校验的因子存入 factor_library。"""
+    from quantify.factor.evaluator import QualityThresholds
+    from quantify.factor.pipeline import MiningConfig, mine_factors
+
+    period_tuple = tuple(int(p) for p in periods.split(",") if p.strip())
+    config = MiningConfig(
+        rounds=rounds,
+        per_round=per_round,
+        universe=universe,
+        start_date=start_date,
+        end_date=end_date,
+        periods=period_tuple or (1, 5, 10),
+        quantiles=quantiles,
+        primary_period=period_tuple[0] if period_tuple else 1,
+        thresholds=QualityThresholds(min_abs_ic=min_ic, min_abs_icir=min_icir),
+        extra_instruction=instruction,
+    )
+    result = mine_factors(config)
+    typer.echo(f"=== 完成：评估 {result.n_evaluated} 个，入库 {result.n_passed} 个 ===")
+    for rec in result.saved:
+        typer.echo(f"  {rec.name}: IC={rec.ic_mean:.4f} IR={rec.icir:.4f}  {rec.expression}")
+
+
+@factor_app.command("eval")
+def factor_eval(
+    expression: str = typer.Argument(..., help="待评估的 Qlib 因子表达式"),
+    universe: Optional[str] = typer.Option(None, "--universe", help="股票池：all / 指数代码"),
+    start_date: Optional[str] = typer.Option(None, "--start-date", help="评估起始日"),
+    end_date: Optional[str] = typer.Option(None, "--end-date", help="评估结束日"),
+    periods: str = typer.Option("1,5,10", "--periods", help="前瞻收益周期"),
+    quantiles: int = typer.Option(5, "--quantiles", help="分层数"),
+    save: bool = typer.Option(False, "--save", help="通过门槛则存入因子库"),
+) -> None:
+    """评估单个因子表达式（手动测试用）。"""
+    from quantify.factor.evaluator import evaluate_expression, evaluation_window_default
+
+    if not start_date or not end_date:
+        ds, de = evaluation_window_default()
+        start_date = start_date or ds
+        end_date = end_date or de
+    period_tuple = tuple(int(p) for p in periods.split(",") if p.strip()) or (1, 5, 10)
+    evaluation = evaluate_expression(
+        expression,
+        universe=universe,
+        start_date=start_date,
+        end_date=end_date,
+        periods=period_tuple,
+        quantiles=quantiles,
+        primary_period=period_tuple[0],
+    )
+    typer.echo(evaluation.to_feedback_text())
+    if save and evaluation.passed:
+        from quantify.database.factor_store import FactorRecord, metrics_to_json, save_factor
+
+        rec = save_factor(
+            FactorRecord(
+                name=f"manual_{abs(hash(expression)) % 1_000_000}",
+                expression=expression,
+                universe=universe or "all",
+                periods=",".join(str(p) for p in period_tuple),
+                ic_mean=evaluation.ic_mean,
+                ic_std=evaluation.ic_std,
+                icir=evaluation.icir,
+                ic_tstat=evaluation.ic_tstat,
+                rank_ic_mean=evaluation.rank_ic_mean,
+                rank_icir=evaluation.rank_icir,
+                quantile_spread=evaluation.quantile_spread,
+                turnover=evaluation.turnover,
+                coverage=evaluation.coverage,
+                metrics_json=metrics_to_json(evaluation.to_dict()),
+            )
+        )
+        typer.echo(f"已入库：{rec.name}")
+
+
+@factor_app.command("list")
+def factor_list(
+    status: Optional[str] = typer.Option(None, "--status", help="按状态过滤，如 passed"),
+) -> None:
+    """列出因子库中已保存的因子。"""
+    from quantify.database.factor_store import list_factors
+
+    records = list_factors(status=status)
+    if not records:
+        typer.echo("因子库为空。先运行 `quantify factor mine`。")
+        return
+    typer.echo(f"共 {len(records)} 个因子：")
+    for rec in records:
+        ic = f"{rec.ic_mean:.4f}" if rec.ic_mean is not None else "NA"
+        ir = f"{rec.icir:.4f}" if rec.icir is not None else "NA"
+        typer.echo(f"  [{rec.id}] {rec.name}  IC={ic} IR={ir}  {rec.expression}")
 
 
 # ---------------------------------------------------------------------------

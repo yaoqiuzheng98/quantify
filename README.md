@@ -6,7 +6,7 @@
 [![MySQL](https://img.shields.io/badge/MySQL-8.0+-4479A1.svg)](https://www.mysql.com/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-Quantify 是一个 **Python** 量化研究框架。它从 **Tushare Pro** 拉取 A 股/ETF/指数/期货/行业/宏观全量日频数据，持久化到 **MySQL**，并提供**事件驱动逐 bar 回测引擎**（兼容聚宽策略 API）及 **Streamlit 回测工作台**。
+Quantify 是一个 **Python** 量化研究框架。它从 **Tushare Pro** 拉取 A 股/ETF/指数/期货/行业/宏观全量日频数据，持久化到 **MySQL**，并提供**事件驱动逐 bar 回测引擎**（兼容聚宽策略 API）、**Streamlit 回测工作台**，以及**基于 LLM + Qlib + Alphalens 的自动化因子挖掘流水线**。
 
 ---
 
@@ -16,6 +16,7 @@ Quantify 是一个 **Python** 量化研究框架。它从 **Tushare Pro** 拉取
 - **幂等增量同步**：所有写入走 `INSERT ... ON DUPLICATE KEY UPDATE`，重复运行安全，断点续跑无需额外操作；时间序列阶段自动查库内最大日期仅拉增量
 - **事件驱动回测**：逐 bar 模拟，聚宽 `initialize`/`handle_data` 策略 API 兼容，支持 ETF/个股/指数多资产，前复权历史价格、真实开盘价撮合、佣金/滑点/分红/送转、A 股印花税/T+1/涨跌停全建模，并提供聚宽同款 `get_index_stocks` 指数成分点到点选股
 - **Streamlit 工作台**：代码编辑器 + 策略持久化 + 参数面板 + 交互式收益/回撤/持仓图表 + 20+ 指标卡片
+- **LLM 因子挖掘**：DeepSeek 生成 Qlib 因子表达式 → 语法校验 → 统计质量过滤 → Alphalens IC/分层回测评估 → 评估反馈回灌 LLM 的**闭环迭代**，通过门槛的因子自动入库 `factor_library` 表
 - **Tushare 客户端**：直连镜像站 HTTP 接口（不走 SDK）、滑动窗口限流、指数退避重试、并发硬上限 2 路的线程池安全调用
 
 ---
@@ -42,6 +43,11 @@ Quantify 是一个 **Python** 量化研究框架。它从 **Tushare Pro** 拉取
 ┌──────────────────────────────────────────────────────────┐
 │              Web 工作台 (Streamlit Dashboard)              │
 │   策略编辑器 · 参数配置 · 交互式图表 · 指标卡片 · 策略持久化   │
+└─────────────────────┬────────────────────────────────────┘
+                       ↓
+┌──────────────────────────────────────────────────────────┐
+│            因子挖掘层 (LLM Factor Mining)                  │
+│  DeepSeek 生成 · Qlib 求值 · Alphalens 评估 · 闭环反馈入库   │
 └──────────────────────────────────────────────────────────┘
 ```
 
@@ -63,6 +69,7 @@ git clone <repo-url> && cd quantify
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"          # 核心依赖
 pip install -e ".[web]"          # Streamlit 工作台（可选）
+pip install -e ".[mining]"       # LLM 因子挖掘：Qlib + Alphalens + OpenAI SDK（可选）
 ```
 
 ### 2. 配置 `.env`
@@ -81,6 +88,13 @@ MYSQL_PORT=3306
 MYSQL_USER=quantify
 MYSQL_PASSWORD=your_password
 MYSQL_DATABASE=quantify
+
+# 因子挖掘（可选，仅 `quantify factor` 用到）
+LLM_API_KEY=你的_deepseek_key
+LLM_BASE_URL=https://api.deepseek.com
+LLM_MODEL=deepseek-chat
+QLIB_PROVIDER_URI=          # 留空则用 <项目根>/qlib_data/cn_data
+QLIB_REGION=cn
 ```
 
 ### 3. 初始化数据库
@@ -168,6 +182,17 @@ quantify db drop --yes   # 删除全部表
 ```bash
 quantify dashboard              # 默认 8501 端口
 quantify dashboard --port 8502  # 指定端口
+```
+
+### 因子挖掘
+
+```bash
+quantify factor dump-data                          # 把 MySQL 个股日线(前复权)导出为 Qlib .bin
+quantify factor dump-data --ts-code 600000.SH,000001.SZ  # 仅导出指定标的(快速验证)
+quantify factor mine --universe 000300.SH --rounds 3 --per-round 5   # 运行 LLM 闭环挖掘
+quantify factor mine --min-ic 0.03 --min-icir 0.5  # 自定义入库门槛
+quantify factor eval "Mean($close,5)/Mean($close,20)" --universe 000300.SH  # 评估单个表达式
+quantify factor list                               # 列出已入库因子
 ```
 
 ---
@@ -397,6 +422,65 @@ quantify dashboard --port 8501
 
 ---
 
+## LLM 因子挖掘
+
+基于 **LLM（DeepSeek）+ Qlib + Alphalens** 的自动化因子挖掘闭环：LLM 生成 Qlib 因子表达式 → 语法校验 → 统计质量过滤 → Alphalens IC/分层回测评估 → 评估结果回灌 LLM 进行下一轮迭代，最终把通过门槛的高质量因子沉淀到 `factor_library` 表。
+
+### 流水线
+
+```
+LLM 生成因子表达式 ──► 语法校验 ──► 统计质量门槛 ──► Qlib 求值 + Alphalens 评估
+      ▲                  (validator)   (覆盖率/常数)        (IC/RankIC/IR/分层/换手)
+      │                                                              │
+      └──────────────── 评估反馈(通过+未通过) ◄───────────────────────┘
+                              每轮回灌，迭代优化
+                                     │
+                        通过门槛 ──► 入库 factor_library
+```
+
+### 前置步骤
+
+1. **安装依赖**：`pip install -e ".[mining]"`（Qlib + Alphalens + OpenAI SDK）
+2. **配置 `.env`**：`LLM_API_KEY`（DeepSeek 控制台获取）、`LLM_BASE_URL`、`LLM_MODEL`
+3. **导出 Qlib 数据**：`quantify factor dump-data` —— 从 MySQL `daily`/`adj_factor`/`daily_basic` 读个股日线，**前复权**后写为 Qlib `.bin`（需先 `quantify fetch stock all` 入库个股数据）
+
+### 因子表达式
+
+LLM 产出标准 Qlib 表达式，可用字段（均为前复权价/常用指标）：
+
+```
+$open $high $low $close $volume $amount $vwap $factor
+$turn(换手率) $pe $pb $ps $total_mv $circ_mv
+```
+
+常用算子：`Ref/Mean/Sum/Std/Var/Max/Min/Delta/Slope/Rsquare/Resi/WMA/EMA/Rank/Quantile/Corr/Cov/Abs/Log/Sign/Greater/Less/CSRank/CSZScore` 等。示例：
+
+```
+Mean($close, 5) / Mean($close, 20)                       # 均线比值(动量)
+-1 * (($close - Ref($close, 20)) / Ref($close, 20))      # 20 日反转
+Corr(Rank($close, 5), Rank($volume, 5), 10)              # 量价背离
+($close - Mean($close, 20)) / Std($close, 20)            # 价格 zscore
+```
+
+### 评估指标与入库门槛
+
+- 用 Alphalens 计算各前瞻周期（默认 1/5/10 日）的 **IC（Pearson）/ Rank-IC（Spearman）/ IC_IR / t 值 / 多空分层收益差 / 顶层换手率**
+- 默认门槛（可用 `--min-ic`/`--min-icir` 调整）：`|IC| ≥ 0.02`、`|IC_IR| ≥ 0.3`、`|RankIC| ≥ 0.02`、覆盖率 ≥ 0.6
+- 通过的因子连同完整指标 JSON、假说、类别写入 `factor_library` 表（本地表，按因子名唯一 upsert）
+
+### 命令
+
+```bash
+quantify factor dump-data [--ts-code ...] [--start-date ...] [--end-date ...]
+quantify factor mine --universe 000300.SH --rounds 3 --per-round 5 [--instruction "侧重低换手"]
+quantify factor eval "<表达式>" --universe 000300.SH [--save]
+quantify factor list [--status passed]
+```
+
+> `--universe` 可填 `all`（全部已导出标的）或指数代码（如 `000300.SH` 沪深300，运行时展开为区间内成分并集）。重依赖（qlib/alphalens/openai）全部**惰性导入**，不装 `[mining]` 也不影响其他功能。
+
+---
+
 ## 技术栈
 
 | 层级 | 选型 |
@@ -411,6 +495,7 @@ quantify dashboard --port 8501
 | 日志 | loguru |
 | 回测 | 事件驱动逐 bar（自研引擎） |
 | Web | Streamlit + Plotly |
+| 因子挖掘 | Qlib（数据层/表达式求值）+ Alphalens（IC/分层评估）+ DeepSeek（LLM 生成） |
 | 代码检查 | Ruff（行宽 110） |
 
 ---
@@ -420,14 +505,15 @@ quantify dashboard --port 8501
 ```
 quantify/
 ├── quantify/
-│   ├── cli.py                    # Typer CLI（db + fetch + dashboard）
-│   ├── config.py                 # Pydantic Settings（Tushare/MySQL/Log）
+│   ├── cli.py                    # Typer CLI（db + fetch + factor + dashboard）
+│   ├── config.py                 # Pydantic Settings（Tushare/MySQL/Log/LLM/Qlib）
 │   ├── database/
 │   │   ├── models.py             # 51 个 SQLAlchemy ORM 模型
 │   │   ├── engine.py             # MySQL 连接池 + session
 │   │   ├── init_db.py            # 建库建表
 │   │   ├── upsert.py             # upsert_dataframe() 幂等写入
-│   │   └── strategy_store.py     # 策略 CRUD
+│   │   ├── strategy_store.py     # 策略 CRUD
+│   │   └── factor_store.py       # 因子库 CRUD（factor_library 表）
 │   ├── fetcher/
 │   │   ├── etf.py                # EtfFetcher（10 阶段）
 │   │   ├── stock.py              # StockFetcher（20 阶段）
@@ -448,10 +534,17 @@ quantify/
 │   │   ├── codes.py              # 代码格式转换
 │   │   ├── examples.py           # 内置示例策略
 │   │   └── universe.py           # 指数成分查询（get_index_stocks 后端，读 index_weight）
+│   ├── factor/                   # LLM 因子挖掘
+│   │   ├── qlib_data.py          # MySQL → Qlib .bin 导出 + init_qlib
+│   │   ├── validator.py          # Qlib 表达式语法校验
+│   │   ├── evaluator.py          # Qlib 求值 + 质量门槛 + Alphalens 评估
+│   │   ├── llm.py                # DeepSeek 客户端 + 生成/迭代 prompt
+│   │   └── pipeline.py           # 生成→校验→评估→反馈闭环 + 入库
 │   ├── webapp/
 │   │   └── app.py                # Streamlit 工作台
 │   └── utils/
 │       └── logger.py             # Loguru 配置
+├── tests/                        # pytest 单测（factor 无重依赖部分）
 ├── logs/                         # 日志输出
 ├── pyproject.toml
 └── README.md
@@ -464,9 +557,9 @@ quantify/
 - [x] **数据层**：Tushare 客户端 + 6 个 Fetcher + 51 张表全量入库
 - [x] **回测层**：事件驱动引擎 + 聚宽 API 兼容 + 佣金/滑点/分红/拆股
 - [x] **Web 工作台**：Streamlit 策略编辑器 + 交互式图表 + 策略持久化
-- [ ] **因子层**（`factor/`）：经典因子计算 + 行业/市值中性化
+- [x] **因子层**（`factor/`）：LLM 因子挖掘闭环（Qlib 求值 + Alphalens IC/分层评估 + 自动入库）
 - [ ] **Agent 层**（`agent/`）：LLM 策略生成 + 报告解读
-- [ ] **分析层**（`analysis/`）：行业稳健性诊断 + IC 分析
+- [ ] **分析层**（`analysis/`）：行业稳健性诊断 + 因子组合/中性化
 
 ---
 

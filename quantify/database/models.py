@@ -50,6 +50,7 @@ Table names mirror their Tushare Pro endpoint names one-to-one:
     - fut_wsr         (futures warehouse receipts)
     - fut_settle      (futures settlement parameters)
     - strategy        (saved backtest strategies, local-only)
+    - factor_library  (LLM-mined, alphalens-validated factors, local-only)
 
 Primary keys are chosen so that re-running a fetch is idempotent via
 INSERT ... ON DUPLICATE KEY UPDATE.
@@ -98,6 +99,53 @@ class SavedStrategy(Base):
     )
 
     __table_args__ = (Index("uq_strategy_name", "name", unique=True),)
+
+
+# ---------------------------------------------------------------------------
+# Factor library (LLM-mined factors that passed alphalens validation)
+# Local-only table (not a Tushare endpoint). Populated by the factor-mining
+# pipeline in quantify/factor/.
+# ---------------------------------------------------------------------------
+class FactorLibrary(Base):
+    __tablename__ = "factor_library"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True, comment="自增主键")
+    name: Mapped[str] = mapped_column(String(128), comment="因子名称")
+    expression: Mapped[str] = mapped_column(Text, comment="Qlib 因子表达式")
+    hypothesis: Mapped[str | None] = mapped_column(Text, comment="LLM 提出的因子逻辑/假说")
+    category: Mapped[str | None] = mapped_column(String(64), comment="因子类别 momentum/value/volatility 等")
+
+    # 评估口径
+    universe: Mapped[str | None] = mapped_column(String(64), comment="评估股票池，如 csi300")
+    start_date: Mapped[date | None] = mapped_column(Date, comment="评估开始日")
+    end_date: Mapped[date | None] = mapped_column(Date, comment="评估结束日")
+    periods: Mapped[str | None] = mapped_column(String(32), comment="前瞻收益周期，如 1,5,10")
+
+    # Alphalens 核心指标（以主周期为准）
+    ic_mean: Mapped[float | None] = mapped_column(Float, comment="IC 均值")
+    ic_std: Mapped[float | None] = mapped_column(Float, comment="IC 标准差")
+    icir: Mapped[float | None] = mapped_column(Float, comment="IC_IR = IC均值/IC标准差")
+    ic_tstat: Mapped[float | None] = mapped_column(Float, comment="IC t 统计量")
+    rank_ic_mean: Mapped[float | None] = mapped_column(Float, comment="Rank IC 均值")
+    rank_icir: Mapped[float | None] = mapped_column(Float, comment="Rank IC_IR")
+    quantile_spread: Mapped[float | None] = mapped_column(Float, comment="多空分层收益差(top-bottom)")
+    turnover: Mapped[float | None] = mapped_column(Float, comment="顶层分位换手率")
+    coverage: Mapped[float | None] = mapped_column(Float, comment="有效覆盖率(非空占比)")
+
+    status: Mapped[str] = mapped_column(String(16), default="passed", comment="状态 passed/candidate")
+    iteration: Mapped[int | None] = mapped_column(Integer, comment="挖掘迭代轮次")
+    metrics_json: Mapped[str | None] = mapped_column(Text, comment="完整评估指标 JSON")
+    report_path: Mapped[str | None] = mapped_column(Text, comment="Alphalens 报告文件路径")
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), comment="创建时间")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        server_default=func.now(),
+        onupdate=func.now(),
+        comment="更新时间",
+    )
+
+    __table_args__ = (Index("uq_factor_name", "name", unique=True),)
 
 
 # ---------------------------------------------------------------------------

@@ -5,7 +5,7 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -57,6 +57,39 @@ class LogConfig(BaseSettings):
     dir: str = "logs"
 
 
+class LLMConfig(BaseSettings):
+    """LLM provider config (DeepSeek by default; any OpenAI-compatible endpoint works)."""
+
+    model_config = SettingsConfigDict(env_prefix="LLM_", env_file=".env", extra="ignore")
+
+    api_key: str = Field(default="", description="LLM API key (DeepSeek 控制台获取)")
+    base_url: str = Field(default="https://api.deepseek.com", description="OpenAI 兼容 base_url")
+    model: str = Field(default="deepseek-chat", description="模型名，如 deepseek-chat / deepseek-reasoner")
+    temperature: float = Field(default=1.0, ge=0.0, le=2.0, description="采样温度，因子探索建议偏高")
+    max_tokens: int = Field(default=4096, ge=256, description="单次回复最大 token 数")
+    timeout: float = Field(default=120.0, gt=0, description="请求超时（秒）")
+
+
+class QlibConfig(BaseSettings):
+    """Qlib data-layer config: where the dumped .bin data lives."""
+
+    model_config = SettingsConfigDict(env_prefix="QLIB_", env_file=".env", extra="ignore")
+
+    provider_uri: str = Field(
+        default=str(PROJECT_ROOT / "qlib_data" / "cn_data"),
+        description="Qlib .bin 数据目录（dump 输出 / qlib.init 读取）",
+    )
+    region: str = Field(default="cn", description="Qlib 区域，A 股用 cn")
+
+    @field_validator("provider_uri", mode="before")
+    @classmethod
+    def _default_provider_uri(cls, value: str | None) -> str:
+        # 允许 .env 里留空 QLIB_PROVIDER_URI=，此时回落到项目默认目录。
+        if value is None or str(value).strip() == "":
+            return str(PROJECT_ROOT / "qlib_data" / "cn_data")
+        return str(value).strip()
+
+
 class Settings:
     """Aggregate settings entry point."""
 
@@ -64,6 +97,8 @@ class Settings:
         self.tushare = TushareConfig()
         self.mysql = MySQLConfig()
         self.log = LogConfig()
+        self.llm = LLMConfig()
+        self.qlib = QlibConfig()
         self.project_root = PROJECT_ROOT
 
 
