@@ -41,7 +41,7 @@ quantify dashboard --port 8502                          # 指定端口
 quantify factor dump-data                               # 【因子挖掘前置】MySQL 个股日线(前复权) → Qlib .bin
 quantify factor dump-data --ts-code 600000.SH,000001.SZ # 仅导出指定标的(快速验证)
 quantify factor mine --universe 000300.SH --rounds 3 --per-round 5  # LLM 因子挖掘闭环
-quantify factor mine --min-ic 0.03 --min-icir 0.5       # 自定义入库门槛
+quantify factor mine --min-ic 0.03 --min-icir 0.5       # 自定义 status=passed 标记门槛（不影响入库）
 quantify factor eval "Mean(\$close,5)/Mean(\$close,20)" --universe 000300.SH  # 评估单个表达式
 quantify factor list                                    # 列出已入库因子
 quantify factor compose --universe 000300.SH --top-n 50 --weight icir  # 多因子合成+选股+简单回测
@@ -59,7 +59,7 @@ quantify version                                        # 打印版本号
 - 回测引擎：事件驱动逐 bar 模拟，兼容 JoinQuant 策略 API（`quantify/backtest/`）
 - Streamlit Web 回测工作台（`quantify/webapp/app.py`）
 - 策略持久化：`quantify/database/strategy_store.py` → `strategy` 表
-- **LLM 因子挖掘（`quantify/factor/`）**：DeepSeek 生成 Qlib 表达式 → 语法校验 → 质量过滤 → Qlib 求值 + Alphalens IC/分层评估 → 反馈闭环 → 入库 `factor_library`（详见下文「因子挖掘」）
+- **LLM 因子挖掘（`quantify/factor/`）**：DeepSeek 生成 Qlib 表达式 → 语法校验 → Qlib 求值 + Alphalens IC/分层评估 → 反馈闭环 → **无门槛全部入库** `factor_library`（status 区分 passed/evaluated，保留给后面正交组合使用）（详见下文「因子挖掘」）
 
 **尚未实现**：
 - `agent/`、`analysis/` 子包 —— 这些目录**还不存在**（`factor/` 已实现）
@@ -80,7 +80,7 @@ quantify version                                        # 打印版本号
     - 公募基金（1）：`fund_company`
   - **自建本地表（2 张）**——非 Tushare 接口，由本项目内部逻辑写入：
     - `strategy`：回测策略持久化（Dashboard / `save_strategy()` 写入，`strategy` 表是策略的唯一权威来源）
-    - `factor_library`：LLM 因子挖掘入库（`factor mine` 闭环通过门槛的因子写入，含 IC/IR/分层等评估指标）
+    - `factor_library`：LLM 因子挖掘入库（`factor mine` 闭环**无门槛全部写入**，status 区分 passed/evaluated，含 IC/IR/分层等评估指标）
 - 所有写入使用 `INSERT ... ON DUPLICATE KEY UPDATE`（幂等，可重复执行）
 - 标准写入路径为 `quantify/database/upsert.py` 中的 `upsert_dataframe()`
 - `EtfManager` 使用自增 `BigInteger` 主键 + 独立唯一索引 `(ts_code, name, begin_date)` —— 与其他表直接使用联合主键不同
@@ -122,8 +122,8 @@ quantify version                                        # 打印版本号
   - **标的命名**：Tushare `600000.SH` ↔ Qlib `SH600000`（`ts_code_to_qlib`/`qlib_to_ts_code`）。
   - `init_qlib()` 幂等初始化（`qlib.init(provider_uri, region=cn)`）；数据缺失会抛错提示先 `dump-data`。
 - **语法校验（`factor/validator.py`）**：`validate_expression()` 用字段/算子白名单（`QLIB_FIELDS`/`QLIB_OPERATORS`）+ 括号/非法字符检查，失败即给 LLM 精确报错，省下求值开销。LLM 新增字段/算子时要同步更新这两个白名单。
-- **评估（`factor/evaluator.py`）**：`evaluate_expression()` → `D.features([expr, "$close"])` 求值 → 统计质量门槛（覆盖率/常数）→ Alphalens `get_clean_factor_and_forward_returns` → **逐日横截面**算 IC(Pearson)+RankIC(Spearman)，`IR=mean/std`、`t=IR*sqrt(n)`、多空分层收益差、顶层换手率。默认门槛 `QualityThresholds`：`|IC|≥0.02`、`|IC_IR|≥0.3`、`|RankIC|≥0.02`、覆盖率≥0.6（CLI `--min-ic/--min-icir` 可调）。⚠️ Qlib 返回 `(instrument, datetime)` MultiIndex，alphalens 要 `(date, asset)`——已在 `_compute_factor_data` 里 `reorder_levels` 转换，改动注意别弄反。
-- **闭环（`factor/pipeline.py`）**：每轮把**现有因子库表达式 + 上一轮评估反馈文本**喂给 LLM → 去重(`_normalize_expr` 去空白)→ 校验 → 评估 → 通过门槛的 `save_factor()` 入库 `factor_library`（按因子名唯一 upsert，名字 = `slug(name)_sha1(expr)[:6]`）。反馈文本来自 `FactorEvaluation.to_feedback_text()`（含通过+未通过原因）。
+- **评估（`factor/evaluator.py`）**：`evaluate_expression()` → `D.features([expr, "$close"])` 求值 → 统计质量门槛（覆盖率/常数）→ Alphalens `get_clean_factor_and_forward_returns` → **逐日横截面**算 IC(Pearson)+RankIC(Spearman)，`IR=mean/std`、`t=IR*sqrt(n)`、多空分层收益差、顶层换手率。`QualityThresholds`（`|IC|≥0.02`、`|IC_IR|≥0.3`、`|RankIC|≥0.02`、覆盖率≥0.6）仅用于标记 `status=passed/evaluated`，**不作为入库门槛**（CLI `--min-ic/--min-icir` 可调标记阈值）。⚠️ Qlib 返回 `(instrument, datetime)` MultiIndex，alphalens 要 `(date, asset)`——已在 `_compute_factor_data` 里 `reorder_levels` 转换，改动注意别弄反。
+- **闭环（`factor/pipeline.py`）**：每轮把**现有因子库表达式 + 上一轮评估反馈文本**喂给 LLM → 去重(`_normalize_expr` 去空白)→ 校验 → 评估 → **无门槛全部 `save_factor()` 入库** `factor_library`（按因子名唯一 upsert，名字 = `slug(name)_sha1(expr)[:6]`，`status` 区分 passed/evaluated 供下游 compose 按 `--min-icir` 筛选）。反馈文本来自 `FactorEvaluation.to_feedback_text()`（含通过+未通过原因，帮助 LLM 迭代改进）。
 - **DB（`database/factor_store.py`）**：`FactorRecord` dataclass + `save_factor`/`list_factors`/`existing_expressions`/`delete_factor`；`factor_library` 表是**因子的唯一权威来源**（本地表，模型在 `models.py`）。
 - **LLM（`factor/llm.py`）**：`LLMClient` 用 openai SDK 指向 DeepSeek（`response_format=json_object` + tenacity 重试）；`parse_factor_response()` 容错解析（去 ```json 围栏、提取首个 JSON 对象）。prompt 在 `_SYSTEM_PROMPT`，要求 LLM 组合已有 alpha 或基于数据提假说，并产出严格 JSON。
 - **典型流程**：`pip install -e ".[mining]"` → `.env` 配 `LLM_API_KEY` → `quantify factor dump-data`（先 `fetch stock all`）→ `quantify factor mine --universe 000300.SH`。

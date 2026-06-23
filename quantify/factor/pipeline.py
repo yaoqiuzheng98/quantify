@@ -5,7 +5,10 @@ Each round:
        the previous round's evaluation feedback);
     2. statically validate + de-duplicate them;
     3. evaluate survivors with Qlib + Alphalens;
-    4. persist the ones that clear the quality gates into ``factor_library``;
+    4. persist **all** evaluated factors into ``factor_library`` (no quality
+       gate — factors that meet the thresholds are marked ``status=passed``,
+       the rest ``status=evaluated``; both are retained for orthogonal
+       composition downstream);
     5. summarize all results (pass & fail) as feedback for the next round.
 """
 
@@ -100,7 +103,7 @@ def _to_record(
         quantile_spread=evaluation.quantile_spread,
         turnover=evaluation.turnover,
         coverage=evaluation.coverage,
-        status="passed",
+        status="passed" if evaluation.passed else "evaluated",
         iteration=iteration,
         metrics_json=metrics_to_json(evaluation.to_dict()),
     )
@@ -169,13 +172,19 @@ def mine_factors(config: MiningConfig | None = None) -> MiningResult:
             result.evaluations.append(evaluation)
             round_feedback.append(evaluation.to_feedback_text())
 
+            # 无门槛入库：所有评估完成的因子都保存，保留给后面正交组合使用。
+            # status 字段区分 passed（满足门槛）/ evaluated（不满足但已入库）。
+            record = _to_record(candidate, evaluation, config, round_idx)
+            saved = save_factor(record)
+            result.saved.append(saved)
             if evaluation.passed:
-                record = _to_record(candidate, evaluation, config, round_idx)
-                saved = save_factor(record)
-                result.saved.append(saved)
-                log.info(f"  ✓ 入库 {saved.name}: IC={evaluation.ic_mean:.4f} IR={evaluation.icir:.4f}")
+                log.info(
+                    f"  ✓ 入库(passed) {saved.name}: IC={evaluation.ic_mean:.4f} IR={evaluation.icir:.4f}"
+                )
             else:
-                log.info(f"  ✗ 未通过: {evaluation.reason}")
+                log.info(
+                    f"  ✓ 入库(evaluated) {saved.name}: IC={evaluation.ic_mean:.4f} IR={evaluation.icir:.4f}  ({evaluation.reason})"
+                )
 
         result.rounds_run = round_idx
         feedback = "\n\n".join(round_feedback) if round_feedback else "本轮无有效候选，请尝试全新方向。"

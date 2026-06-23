@@ -16,7 +16,7 @@ Quantify 是一个 **Python** 量化研究框架。它从 **Tushare Pro** 拉取
 - **幂等增量同步**：所有写入走 `INSERT ... ON DUPLICATE KEY UPDATE`，重复运行安全，断点续跑无需额外操作；时间序列阶段自动查库内最大日期仅拉增量
 - **事件驱动回测**：逐 bar 模拟，聚宽 `initialize`/`handle_data` 策略 API 兼容，支持 ETF/个股/指数多资产，前复权历史价格、真实开盘价撮合、佣金/滑点/分红/送转、A 股印花税/T+1/涨跌停全建模，并提供聚宽同款 `get_index_stocks` 指数成分点到点选股
 - **Streamlit 工作台**：代码编辑器 + 策略持久化 + 参数面板 + 交互式收益/回撤/持仓图表 + 20+ 指标卡片
-- **LLM 因子挖掘**：DeepSeek 生成 Qlib 因子表达式 → 语法校验 → 统计质量过滤 → Alphalens IC/分层回测评估 → 评估反馈回灌 LLM 的**闭环迭代**，通过门槛的因子自动入库 `factor_library` 表
+- **LLM 因子挖掘**：DeepSeek 生成 Qlib 因子表达式 → 语法校验 → Alphalens IC/分层回测评估 → 评估反馈回灌 LLM 的**闭环迭代**，**无门槛全部入库** `factor_library`（`status` 区分 passed/evaluated），保留给后面正交组合使用
 - **Tushare 客户端**：直连镜像站 HTTP 接口（不走 SDK）、滑动窗口限流、指数退避重试、并发硬上限 2 路的线程池安全调用
 
 ---
@@ -190,7 +190,7 @@ quantify dashboard --port 8502  # 指定端口
 quantify factor dump-data                          # 把 MySQL 个股日线(前复权)导出为 Qlib .bin
 quantify factor dump-data --ts-code 600000.SH,000001.SZ  # 仅导出指定标的(快速验证)
 quantify factor mine --universe 000300.SH --rounds 3 --per-round 5   # 运行 LLM 闭环挖掘
-quantify factor mine --min-ic 0.03 --min-icir 0.5  # 自定义入库门槛
+quantify factor mine --min-ic 0.03 --min-icir 0.5  # 自定义 status=passed 标记门槛（不影响入库）
 quantify factor eval "Mean($close,5)/Mean($close,20)" --universe 000300.SH  # 评估单个表达式
 quantify factor list                               # 列出已入库因子
 ```
@@ -435,7 +435,7 @@ quantify dashboard --port 8501
 
 ## LLM 因子挖掘
 
-基于 **LLM（DeepSeek）+ Qlib + Alphalens** 的自动化因子挖掘闭环：LLM 生成 Qlib 因子表达式 → 语法校验 → 统计质量过滤 → Alphalens IC/分层回测评估 → 评估结果回灌 LLM 进行下一轮迭代，最终把通过门槛的高质量因子沉淀到 `factor_library` 表。
+基于 **LLM（DeepSeek）+ Qlib + Alphalens** 的自动化因子挖掘闭环：LLM 生成 Qlib 因子表达式 → 语法校验 → Alphalens IC/分层回测评估 → 评估结果回灌 LLM 进行下一轮迭代，**所有评估完成的因子无门槛直接入库** `factor_library`（`status` 区分 passed/evaluated），保留给后面正交组合使用。
 
 ### 流水线
 
@@ -446,7 +446,8 @@ LLM 生成因子表达式 ──► 语法校验 ──► 统计质量门槛 �
       └──────────────── 评估反馈(通过+未通过) ◄───────────────────────┘
                               每轮回灌，迭代优化
                                      │
-                        通过门槛 ──► 入库 factor_library
+                        全部入库 factor_library（无门槛）
+                        status=passed（满足门槛）/ evaluated（不满足）
 ```
 
 ### 前置步骤
@@ -473,11 +474,11 @@ Corr(Rank($close, 5), Rank($volume, 5), 10)              # 量价背离
 ($close - Mean($close, 20)) / Std($close, 20)            # 价格 zscore
 ```
 
-### 评估指标与入库门槛
+### 评估指标与入库策略
 
 - 用 Alphalens 计算各前瞻周期（默认 1/5/10 日）的 **IC（Pearson）/ Rank-IC（Spearman）/ IC_IR / t 值 / 多空分层收益差 / 顶层换手率**
-- 默认门槛（可用 `--min-ic`/`--min-icir` 调整）：`|IC| ≥ 0.02`、`|IC_IR| ≥ 0.3`、`|RankIC| ≥ 0.02`、覆盖率 ≥ 0.6
-- 通过的因子连同完整指标 JSON、假说、类别写入 `factor_library` 表（本地表，按因子名唯一 upsert）
+- **无门槛入库**：所有评估完成的因子连同完整指标 JSON、假说、类别写入 `factor_library` 表（本地表，按因子名唯一 upsert）
+- `status` 字段区分质量：满足 `|IC| ≥ 0.02`、`|IC_IR| ≥ 0.3`、`|RankIC| ≥ 0.02`、覆盖率 ≥ 0.6（可用 `--min-ic`/`--min-icir` 调整）的标记为 `passed`，其余为 `evaluated`——两者都入库，供下游 `factor compose` 按 `--min-icir` 筛选优质因子做正交组合
 
 ### 命令
 

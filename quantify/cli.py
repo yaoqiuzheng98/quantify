@@ -754,11 +754,13 @@ def factor_mine(
     end_date: Optional[str] = typer.Option(None, "--end-date", help="评估结束日"),
     periods: str = typer.Option("1,5,10", "--periods", help="前瞻收益周期，逗号分隔"),
     quantiles: int = typer.Option(5, "--quantiles", help="分层数"),
-    min_ic: float = typer.Option(0.02, "--min-ic", help="最小 |IC| 门槛"),
-    min_icir: float = typer.Option(0.3, "--min-icir", help="最小 |IC_IR| 门槛"),
+    min_ic: float = typer.Option(0.02, "--min-ic", help="|IC| 门槛（仅标记 status=passed，不影响入库）"),
+    min_icir: float = typer.Option(
+        0.3, "--min-icir", help="|IC_IR| 门槛（仅标记 status=passed，不影响入库）"
+    ),
     instruction: Optional[str] = typer.Option(None, "--instruction", help="给 LLM 的额外要求"),
 ) -> None:
-    """运行 LLM 因子挖掘闭环，把通过校验的因子存入 factor_library。"""
+    """运行 LLM 因子挖掘闭环，所有评估完成的因子直接入库 factor_library（无门槛）。"""
     from quantify.factor.evaluator import QualityThresholds
     from quantify.factor.pipeline import MiningConfig, mine_factors
 

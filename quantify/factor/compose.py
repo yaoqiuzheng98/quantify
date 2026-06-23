@@ -302,8 +302,8 @@ def compose_factors(config: ComposeConfig | None = None) -> ComposeResult:
 
     result = ComposeResult()
 
-    # 1. load & select factors
-    all_factors = list_factors(status="passed")
+    # 1. load & select factors (all statuses — no gate during mining)
+    all_factors = list_factors()
     if not all_factors:
         log.warning("因子库为空，无法构建组合。请先运行 `quantify factor mine`。")
         return result
