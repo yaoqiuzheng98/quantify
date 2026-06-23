@@ -60,6 +60,7 @@
 8. **`run_daily` 只支持 `time="open"`**，不支持 `time="9:30"` 等具体时间
 9. **`attribute_history` 只支持 `unit="1d"`**，不支持分钟数据
 10. 可用字段：`["open", "high", "low", "close", "volume", "amount", "pre_close", "pct_chg", "adj_factor"]`（factor 为复权因子）
+11. **可以用 `log.info("msg")` / `log.warning("msg")` 打印调试信息**——Web 端回测后会在「策略日志」折叠面板中显示，每条日志自动带上当前回测日期。
 
 ## ⚠️ attribute_history 只支持 OHLCV 字段
 

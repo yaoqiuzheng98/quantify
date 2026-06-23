@@ -142,7 +142,7 @@ class StrategyRuntime:
         return []
 
 
-def _load_strategy(source: str) -> StrategyRuntime:
+def _load_strategy(source: str, strategy_log: StrategyLogCollector | None = None) -> StrategyRuntime:
     """Parse a strategy source string and extract initialize & handle_data.
 
     Parameters
@@ -151,12 +151,18 @@ def _load_strategy(source: str) -> StrategyRuntime:
         Python source code containing ``initialize(context)`` and
         ``handle_data(context)`` function definitions.  May also contain
         imports, helper functions, and global variables.
+    strategy_log:
+        Optional log collector — if provided, replaces the ``log`` object in
+        the strategy namespace so ``log.info()`` calls are captured for the
+        Web UI.
 
     Returns the initialize function, optional handle_data function, and the
     JoinQuant compatibility layer bound to this strategy namespace.
     """
     compat = JoinQuantCompat()
     ns: dict = compat.namespace()
+    if strategy_log is not None:
+        ns["log"] = strategy_log
     jqdata_module = make_jqdata_module(compat)
     previous_jqdata = sys.modules.get("jqdata")
     sys.modules["jqdata"] = jqdata_module
@@ -175,6 +181,50 @@ def _load_strategy(source: str) -> StrategyRuntime:
         raise ValueError("Strategy source must define initialize(context)")
 
     return StrategyRuntime(initialize=init_fn, handle_data=handle_fn, compat=compat)
+
+
+# ---------------------------------------------------------------------------
+# Strategy log collector — captures log.info()/log.warning() from strategy code
+# ---------------------------------------------------------------------------
+
+
+class StrategyLogCollector:
+    """A drop-in replacement for ``log`` that collects strategy output lines.
+
+    Strategy code calls ``log.info("msg")`` / ``log.warning("msg")`` — this
+    collector stores each line as ``"[INFO] 2024-01-05: msg"`` (prefixed with
+    the current backtest date if available) so the Web UI can display them
+    after the backtest finishes.
+    """
+
+    def __init__(self) -> None:
+        self._lines: list[str] = []
+        self._current_date: str = ""
+
+    def set_date(self, date_str: str) -> None:
+        self._current_date = date_str
+
+    def _add(self, level: str, msg: str) -> None:
+        prefix = f"[{level}]"
+        if self._current_date:
+            prefix += f" {self._current_date}"
+        self._lines.append(f"{prefix}: {msg}")
+
+    def info(self, msg: str, *args: object) -> None:
+        self._add("INFO", str(msg).format(*args) if args else str(msg))
+
+    def warning(self, msg: str, *args: object) -> None:
+        self._add("WARN", str(msg).format(*args) if args else str(msg))
+
+    def error(self, msg: str, *args: object) -> None:
+        self._add("ERROR", str(msg).format(*args) if args else str(msg))
+
+    def debug(self, msg: str, *args: object) -> None:
+        self._add("DEBUG", str(msg).format(*args) if args else str(msg))
+
+    @property
+    def lines(self) -> list[str]:
+        return self._lines
 
 
 # ---------------------------------------------------------------------------
@@ -239,7 +289,8 @@ class BacktestEngine:
         )
 
         # 1. Load strategy
-        runtime = _load_strategy(self.strategy_source)
+        strategy_log = StrategyLogCollector()
+        runtime = _load_strategy(self.strategy_source, strategy_log=strategy_log)
         log.info("Strategy loaded successfully")
 
         # 2. Load market data
@@ -338,6 +389,7 @@ class BacktestEngine:
             # Expose current date JoinQuant-style as ``context.current_dt`` so
             # strategies written for JoinQuant run unmodified on this engine.
             context.current_dt = datetime(bar_date.year, bar_date.month, bar_date.day)
+            strategy_log.set_date(bar_date.isoformat())
 
             # Advance data proxy to this date
             for code, bars in all_bars.items():
@@ -457,6 +509,7 @@ class BacktestEngine:
             benchmark_df=benchmark_df,
             trades=broker.trades,
             dividends=dividend_payments,
+            strategy_logs=strategy_log.lines,
         )
 
 
@@ -470,12 +523,14 @@ class BacktestResult:
         benchmark_df: pd.DataFrame | None,
         trades: list,
         dividends: list | None = None,
+        strategy_logs: list[str] | None = None,
     ) -> None:
         self.metrics = metrics
         self.equity_df = equity_df
         self.benchmark_df = benchmark_df
         self.trades = trades
         self.dividends = dividends or []
+        self.strategy_logs = strategy_logs or []
 
     def to_report_dict(self) -> dict:
         """Return the canonical report payload shared by Web and LLM outputs."""

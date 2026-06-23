@@ -679,6 +679,12 @@ def _render_result(result: BacktestResult) -> None:
     else:
         st.dataframe(trades_df, width="stretch", hide_index=True)
 
+    # 策略日志输出
+    if result.strategy_logs:
+        with st.expander(f"策略日志（{len(result.strategy_logs)} 条）", expanded=False):
+            for line in result.strategy_logs:
+                st.text(line)
+
 
 def _strategy_editor(default_source: str) -> str:
     editor_key = f"strategy_editor_{st.session_state.get('strategy_editor_revision', 0)}"
