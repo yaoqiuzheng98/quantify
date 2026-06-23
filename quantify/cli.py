@@ -851,6 +851,60 @@ def factor_list(
         typer.echo(f"  [{rec.id}] {rec.name}  IC={ic} IR={ir}  {rec.expression}")
 
 
+@factor_app.command("compose")
+def factor_compose(
+    universe: Optional[str] = typer.Option(None, "--universe", help="股票池：all / 指数代码(如 000300.SH)"),
+    start_date: Optional[str] = typer.Option(None, "--start-date", help="回测起始日"),
+    end_date: Optional[str] = typer.Option(None, "--end-date", help="回测结束日"),
+    max_factors: int = typer.Option(10, "--max-factors", help="参与合成的最大因子数"),
+    top_n: int = typer.Option(50, "--top-n", help="每日选股数量"),
+    weight: str = typer.Option("icir", "--weight", help="合成方式: equal / ic / icir"),
+    min_icir: float = typer.Option(0.3, "--min-icir", help="因子最低 |ICIR| 门槛"),
+    rebalance: int = typer.Option(5, "--rebalance", help="调仓频率(交易日)"),
+    max_corr: float = typer.Option(0.7, "--max-corr", help="因子间最大允许相关性"),
+    export: Optional[str] = typer.Option(None, "--export", help="导出持仓矩阵到 CSV 路径"),
+) -> None:
+    """从因子库选因子合成组合并做简单回测。"""
+    from quantify.factor.compose import ComposeConfig, compose_factors
+
+    config = ComposeConfig(
+        universe=universe,
+        start_date=start_date,
+        end_date=end_date,
+        max_factors=max_factors,
+        top_n=top_n,
+        weight=weight,  # type: ignore[arg-type]
+        min_icir=min_icir,
+        rebalance_freq=rebalance,
+        max_corr=max_corr,
+    )
+    result = compose_factors(config)
+    if not result.selected:
+        typer.echo("组合构建失败（因子库为空或无因子满足门槛）。")
+        return
+
+    typer.echo("\n=== 组合构建完成 ===")
+    typer.echo(f"选定 {len(result.selected)} 个因子：")
+    for f in result.selected:
+        w = result.weights.get(f.expression, 0)
+        typer.echo(f"  {f.name}  权重={w:.3f}  IC={f.ic_mean:.4f} IR={f.icir:.4f}  {f.expression}")
+
+    m = result.metrics
+    if m:
+        typer.echo("\n--- 组合回测指标 ---")
+        typer.echo(f"  交易日数:   {m.get('n_days', 0)}")
+        typer.echo(f"  总收益:     {m.get('total_return', 0):.2%}")
+        typer.echo(f"  年化收益:   {m.get('ann_return', 0):.2%}")
+        typer.echo(f"  年化波动:   {m.get('ann_vol', 0):.2%}")
+        typer.echo(f"  夏普比率:   {m.get('sharpe', 0):.3f}")
+        typer.echo(f"  最大回撤:   {m.get('max_drawdown', 0):.2%}")
+        typer.echo(f"  日胜率:     {m.get('win_rate', 0):.2%}")
+
+    if export and result.holdings is not None:
+        result.holdings.to_csv(export)
+        typer.echo(f"\n持仓矩阵已导出: {export}")
+
+
 # ---------------------------------------------------------------------------
 # version
 # ---------------------------------------------------------------------------

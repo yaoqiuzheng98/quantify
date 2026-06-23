@@ -44,6 +44,9 @@ quantify factor mine --universe 000300.SH --rounds 3 --per-round 5  # LLM 因子
 quantify factor mine --min-ic 0.03 --min-icir 0.5       # 自定义入库门槛
 quantify factor eval "Mean(\$close,5)/Mean(\$close,20)" --universe 000300.SH  # 评估单个表达式
 quantify factor list                                    # 列出已入库因子
+quantify factor compose --universe 000300.SH --top-n 50 --weight icir  # 多因子合成+选股+简单回测
+quantify factor compose --weight equal --max-factors 5 --rebalance 10  # 等权合成，10日调仓
+quantify factor compose --export holdings.csv            # 导出每日持仓矩阵
 quantify version                                        # 打印版本号
 ```
 
@@ -112,6 +115,7 @@ quantify version                                        # 打印版本号
 - **DB（`database/factor_store.py`）**：`FactorRecord` dataclass + `save_factor`/`list_factors`/`existing_expressions`/`delete_factor`；`factor_library` 表是**因子的唯一权威来源**（本地表，模型在 `models.py`）。
 - **LLM（`factor/llm.py`）**：`LLMClient` 用 openai SDK 指向 DeepSeek（`response_format=json_object` + tenacity 重试）；`parse_factor_response()` 容错解析（去 ```json 围栏、提取首个 JSON 对象）。prompt 在 `_SYSTEM_PROMPT`，要求 LLM 组合已有 alpha 或基于数据提假说，并产出严格 JSON。
 - **典型流程**：`pip install -e ".[mining]"` → `.env` 配 `LLM_API_KEY` → `quantify factor dump-data`（先 `fetch stock all`）→ `quantify factor mine --universe 000300.SH`。
+- **组合构建（`factor/compose.py`）**：从 `factor_library` 选因子（按 |ICIR| 排序，`--min-icir` 门槛）→ 各因子 Qlib 求值得 (date×asset) 面板 → 截面 zscore 标准化 + `sign(ic_mean)` 方向对齐 → 加权合成（`--weight equal/ic/icir`）→ 去相关过滤（`--max-corr`，因子间 |corr| 超阈值则剔除）→ 每日按合成分选 top-N（`--top-n`），`--rebalance` 日调仓 → 向量化回测算总收益/年化/夏普/最大回撤/日胜率。`--export` 可导出每日持仓矩阵 CSV。**注意**：这是轻量向量化回测，不经过事件驱动 `backtest` 引擎（那是策略层，含交易摩擦/T+1/涨跌停等）；compose 的定位是"多因子合成效果快检"，真正跑策略仍需把选股结果接入 backtest 引擎。
 
 ## 并发
 
