@@ -52,6 +52,14 @@ def list_strategies() -> list[StrategyRecord]:
         return [_to_record(row) for row in rows]
 
 
+def get_strategy(strategy_id: int) -> StrategyRecord | None:
+    """Fetch a single strategy by ID."""
+    ensure_strategy_table()
+    with session_scope() as sess:
+        row = sess.get(SavedStrategy, strategy_id)
+        return _to_record(row) if row else None
+
+
 def save_strategy(
     *,
     name: str,

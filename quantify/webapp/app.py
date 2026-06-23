@@ -22,6 +22,7 @@ from quantify.database.models import EtfDaily
 from quantify.database.strategy_store import (
     StrategyRecord,
     delete_strategy,
+    get_strategy,
     list_strategies,
     save_strategy,
 )
@@ -417,6 +418,16 @@ def _render_factor_list() -> None:
             if selected.strategy_id:
                 st.markdown(f"关联策略 ID: **{selected.strategy_id}**")
                 _render_backtest_metrics(selected.backtest_metrics_json)
+
+                # 跳转到策略编辑页
+                if st.button("在策略编辑器中打开", key=f"jump_strategy_{selected.strategy_id}"):
+                    record = get_strategy(selected.strategy_id)
+                    if record:
+                        _load_strategy(record)
+                        st.session_state["page"] = "strategy"
+                        st.rerun()
+                    else:
+                        st.error(f"策略 #{selected.strategy_id} 不存在或已被删除。")
             else:
                 st.info("该因子尚未生成策略或回测失败。")
 
