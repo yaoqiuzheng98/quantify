@@ -117,6 +117,7 @@ def _new_strategy() -> None:
     st.session_state["strategy_source"] = NEW_STRATEGY_TEMPLATE
     st.session_state["strategy_editor_revision"] = st.session_state.get("strategy_editor_revision", 0) + 1
     st.session_state["strategy_view"] = "editor"
+    st.session_state["strategy_from_factors"] = False
     st.session_state.pop("backtest_result", None)
 
 
@@ -222,6 +223,7 @@ def _render_strategy_list(records: list[StrategyRecord]) -> None:
         row_cols[2].write(record.updated_at.strftime("%Y-%m-%d %H:%M") if record.updated_at else "--")
         if row_cols[3].button("编辑", key=f"edit_strategy_{record.id}", width="stretch"):
             _load_strategy(record)
+            st.session_state["strategy_from_factors"] = False
             st.rerun()
         if row_cols[4].button("删除", key=f"delete_strategy_{record.id}", width="stretch"):
             st.session_state["pending_delete_id"] = record.id
@@ -425,6 +427,7 @@ def _render_factor_list() -> None:
                     if record:
                         _load_strategy(record)
                         st.session_state["page"] = "strategy"
+                        st.session_state["strategy_from_factors"] = True
                         st.rerun()
                     else:
                         st.error(f"策略 #{selected.strategy_id} 不存在或已被删除。")
@@ -725,6 +728,8 @@ def main() -> None:
     with nav_col1:
         if st.button("策略回测", key="nav_strategy", use_container_width=True):
             st.session_state["page"] = "strategy"
+            st.session_state["strategy_view"] = "list"
+            st.session_state["strategy_from_factors"] = False
             st.rerun()
     with nav_col2:
         if st.button("因子库", key="nav_factor", use_container_width=True):
@@ -748,12 +753,18 @@ def main() -> None:
     with header_cols[0]:
         st.title("Quantify 回测工作台")
     with header_cols[1]:
-        return_clicked = st.button("返回列表", width="stretch")
+        from_factors = st.session_state.get("strategy_from_factors", False)
+        return_label = "返回因子列表" if from_factors else "返回策略列表"
+        return_clicked = st.button(return_label, width="stretch")
     with header_cols[2]:
         save_clicked = st.button("保存策略", type="primary", width="stretch")
     st.caption("编辑 JoinQuant 风格策略，运行 ETF/个股日线回测，并用交互图表查看收益、回撤、盈亏和成交。")
     if return_clicked:
-        st.session_state["strategy_view"] = "list"
+        if from_factors:
+            st.session_state["page"] = "factors"
+            st.session_state["strategy_from_factors"] = False
+        else:
+            st.session_state["strategy_view"] = "list"
         st.rerun()
 
     with st.sidebar:
