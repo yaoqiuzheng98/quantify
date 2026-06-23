@@ -452,7 +452,13 @@ def compose_factors_llm(
     if not all_factors:
         raise RuntimeError("因子库为空，无法合成。请先运行 `quantify factor mine`。")
 
-    summary = _factor_library_summary(all_factors)
+    # 合成因子只能从单因子中选取——合成因子的 expression 是占位符（COMPOSED(...)），
+    # 不是合法的 Qlib 表达式，无法用于计算面板。
+    single_factors = [f for f in all_factors if (f.factor_type or "single") == "single"]
+    if not single_factors:
+        raise RuntimeError("因子库中没有单因子，无法合成。")
+
+    summary = _factor_library_summary(single_factors)
     llm = LLMClient()
     plan_raw = llm.generate_compose_plan(
         factor_library_summary=summary,
@@ -462,12 +468,15 @@ def compose_factors_llm(
     if not plan_raw or not plan_raw.get("factor_ids"):
         raise RuntimeError(f"LLM 未给出有效合成计划: {plan_raw}")
 
-    # Resolve factor IDs to records
-    id_map = {f.id: f for f in all_factors if f.id is not None}
+    # Resolve factor IDs to records (only single factors are eligible)
+    id_map = {f.id: f for f in single_factors if f.id is not None}
     missing_ids = [fid for fid in plan_raw["factor_ids"] if fid not in id_map]
     selected = [id_map[fid] for fid in plan_raw["factor_ids"] if fid in id_map]
     if not selected:
-        raise RuntimeError(f"LLM 选择的因子ID {plan_raw['factor_ids']} 在库中不存在。")
+        raise RuntimeError(
+            f"LLM 选择的因子ID {plan_raw['factor_ids']} 在单因子库中不存在"
+            f"{'（含不存在的ID: ' + str(missing_ids) + '）' if missing_ids else ''}。"
+        )
 
     plan = ComposePlan(
         name=str(plan_raw.get("name", "composed")),

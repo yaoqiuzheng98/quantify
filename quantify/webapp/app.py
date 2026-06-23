@@ -25,6 +25,7 @@ from quantify.database.strategy_store import (
     list_strategies,
     save_strategy,
 )
+from quantify.database.factor_store import list_factors as db_list_factors
 
 
 @st.cache_data(show_spinner=False)
@@ -266,6 +267,158 @@ def _render_toast(message: str) -> None:
         """,
         unsafe_allow_html=True,
     )
+
+
+# ---------------------------------------------------------------------------
+# Factor library page
+# ---------------------------------------------------------------------------
+
+
+def _load_factor_records() -> list:
+    try:
+        return db_list_factors()
+    except Exception as exc:  # noqa: BLE001
+        st.warning(f"因子库暂不可用：{exc}")
+        return []
+
+
+def _factors_to_dataframe(factors: list) -> pd.DataFrame:
+    rows = []
+    for f in factors:
+        row = {
+            "ID": f.id,
+            "名称": f.name,
+            "表达式": f.expression,
+            "类型": f.factor_type or "single",
+            "状态": f.status or "",
+            "IC均值": f"{f.ic_mean:.4f}" if f.ic_mean is not None else None,
+            "ICIR": f"{f.icir:.4f}" if f.icir is not None else None,
+            "RankIC": f"{f.rank_ic_mean:.4f}" if f.rank_ic_mean is not None else None,
+            "RankICIR": f"{f.rank_icir:.4f}" if f.rank_icir is not None else None,
+            "策略ID": f.strategy_id,
+            "分类": f.category or "",
+            "假设": f.hypothesis or "",
+            "父因子": f.parent_factor_ids or "",
+        }
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def _render_backtest_metrics(metrics_json: str | None) -> None:
+    """Render the backtest metrics snapshot from JSON."""
+    if not metrics_json:
+        st.info("该因子尚未回测。")
+        return
+    import json
+
+    try:
+        m = json.loads(metrics_json)
+    except json.JSONDecodeError:
+        st.warning("回测指标 JSON 解析失败。")
+        return
+
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("总收益", f"{m.get('total_return_pct', 0):+.2f}%")
+    col2.metric("年化收益", f"{m.get('annual_return_pct', 0):+.2f}%")
+    col3.metric("夏普比率", f"{m.get('sharpe_ratio', 0):.2f}")
+    col4.metric("最大回撤", f"{m.get('max_drawdown_pct', 0):.2f}%")
+
+    col5, col6, col7, col8 = st.columns(4)
+    col5.metric("Calmar", f"{m.get('calmar_ratio', 0):.2f}")
+    col6.metric("波动率", f"{m.get('volatility_pct', 0):.2f}%")
+    col7.metric("胜率", f"{m.get('win_rate_pct', 0):.1f}%")
+    col8.metric("盈亏比", f"{m.get('profit_factor', 0):.2f}")
+
+    with st.expander("完整回测指标"):
+        st.json(m)
+
+
+def _render_factor_list() -> None:
+    st.title("因子库")
+    st.caption("LLM 挖掘的因子列表，含单因子评估指标和策略回测结果快照。")
+
+    factors = _load_factor_records()
+    if not factors:
+        st.info("因子库为空。先运行 `quantify factor mine` 挖掘因子。")
+        return
+
+    # 筛选
+    filter_col1, filter_col2, filter_col3 = st.columns(3)
+    with filter_col1:
+        status_filter = st.selectbox(
+            "状态筛选", ["全部", "passed", "evaluated", "composed"], key="factor_status_filter"
+        )
+    with filter_col2:
+        type_filter = st.selectbox("类型筛选", ["全部", "single", "composed"], key="factor_type_filter")
+    with filter_col3:
+        has_strategy = st.checkbox("仅显示已回测", key="factor_has_strategy")
+
+    filtered = factors
+    if status_filter != "全部":
+        filtered = [f for f in filtered if f.status == status_filter]
+    if type_filter != "全部":
+        filtered = [f for f in filtered if (f.factor_type or "single") == type_filter]
+    if has_strategy:
+        filtered = [f for f in filtered if f.strategy_id is not None]
+
+    st.caption(f"共 {len(filtered)} 个因子（总计 {len(factors)} 个）")
+
+    df = _factors_to_dataframe(filtered)
+    # 展示表格（隐藏长文本列）
+    display_cols = ["ID", "名称", "类型", "状态", "IC均值", "ICIR", "RankIC", "RankICIR", "策略ID", "分类"]
+    st.dataframe(
+        df[display_cols],
+        use_container_width=True,
+        hide_index=True,
+        on_select="rerun",
+        selection_mode="single-row",
+        key="factor_table_selection",
+    )
+
+    # 选中行详情
+    selection = st.session_state.get("factor_table_selection")
+    if selection is not None:
+        selected_rows = selection.get("selection", {}).get("rows", [])
+        if selected_rows:
+            idx = selected_rows[0]
+            selected = filtered[idx]
+            st.divider()
+            st.subheader(f"因子详情：{selected.name}")
+
+            detail_col1, detail_col2 = st.columns(2)
+            with detail_col1:
+                st.markdown(f"**ID**: {selected.id}")
+                st.markdown(f"**类型**: {selected.factor_type or 'single'}")
+                st.markdown(f"**状态**: {selected.status}")
+                st.markdown(f"**分类**: {selected.category or '-'}")
+                st.markdown(f"**股票池**: {selected.universe}")
+                st.markdown(f"**区间**: {selected.start_date} ~ {selected.end_date}")
+            with detail_col2:
+                st.markdown(f"**IC均值**: {selected.ic_mean}")
+                st.markdown(f"**IC标准差**: {selected.ic_std}")
+                st.markdown(f"**ICIR**: {selected.icir}")
+                st.markdown(f"**RankIC**: {selected.rank_ic_mean}")
+                st.markdown(f"**RankICIR**: {selected.rank_icir}")
+                st.markdown(f"**多空分层**: {selected.quantile_spread}")
+                st.markdown(f"**换手率**: {selected.turnover}")
+
+            st.markdown("**表达式**")
+            st.code(selected.expression, language="python")
+
+            if selected.hypothesis:
+                st.markdown("**因子逻辑**")
+                st.write(selected.hypothesis)
+
+            if selected.parent_factor_ids:
+                st.markdown(f"**父因子ID**: {selected.parent_factor_ids}")
+
+            st.divider()
+            st.subheader("策略回测结果")
+            if selected.strategy_id:
+                st.markdown(f"关联策略 ID: **{selected.strategy_id}**")
+                _render_backtest_metrics(selected.backtest_metrics_json)
+            else:
+                st.info("该因子尚未生成策略或回测失败。")
 
 
 def _run_backtest(
@@ -555,6 +708,23 @@ def main() -> None:
     _init_strategy_state()
     if saved_message := st.session_state.pop("strategy_saved_message", None):
         _render_toast(saved_message)
+
+    # 顶部页面导航
+    nav_col1, nav_col2, nav_col3 = st.columns([1, 1, 8])
+    with nav_col1:
+        if st.button("策略回测", key="nav_strategy", use_container_width=True):
+            st.session_state["page"] = "strategy"
+            st.rerun()
+    with nav_col2:
+        if st.button("因子库", key="nav_factor", use_container_width=True):
+            st.session_state["page"] = "factors"
+            st.rerun()
+
+    current_page = st.session_state.get("page", "strategy")
+
+    if current_page == "factors":
+        _render_factor_list()
+        return
 
     records = _load_strategy_records()
     if st.session_state.get("strategy_view") == "list":
