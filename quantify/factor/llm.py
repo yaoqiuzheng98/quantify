@@ -337,16 +337,25 @@ def _strategy_user_prompt(
     rebalance_days: int,
     feedback: str | None,
 ) -> str:
+    # universe="all" 时，LLM 需要一个具体的指数来做 get_index_stocks
+    if universe in {"all", "", None}:
+        universe_display = "全市场（用 get_index_stocks('000300.XSHG') 取沪深300成分股）"
+        universe_code = "000300.XSHG"
+    else:
+        universe_display = universe
+        universe_code = _to_jq_code(universe)
+
     parts = [
         f"## 因子表达式\n{factor_expression}",
         f"\n## 评估指标\n{factor_metrics}",
         "\n## 回测参数",
-        f"- 股票池: {universe}",
+        f"- 股票池: {universe_display}",
         f"- 回测区间: {start_date} ~ {end_date}",
         f"- 选股数量: top-{top_n}",
         f"- 调仓频率: 每 {rebalance_days} 个交易日",
         "- 初始资金: 1,000,000",
-        f"- 基准: {universe if universe.endswith('.XSHG') or universe.endswith('.XSHE') else '000300.XSHG'}",
+        f"- 基准: {universe_code}",
+        f'- **策略中用 `get_index_stocks("{universe_code}")` 取股票池**',
     ]
 
     # 检测因子是否用了非 OHLCV 字段，给出明确提示
@@ -369,6 +378,15 @@ def _strategy_user_prompt(
 
 # 因子表达式中可能出现的基本面字段（Qlib 支持 but 回测引擎不支持）
 _NON_OHLCV_FIELDS = {"pb", "pe", "turn", "ps", "total_mv", "circ_mv"}
+
+
+def _to_jq_code(ts_code: str) -> str:
+    """Convert Tushare code to JoinQuant format."""
+    if ts_code.endswith(".SH"):
+        return ts_code.replace(".SH", ".XSHG")
+    if ts_code.endswith(".SZ"):
+        return ts_code.replace(".SZ", ".XSHE")
+    return ts_code
 
 
 def _detect_non_ohlcv_fields(expression: str) -> list[str]:

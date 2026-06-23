@@ -29,6 +29,15 @@ class StrategyBacktestResult:
     metrics: dict | None
 
 
+@dataclass
+class _BacktestOutput:
+    """Internal: backtest metrics + strategy logs for debugging."""
+
+    metrics: dict
+    strategy_logs: list[str]
+    source: str
+
+
 def generate_and_backtest_strategy(
     factor: FactorRecord,
     *,
@@ -94,7 +103,8 @@ def generate_and_backtest_strategy(
 
         # Run backtest — _run_backtest raises on failure, we catch for retry
         try:
-            metrics = _run_backtest(source, universe, start_date, end_date, initial_cash)
+            bt_output = _run_backtest(source, universe, start_date, end_date, initial_cash)
+            metrics = bt_output.metrics
         except Exception as exc:  # noqa: BLE001
             last_error = f"回测失败: {exc}"
             log.warning(f"  回测失败(第{attempt}次): {last_error}")
@@ -113,13 +123,23 @@ def generate_and_backtest_strategy(
         if trade_count == 0:
             last_error = "回测完成但策略未产生任何交易（可能因子值全为 NaN 或选股逻辑有误）"
             log.warning(f"  空策略(第{attempt}次): {last_error}")
+            # 打印策略日志帮助诊断
+            if bt_output.strategy_logs:
+                log.warning(f"  策略日志({len(bt_output.strategy_logs)}条):")
+                for line in bt_output.strategy_logs[-10:]:
+                    log.warning(f"    {line}")
             if attempt < max_retries:
                 log.info("  将错误反馈给 LLM，重新生成策略代码...")
+                logs_text = (
+                    "\n".join(bt_output.strategy_logs[-20:]) if bt_output.strategy_logs else "(无日志输出)"
+                )
                 current_feedback = (
                     f"上一版策略代码回测未产生任何交易，可能原因:\n"
                     f"- 因子值计算结果全为 NaN（数据字段不存在或计算逻辑有误）\n"
                     f"- 选股条件过严导致无股票入选\n"
-                    f"- 调仓逻辑未实际调用 order_target_value 下单\n\n"
+                    f"- 调仓逻辑未实际调用 order_target_value 下单\n"
+                    f"- get_index_stocks 返回空列表（指数代码错误或 universe 不匹配）\n\n"
+                    f"策略日志输出（最后20条）:\n{logs_text}\n\n"
                     f"上一版策略代码:\n```python\n{source[:2000]}\n```\n"
                     f"请检查因子计算和下单逻辑，确保每个调仓日能选出股票并下单，重新输出完整的策略脚本。"
                 )
@@ -159,8 +179,8 @@ def _run_backtest(
     start_date: str,
     end_date: str,
     initial_cash: float,
-) -> dict:
-    """Run the backtest engine and return metrics dict.
+) -> _BacktestOutput:
+    """Run the backtest engine and return metrics + strategy logs.
 
     Raises on any failure (empty universe, engine errors, etc.).
     """
@@ -184,7 +204,11 @@ def _run_backtest(
         slippage_rate=0.002,
     )
     result = engine.run()
-    return result.metrics.to_dict()
+    return _BacktestOutput(
+        metrics=result.metrics.to_dict(),
+        strategy_logs=result.strategy_logs,
+        source=source,
+    )
 
 
 def _resolve_ts_codes(universe: str, start_date: str, end_date: str) -> list[str]:
