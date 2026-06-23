@@ -747,7 +747,8 @@ def factor_dump_data(
 
 @factor_app.command("mine")
 def factor_mine(
-    n_factors: int = typer.Option(15, "--n-factors", help="单因子挖掘数量（LLM一次性生成）"),
+    rounds: int = typer.Option(3, "--rounds", help="单因子挖掘迭代轮数（每轮根据IC反馈改进）"),
+    n_factors: int = typer.Option(5, "--n-factors", help="每轮生成的候选因子数"),
     n_compose: int = typer.Option(2, "--n-compose", help="合成因子数量（每个独立生成，带反馈迭代）"),
     universe: Optional[str] = typer.Option(None, "--universe", help="股票池：all / 指数代码(如 000300.SH)"),
     start_date: Optional[str] = typer.Option(None, "--start-date", help="评估起始日"),
@@ -764,12 +765,13 @@ def factor_mine(
     max_retries: int = typer.Option(3, "--max-retries", help="回测失败后反馈LLM重试次数"),
     instruction: Optional[str] = typer.Option(None, "--instruction", help="给 LLM 的额外要求"),
 ) -> None:
-    """两阶段闭环：单因子挖掘+回测 → 合成因子挖掘+回测，全部入库并关联策略。"""
+    """两阶段闭环：单因子多轮迭代挖掘+回测 → 合成因子挖掘+回测，全部入库并关联策略。"""
     from quantify.factor.evaluator import QualityThresholds
     from quantify.factor.pipeline import MiningConfig, mine_factors
 
     period_tuple = tuple(int(p) for p in periods.split(",") if p.strip())
     config = MiningConfig(
+        rounds=rounds,
         n_factors=n_factors,
         n_compose=n_compose,
         universe=universe,
@@ -791,7 +793,8 @@ def factor_mine(
         typer.echo(f"❌ 挖掘流程出错: {exc}", err=True)
         raise typer.Exit(code=1) from exc
     typer.echo(
-        f"=== 完成：单因子评估 {result.n_evaluated} 个(入库 {result.n_passed})，合成因子 {len(result.composed)} 个 ==="
+        f"=== 完成：单因子 {rounds} 轮共评估 {result.n_evaluated} 个(入库 {result.n_passed})，"
+        f"合成因子 {len(result.composed)} 个 ==="
     )
     typer.echo("\n单因子入库：")
     for rec in result.saved:

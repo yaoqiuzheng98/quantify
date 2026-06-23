@@ -40,8 +40,8 @@ quantify dashboard                                      # 启动 Streamlit 回�
 quantify dashboard --port 8502                          # 指定端口
 quantify factor dump-data                               # 【因子挖掘前置】MySQL 个股日线(前复权) → Qlib .bin
 quantify factor dump-data --ts-code 600000.SH,000001.SZ # 仅导出指定标的(快速验证)
-quantify factor mine --universe 000300.SH --n-factors 15 --n-compose 2  # 两阶段闭环挖掘
-quantify factor mine --n-factors 30 --n-compose 3 --top-n 30  # 自定义数量+选股数
+quantify factor mine --universe 000300.SH --rounds 3 --n-factors 5 --n-compose 2  # 多轮迭代挖掘
+quantify factor mine --rounds 5 --n-factors 10 --n-compose 3 --top-n 30  # 自定义轮数+数量+选股数
 quantify factor eval "Mean(\$close,5)/Mean(\$close,20)" --universe 000300.SH  # 评估单个表达式
 quantify factor list                                    # 列出已入库因子
 quantify factor compose --universe 000300.SH --top-n 50 --weight icir  # 多因子合成+选股+简单回测
@@ -125,7 +125,7 @@ quantify version                                        # 打印版本号
 - **语法校验（`factor/validator.py`）**：`validate_expression()` 用字段/算子白名单（`QLIB_FIELDS`/`QLIB_OPERATORS`）+ 括号/非法字符检查，失败即给 LLM 精确报错，省下求值开销。LLM 新增字段/算子时要同步更新这两个白名单。
 - **评估（`factor/evaluator.py`）**：`evaluate_expression()` → `D.features([expr, "$close"])` 求值 → 统计质量门槛（覆盖率/常数）→ Alphalens `get_clean_factor_and_forward_returns` → **逐日横截面**算 IC(Pearson)+RankIC(Spearman)，`IR=mean/std`、`t=IR*sqrt(n)`、多空分层收益差、顶层换手率。`QualityThresholds`（`|IC|≥0.02`、`|IC_IR|≥0.3`、`|RankIC|≥0.02`、覆盖率≥0.6）仅用于标记 `status=passed/evaluated`，**不作为入库门槛**（CLI `--min-ic/--min-icir` 可调标记阈值）。⚠️ Qlib 返回 `(instrument, datetime)` MultiIndex，alphalens 要 `(date, asset)`——已在 `_compute_factor_data` 里 `reorder_levels` 转换，改动注意别弄反。
 - **闭环（`factor/pipeline.py`）**：两阶段闭环 `mine_factors(MiningConfig)`：
-  - **Phase 1 单因子挖掘**（`--n-factors N`）：LLM 一次性生成 N 个候选→去重→校验→评估→**无门槛全部入库**（`status` 区分 passed/evaluated）→每个因子调 `strategy_gen.generate_and_backtest_strategy()`：LLM 生成聚宽格式策略代码→`BacktestEngine` 回测→`save_strategy()` 入 `strategy` 表→`update_strategy_id()` 回写 `factor_library.strategy_id`。
+  - **Phase 1 单因子挖掘**（`--rounds R --n-factors N`）：**多轮迭代**——每轮 LLM 生成 N 个候选→去重→校验→评估→**无门槛全部入库**→每个因子调 `strategy_gen.generate_and_backtest_strategy()` 生成策略+回测+入库+回写 strategy_id。每轮结束后把所有因子的 IC/IR/方向反馈给 LLM（`_build_round_feedback()`：有效方向深入探索、无效方向放弃换新维度），下一轮 LLM 据此改进。共 R 轮，模拟人类研究员"试→看结果→调整方向→再试"的工作方式。
   - **Phase 2 合成因子挖掘**（`--n-compose M`）：`compose_factors_llm()` 让 LLM 看因子库摘要+上一个合成因子的回测反馈→LLM 决定选哪些因子(`factor_ids`)+合成方式(`equal/ic/icir`)+top_n→算合成分面板→评估合成因子 IC/IR→入库(`factor_type=composed`, `parent_factor_ids` 记录父因子ID)→同样生成策略+回测+入strategy表+回写strategy_id。重复 M 次，每次把上一个合成因子的结果反馈给 LLM。
   - `factor_library` 表通过 `strategy_id` 字段关联 `strategy` 表，形成因子→策略→回测结果的完整链路。
 - **DB（`database/factor_store.py`）**：`FactorRecord` dataclass + `save_factor`/`list_factors`/`existing_expressions`/`delete_factor`；`factor_library` 表是**因子的唯一权威来源**（本地表，模型在 `models.py`）。

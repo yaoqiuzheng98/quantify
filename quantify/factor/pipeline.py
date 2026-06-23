@@ -48,8 +48,9 @@ from quantify.utils.logger import log
 
 @dataclass
 class MiningConfig:
-    # Phase 1: single-factor mining — how many factors to generate
-    n_factors: int = 15
+    # Phase 1: single-factor mining — iterative rounds
+    rounds: int = 3  # 迭代轮数（每轮生成 n_factors 个，根据 IC 反馈改进）
+    n_factors: int = 5  # 每轮生成的候选因子数
     # Phase 2: composite-factor mining — how many composite factors to build
     n_compose: int = 2
     # Common
@@ -166,6 +167,74 @@ def _backtest_factor(
     )
 
 
+def _build_round_feedback(
+    candidates: list[tuple[FactorCandidate, FactorEvaluation]],
+) -> str:
+    """Build feedback text from one round's evaluation results for the LLM.
+
+    Tells the LLM which directions worked (high |IC|) and which didn't,
+    so it can improve in the next round.
+    """
+    if not candidates:
+        return ""
+
+    lines = ["上一轮因子评估结果（按 |IC| 降序）："]
+    sorted_results = sorted(
+        candidates,
+        key=lambda x: abs(x[1].ic_mean) if x[1].ic_mean is not None else 0,
+        reverse=True,
+    )
+
+    effective = []
+    ineffective = []
+
+    for candidate, evaluation in sorted_results:
+        ic = evaluation.ic_mean or 0
+        ir = evaluation.icir or 0
+        passed = evaluation.passed
+        status = "✓有效" if passed else "✗无效"
+        line = (
+            f"  {status} {candidate.expression}\n"
+            f"    IC={ic:.4f}, IC_IR={ir:.4f}, "
+            f"Rank_IC={evaluation.rank_ic_mean or 0:.4f}, "
+            f"分层差={evaluation.quantile_spread or 0:.4f}, "
+            f"换手={evaluation.turnover or 0:.4f}\n"
+            f"    逻辑: {candidate.hypothesis}"
+        )
+        lines.append(line)
+        if passed:
+            effective.append(candidate.expression)
+        else:
+            ineffective.append(candidate.expression)
+
+    lines.append("")
+    lines.append("## 下一轮改进建议")
+    if effective:
+        lines.append(
+            f"有效方向（|IC|>{0.02}或|ICIR|>{0.3}），请在此基础上深入探索：\n"
+            f"- 尝试不同窗口长度（更短/更长）\n"
+            f"- 用 Rank/标准化变换增强截面区分度\n"
+            f"- 与其他字段组合（如价格×成交量、估值×动量）\n"
+            f"- 有效因子: {'; '.join(effective[:3])}"
+        )
+    if ineffective:
+        lines.append(
+            f"无效方向（|IC|极低），请放弃这些方向，尝试新维度：\n"
+            f"- 无效因子: {'; '.join(ineffective[:3])}\n"
+            f"- 建议探索：资金流、波动率结构、跨期限结构、非线性变换、条件因子等"
+        )
+    if not effective:
+        lines.append(
+            "⚠️ 上一轮没有有效因子。请尝试更复杂的表达式：\n"
+            "- 多算子嵌套（如 Rank(Corr(Mean($close,5), Mean($volume,5), 10))）\n"
+            "- 条件因子（如 If($volume > Mean($volume,20), $close/Ref($close,5)-1, 0)）\n"
+            "- 跨字段比值（如 $close/Mean($close,20) × $turn/Mean($turn,20)）\n"
+            "- 非线性变换（如 Power, Sign, Abs 组合）"
+        )
+
+    return "\n".join(lines)
+
+
 def mine_factors(config: MiningConfig | None = None) -> MiningResult:
     """Run the two-phase closed-loop factor-mining pipeline.
 
@@ -184,57 +253,75 @@ def mine_factors(config: MiningConfig | None = None) -> MiningResult:
     seen: set[str] = {_normalize_expr(e) for e in existing_expressions()}
 
     # ===================================================================
-    # Phase 1: Single-factor mining + strategy backtest
+    # Phase 1: Single-factor mining with iterative rounds
+    # Each round: LLM generates → evaluate → feedback IC results → next round
     # ===================================================================
-    log.info(f"=== 单因子挖掘：生成 {config.n_factors} 个候选 ===")
-    candidates = llm.generate_factors(
-        config.n_factors,
-        existing=sorted(seen)[:40],
-        feedback=None,
-        extra_instruction=config.extra_instruction,
-    )
+    round_feedback: str | None = None
 
-    for candidate in candidates:
-        norm = _normalize_expr(candidate.expression)
-        if norm in seen:
-            log.info(f"  跳过重复因子: {candidate.expression}")
-            continue
-        seen.add(norm)
-
-        syntax = validate_expression(candidate.expression)
-        if not syntax.ok:
-            log.info(f"  语法不通过: {candidate.expression} -> {syntax.error}")
-            continue
-
-        log.info(f"  评估: {candidate.expression}")
-        evaluation = evaluate_expression(
-            candidate.expression,
-            universe=config.universe,
-            start_date=config.start_date,
-            end_date=config.end_date,
-            periods=config.periods,
-            quantiles=config.quantiles,
-            primary_period=config.primary_period,
-            thresholds=config.thresholds,
+    for round_idx in range(1, config.rounds + 1):
+        log.info(f"=== 单因子挖掘 第 {round_idx}/{config.rounds} 轮：生成 {config.n_factors} 个候选 ===")
+        candidates = llm.generate_factors(
+            config.n_factors,
+            existing=sorted(seen)[:40],
+            feedback=round_feedback,
+            extra_instruction=config.extra_instruction,
         )
-        result.evaluations.append(evaluation)
 
-        # 无门槛入库
-        record = _to_record(candidate, evaluation, config)
-        saved = save_factor(record)
-        result.saved.append(saved)
-        if evaluation.passed:
-            log.info(f"  ✓ 入库(passed) {saved.name}: IC={evaluation.ic_mean:.4f} IR={evaluation.icir:.4f}")
-        else:
+        round_results: list[tuple[FactorCandidate, FactorEvaluation]] = []
+
+        for candidate in candidates:
+            norm = _normalize_expr(candidate.expression)
+            if norm in seen:
+                log.info(f"  跳过重复因子: {candidate.expression}")
+                continue
+            seen.add(norm)
+
+            syntax = validate_expression(candidate.expression)
+            if not syntax.ok:
+                log.info(f"  语法不通过: {candidate.expression} -> {syntax.error}")
+                continue
+
+            log.info(f"  评估: {candidate.expression}")
+            evaluation = evaluate_expression(
+                candidate.expression,
+                universe=config.universe,
+                start_date=config.start_date,
+                end_date=config.end_date,
+                periods=config.periods,
+                quantiles=config.quantiles,
+                primary_period=config.primary_period,
+                thresholds=config.thresholds,
+            )
+            result.evaluations.append(evaluation)
+            round_results.append((candidate, evaluation))
+
+            # 无门槛入库
+            record = _to_record(candidate, evaluation, config)
+            saved = save_factor(record)
+            result.saved.append(saved)
+            if evaluation.passed:
+                log.info(
+                    f"  ✓ 入库(passed) {saved.name}: IC={evaluation.ic_mean:.4f} IR={evaluation.icir:.4f}"
+                )
+            else:
+                log.info(
+                    f"  ✓ 入库(evaluated) {saved.name}: IC={evaluation.ic_mean:.4f} IR={evaluation.icir:.4f}  ({evaluation.reason})"
+                )
+
+            # Strategy backtest — raises on failure
+            bt_feedback = _backtest_factor(saved, config)
+            log.info(f"  {bt_feedback}")
+
+        # Build feedback for next round
+        if round_idx < config.rounds:
+            round_feedback = _build_round_feedback(round_results)
+            n_passed_round = sum(1 for _, ev in round_results if ev.passed)
             log.info(
-                f"  ✓ 入库(evaluated) {saved.name}: IC={evaluation.ic_mean:.4f} IR={evaluation.icir:.4f}  ({evaluation.reason})"
+                f"--- 第 {round_idx} 轮结束：评估 {len(round_results)} 个，"
+                f"有效 {n_passed_round} 个，反馈给 LLM 进行第 {round_idx + 1} 轮 ---"
             )
 
-        # Strategy backtest — raises on failure
-        bt_feedback = _backtest_factor(saved, config)
-        log.info(f"  {bt_feedback}")
-
-    log.info(f"单因子挖掘完成：评估 {result.n_evaluated} 个，入库 {result.n_passed} 个。")
+    log.info(f"单因子挖掘完成：{config.rounds} 轮，评估 {result.n_evaluated} 个，入库 {result.n_passed} 个。")
 
     # ===================================================================
     # Phase 2: Composite-factor mining + strategy backtest
@@ -295,7 +382,7 @@ def mine_factors(config: MiningConfig | None = None) -> MiningResult:
             )
 
     log.info(
-        f"挖掘完成：单因子 {result.n_evaluated} 个(入库 {result.n_passed})，"
+        f"挖掘完成：单因子 {config.rounds} 轮共 {result.n_evaluated} 个(入库 {result.n_passed})，"
         f"合成因子 {len(result.composed)} 个。"
     )
     return result

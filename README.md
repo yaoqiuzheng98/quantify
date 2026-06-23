@@ -16,7 +16,7 @@ Quantify 是一个 **Python** 量化研究框架。它从 **Tushare Pro** 拉取
 - **幂等增量同步**：所有写入走 `INSERT ... ON DUPLICATE KEY UPDATE`，重复运行安全，断点续跑无需额外操作；时间序列阶段自动查库内最大日期仅拉增量
 - **事件驱动回测**：逐 bar 模拟，聚宽 `initialize`/`handle_data` 策略 API 兼容，支持 ETF/个股/指数多资产，前复权历史价格、真实开盘价撮合、佣金/滑点/分红/送转、A 股印花税/T+1/涨跌停全建模，并提供聚宽同款 `get_index_stocks` 指数成分点到点选股
 - **Streamlit 工作台**：代码编辑器 + 策略持久化 + 参数面板 + 交互式收益/回撤/持仓图表 + 20+ 指标卡片
-- **LLM 因子挖掘**：两阶段闭环——单因子挖掘(N轮)→评估入库→LLM生成策略→回测入库→合成因子挖掘(M轮)→评估入库→LLM生成策略→回测入库，`factor_library` 表通过 `strategy_id` 关联 `strategy` 表形成完整链路
+- **LLM 因子挖掘**：两阶段闭环——单因子多轮迭代挖掘(每轮根据IC反馈改进)→评估入库→LLM生成策略→回测入库→合成因子挖掘(M轮)→评估入库→LLM生成策略→回测入库，`factor_library` 表通过 `strategy_id` 关联 `strategy` 表形成完整链路
 - **Tushare 客户端**：直连镜像站 HTTP 接口（不走 SDK）、滑动窗口限流、指数退避重试、并发硬上限 2 路的线程池安全调用
 
 ---
@@ -189,8 +189,8 @@ quantify dashboard --port 8502  # 指定端口
 ```bash
 quantify factor dump-data                          # 把 MySQL 个股日线(前复权)导出为 Qlib .bin
 quantify factor dump-data --ts-code 600000.SH,000001.SZ  # 仅导出指定标的(快速验证)
-quantify factor mine --universe 000300.SH --n-factors 15 --n-compose 2  # 两阶段闭环挖掘
-quantify factor mine --n-factors 30 --n-compose 3 --top-n 30  # 自定义数量+选股数
+quantify factor mine --universe 000300.SH --rounds 3 --n-factors 5 --n-compose 2  # 多轮迭代挖掘
+quantify factor mine --rounds 5 --n-factors 10 --n-compose 3 --top-n 30  # 自定义轮数+数量+选股数
 quantify factor eval "Mean($close,5)/Mean($close,20)" --universe 000300.SH  # 评估单个表达式
 quantify factor list                               # 列出已入库因子
 ```
@@ -455,16 +455,18 @@ quantify dashboard --port 8501
 
 基于 **LLM（DeepSeek）+ Qlib + Alphalens** 的两阶段自动化因子挖掘闭环：
 
-**Phase 1 — 单因子挖掘**：LLM 一次性生成 N 个 Qlib 因子表达式 → 语法校验 → Alphalens IC/分层评估 → **无门槛全部入库** → 每个因子: LLM 生成聚宽格式策略代码 → BacktestEngine 回测（含交易摩擦/T+1/涨跌停）→ 策略入 `strategy` 表 → 回写 `factor_library.strategy_id`。
+**Phase 1 — 单因子挖掘（多轮迭代）**：每轮 LLM 生成 N 个 Qlib 因子表达式 → 语法校验 → Alphalens IC/分层评估 → **无门槛全部入库** → 每个因子: LLM 生成聚宽格式策略代码 → BacktestEngine 回测（含交易摩擦/T+1/涨跌停）→ 策略入 `strategy` 表 → 回写 `factor_library.strategy_id`。**每轮结束后把 IC/IR/方向反馈给 LLM**（有效方向深入探索、无效方向放弃换新维度），下一轮据此改进。共 R 轮迭代，模拟"试→看结果→调整方向→再试"的研究流程。
 
 **Phase 2 — 合成因子挖掘**：LLM 看单因子库+上一个合成因子的回测反馈 → 决定选哪些因子、怎么合成（equal/ic/icir 加权）→ 算合成分面板 → 评估合成因子 IC/IR → 入库（`factor_type=composed`, `parent_factor_ids` 记录父因子）→ LLM 生成策略 → 回测 → 入 strategy 表 → 回写 strategy_id。重复 M 次，每次反馈迭代。
 
 ### 流水线
 
 ```
-Phase 1: 单因子挖掘 (--n-factors N)
-  LLM 一次性生成 N 个因子 → 逐个校验 → 逐个评估IC/IR → 全部入库 factor_library
+Phase 1: 单因子挖掘 (--rounds R --n-factors N)
+  每轮: LLM 生成 N 个因子 → 逐个校验 → 逐个评估IC/IR → 全部入库 factor_library
     → 每个因子: LLM 生成策略 → BacktestEngine 回测 → 入 strategy 表 → 回写 strategy_id
+    → 把 IC/IR/方向反馈给 LLM → 下一轮改进
+  共 R 轮迭代
 
 Phase 2: 合成因子挖掘 (--n-compose M)
   重复 M 次:
@@ -507,7 +509,7 @@ Corr(Rank($close, 5), Rank($volume, 5), 10)              # 量价背离
 
 ```bash
 quantify factor dump-data [--ts-code ...] [--start-date ...] [--end-date ...]
-quantify factor mine --universe 000300.SH --n-factors 15 --n-compose 2 [--top-n 20] [--rebalance 5]
+quantify factor mine --universe 000300.SH --rounds 3 --n-factors 5 --n-compose 2 [--top-n 20] [--rebalance 5]
 quantify factor eval "<表达式>" --universe 000300.SH [--save]
 quantify factor list [--status passed]
 quantify factor compose --universe 000300.SH --top-n 50 --weight icir [--export holdings.csv]
