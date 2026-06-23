@@ -68,7 +68,19 @@ quantify version                                        # 打印版本号
 
 - MySQL 8.0+，连接信息在 `.env` 中配置（前缀 `MYSQL_`）
 - `quantify db init` 先调用 `ensure_database_exists()`（CREATE DATABASE IF NOT EXISTS），再调用 `Base.metadata.create_all()`
-- **表名与 Tushare 接口名一一对应**：例如 `fund_basic` 表 ← `fund_basic` 接口，`fund_daily` 表 ← `fund_daily` 接口。例外：`strategy`（策略存储）、`factor_library`（LLM 挖掘出的因子库）是**本地表**（非 Tushare 接口）；`etf_share_size` 表来自 `etf_share_size` 接口（仅 ETF 份额规模，有别于 `fund_share` 的基金份额）。全部定义见 `quantify/database/models.py` 顶部注释。
+- **表名与 Tushare 接口名一一对应**：例如 `fund_basic` 表 ← `fund_basic` 接口，`fund_daily` 表 ← `fund_daily` 接口。`etf_share_size` 表来自 `etf_share_size` 接口（仅 ETF 份额规模，有别于 `fund_share` 的基金份额）。全部定义见 `quantify/database/models.py` 顶部注释。
+- **表的来源分类（Tushare 同步 vs 自建本地）**：
+  - **Tushare 同步表（49 张）**——由 `quantify fetch` 系列命令从 Tushare Pro API 拉取，表名与接口名一一对应：
+    - ETF（10）：`fund_basic` `etf_basic` `fund_daily` `fund_nav` `fund_adj` `fund_div` `fund_share` `etf_share_size` `fund_portfolio` `fund_manager`
+    - 个股（20）：`stock_basic` `daily` `adj_factor` `daily_basic` `weekly` `monthly` `suspend_d` `namechange` `income` `balancesheet` `cashflow` `fina_indicator` `forecast` `express` `dividend` `moneyflow_hsgt` `margin` `margin_detail` `stk_factor` `broker_recommend`
+    - 行业（6）：`trade_cal` `index_classify` `index_member_all` `sw_daily` `ci_index_member` `ci_daily`
+    - 指数（5）：`index_basic` `index_daily` `index_dailybasic` `index_weight` `moneyflow_ind_dc`
+    - 宏观/跨资产（4）：`yc_cb` `index_global` `us_tycr` `us_trycr`
+    - 期货（5）：`fut_basic` `fut_daily` `fut_holding` `fut_wsr` `fut_settle`
+    - 公募基金（1）：`fund_company`
+  - **自建本地表（2 张）**——非 Tushare 接口，由本项目内部逻辑写入：
+    - `strategy`：回测策略持久化（Dashboard / `save_strategy()` 写入，`strategy` 表是策略的唯一权威来源）
+    - `factor_library`：LLM 因子挖掘入库（`factor mine` 闭环通过门槛的因子写入，含 IC/IR/分层等评估指标）
 - 所有写入使用 `INSERT ... ON DUPLICATE KEY UPDATE`（幂等，可重复执行）
 - 标准写入路径为 `quantify/database/upsert.py` 中的 `upsert_dataframe()`
 - `EtfManager` 使用自增 `BigInteger` 主键 + 独立唯一索引 `(ts_code, name, begin_date)` —— 与其他表直接使用联合主键不同

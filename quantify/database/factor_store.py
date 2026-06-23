@@ -85,7 +85,7 @@ _COLUMN_NAMES = {c.name for c in FactorLibrary.__table__.columns}
 def list_factors(status: str | None = None) -> list[FactorRecord]:
     ensure_factor_table()
     with session_scope() as sess:
-        stmt = select(FactorLibrary).order_by(FactorLibrary.icir.desc().nullslast(), FactorLibrary.id.desc())
+        stmt = select(FactorLibrary).order_by(FactorLibrary.icir.desc(), FactorLibrary.id.desc())
         if status is not None:
             stmt = stmt.where(FactorLibrary.status == status)
         rows = sess.execute(stmt).scalars().all()

@@ -199,9 +199,11 @@ quantify factor list                               # 列出已入库因子
 
 ## 数据表清单
 
-全部 51 张表，表名与 Tushare 接口名一一对应。所有写入均为幂等 upsert。
+全部 51 张表，分为 **Tushare 同步表（49 张）** 和 **自建本地表（2 张）**。Tushare 同步表由 `quantify fetch` 从 Tushare Pro API 拉取，表名与接口名一一对应；自建表由项目内部逻辑写入，非 Tushare 接口。所有写入均为幂等 upsert。
 
-### ETF（10 表）
+### Tushare 同步表（49 张）
+
+#### ETF（10 表）
 
 | 表名 | 内容 |
 |------|------|
@@ -216,7 +218,7 @@ quantify factor list                               # 列出已入库因子
 | `fund_portfolio` | 季报披露持仓 |
 | `fund_manager` | 基金经理信息 |
 
-### A 股个股（20 表）
+#### A 股个股（20 表）
 
 | 表名 | 内容 |
 |------|------|
@@ -240,7 +242,7 @@ quantify factor list                               # 列出已入库因子
 | `stk_factor` | 每日技术指标：MACD/KDJ/RSI/BOLL/CCI |
 | `broker_recommend` | 券商月度金股 |
 
-### 行业（7 表）
+#### 行业（6 表）
 
 | 表名 | 内容 |
 |------|------|
@@ -251,7 +253,7 @@ quantify factor list                               # 列出已入库因子
 | `ci_index_member` | 中信行业成分股 |
 | `ci_daily` | 中信行业指数日线 |
 
-### 指数（5 表）
+#### 指数（5 表）
 
 | 表名 | 内容 |
 |------|------|
@@ -261,7 +263,7 @@ quantify factor list                               # 列出已入库因子
 | `index_weight` | 指数成分权重（月度） |
 | `moneyflow_ind_dc` | 东方财富行业/概念资金流 |
 
-### 宏观/跨资产（4 表）
+#### 宏观/跨资产（4 表）
 
 | 表名 | 内容 |
 |------|------|
@@ -270,7 +272,7 @@ quantify factor list                               # 列出已入库因子
 | `us_tycr` | 美国国债名义收益率曲线（1M–30Y） |
 | `us_trycr` | 美国国债实际收益率曲线（5Y–30Y） |
 
-### 期货（5 表）
+#### 期货（5 表）
 
 | 表名 | 内容 |
 |------|------|
@@ -280,11 +282,20 @@ quantify factor list                               # 列出已入库因子
 | `fut_wsr` | 仓单日报 |
 | `fut_settle` | 结算参数 |
 
-### 公募基金（1 表）
+#### 公募基金（1 表）
 
 | 表名 | 内容 |
 |------|------|
 | `fund_company` | 公募基金公司信息 |
+
+### 自建本地表（2 张）
+
+非 Tushare 接口，由项目内部逻辑写入。
+
+| 表名 | 内容 | 写入来源 |
+|------|------|---------|
+| `strategy` | 回测策略持久化（源码 + 名称 + 说明） | Dashboard「保存策略」/ `save_strategy()` |
+| `factor_library` | LLM 挖掘通过门槛的因子（表达式 + IC/IR/分层指标 + 假说） | `quantify factor mine` 闭环入库 |
 
 ---
 
