@@ -432,11 +432,13 @@ def compose_factors_llm(
     end_date: str | None = None,
     feedback: str | None = None,
     extra_instruction: str | None = None,
-) -> tuple[ComposePlan | None, pd.DataFrame | None, dict | None]:
+) -> tuple[ComposePlan, pd.DataFrame, dict]:
     """LLM-driven composition: LLM picks factors + weights, we compute the
     composite factor panel and evaluate it via Alphalens.
 
     Returns (plan, composite_score_panel, evaluation_metrics).
+
+    Raises on any failure — empty library, invalid LLM plan, empty panels, etc.
     """
     from quantify.factor.evaluator import evaluation_window_default
     from quantify.factor.llm import LLMClient
@@ -448,8 +450,7 @@ def compose_factors_llm(
 
     all_factors = list_factors()
     if not all_factors:
-        log.warning("因子库为空，无法合成。")
-        return None, None, None
+        raise RuntimeError("因子库为空，无法合成。请先运行 `quantify factor mine`。")
 
     summary = _factor_library_summary(all_factors)
     llm = LLMClient()
@@ -459,15 +460,14 @@ def compose_factors_llm(
         extra_instruction=extra_instruction,
     )
     if not plan_raw or not plan_raw.get("factor_ids"):
-        log.warning("LLM 未给出有效合成计划。")
-        return None, None, None
+        raise RuntimeError(f"LLM 未给出有效合成计划: {plan_raw}")
 
     # Resolve factor IDs to records
     id_map = {f.id: f for f in all_factors if f.id is not None}
+    missing_ids = [fid for fid in plan_raw["factor_ids"] if fid not in id_map]
     selected = [id_map[fid] for fid in plan_raw["factor_ids"] if fid in id_map]
     if not selected:
-        log.warning(f"LLM 选择的因子ID {plan_raw['factor_ids']} 在库中不存在。")
-        return None, None, None
+        raise RuntimeError(f"LLM 选择的因子ID {plan_raw['factor_ids']} 在库中不存在。")
 
     plan = ComposePlan(
         name=str(plan_raw.get("name", "composed")),
@@ -480,6 +480,8 @@ def compose_factors_llm(
     log.info(f"LLM 合成计划: {plan.name}, {len(selected)} 个因子, 权重={plan.weight_method}")
     for f in selected:
         log.info(f"  [id={f.id}] {f.expression[:80]}")
+    if missing_ids:
+        log.warning(f"  跳过不存在的因子ID: {missing_ids}")
 
     # Compute factor panels
     panels: dict[str, pd.DataFrame] = {}
@@ -489,8 +491,7 @@ def compose_factors_llm(
             panels[f.expression] = panel
     selected = [f for f in selected if f.expression in panels]
     if not selected:
-        log.warning("所有因子面板为空，无法合成。")
-        return plan, None, None
+        raise RuntimeError("所有因子面板为空，无法合成。")
 
     # Weights
     weights = _compute_weights(selected, plan.weight_method)
@@ -498,15 +499,12 @@ def compose_factors_llm(
     # Composite score
     composite = _compose_score(panels, selected, weights)
     if composite.empty:
-        log.warning("合成分数为空。")
-        return plan, None, None
+        raise RuntimeError("合成分数为空。")
 
-    # Evaluate the composite as a single factor via Alphalens
-    # Convert composite panel back to the (asset, date) MultiIndex Series that
-    # evaluate_expression expects internally — but we can't call evaluate_expression
-    # directly since it computes the expression via Qlib. Instead, we compute IC
-    # metrics here using the same logic.
+    # Evaluate the composite as a single factor
     eval_metrics = _evaluate_composite_panel(composite, universe, start_date, end_date)
+    if not eval_metrics:
+        raise RuntimeError("合成因子评估失败，无法计算 IC/IR。")
     log.info(
         f"合成因子评估: IC={eval_metrics.get('ic_mean', 'NA')} "
         f"IR={eval_metrics.get('icir', 'NA')} "

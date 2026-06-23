@@ -189,8 +189,8 @@ quantify dashboard --port 8502  # 指定端口
 ```bash
 quantify factor dump-data                          # 把 MySQL 个股日线(前复权)导出为 Qlib .bin
 quantify factor dump-data --ts-code 600000.SH,000001.SZ  # 仅导出指定标的(快速验证)
-quantify factor mine --universe 000300.SH --single-rounds 3 --compose-rounds 2  # 两阶段闭环挖掘
-quantify factor mine --single-rounds 5 --compose-rounds 3 --top-n 30  # 自定义轮数+选股数
+quantify factor mine --universe 000300.SH --n-factors 15 --n-compose 2  # 两阶段闭环挖掘
+quantify factor mine --n-factors 30 --n-compose 3 --top-n 30  # 自定义数量+选股数
 quantify factor eval "Mean($close,5)/Mean($close,20)" --universe 000300.SH  # 评估单个表达式
 quantify factor list                               # 列出已入库因子
 ```
@@ -437,20 +437,20 @@ quantify dashboard --port 8501
 
 基于 **LLM（DeepSeek）+ Qlib + Alphalens** 的两阶段自动化因子挖掘闭环：
 
-**Phase 1 — 单因子挖掘（N 轮）**：LLM 生成 Qlib 因子表达式 → 语法校验 → Alphalens IC/分层评估 → **无门槛全部入库** → LLM 生成聚宽格式策略代码 → BacktestEngine 回测（含交易摩擦/T+1/涨跌停）→ 策略入 `strategy` 表 → 回写 `factor_library.strategy_id` → 回测结果回灌 LLM 迭代。
+**Phase 1 — 单因子挖掘**：LLM 一次性生成 N 个 Qlib 因子表达式 → 语法校验 → Alphalens IC/分层评估 → **无门槛全部入库** → 每个因子: LLM 生成聚宽格式策略代码 → BacktestEngine 回测（含交易摩擦/T+1/涨跌停）→ 策略入 `strategy` 表 → 回写 `factor_library.strategy_id`。
 
-**Phase 2 — 合成因子挖掘（M 轮）**：LLM 看单因子库+回测反馈 → 决定选哪些因子、怎么合成（equal/ic/icir 加权）→ 算合成分面板 → 评估合成因子 IC/IR → 入库（`factor_type=composed`, `parent_factor_ids` 记录父因子）→ LLM 生成策略 → 回测 → 入 strategy 表 → 回写 strategy_id。
+**Phase 2 — 合成因子挖掘**：LLM 看单因子库+上一个合成因子的回测反馈 → 决定选哪些因子、怎么合成（equal/ic/icir 加权）→ 算合成分面板 → 评估合成因子 IC/IR → 入库（`factor_type=composed`, `parent_factor_ids` 记录父因子）→ LLM 生成策略 → 回测 → 入 strategy 表 → 回写 strategy_id。重复 M 次，每次反馈迭代。
 
 ### 流水线
 
 ```
-Phase 1: 单因子挖掘 (--single-rounds N)
-  LLM 生成因子 → 校验 → 评估IC/IR → 全部入库 factor_library
+Phase 1: 单因子挖掘 (--n-factors N)
+  LLM 一次性生成 N 个因子 → 逐个校验 → 逐个评估IC/IR → 全部入库 factor_library
     → 每个因子: LLM 生成策略 → BacktestEngine 回测 → 入 strategy 表 → 回写 strategy_id
-    → 回测结果作为反馈喂给下一轮
 
-Phase 2: 合成因子挖掘 (--compose-rounds M)
-  LLM 看因子库+回测反馈 → 决定选哪些因子+合成方式
+Phase 2: 合成因子挖掘 (--n-compose M)
+  重复 M 次:
+    LLM 看因子库 + 上一个合成因子的回测反馈 → 决定选哪些因子+合成方式
     → 算合成分 → 评估IC/IR → 入库(factor_type=composed)
     → LLM 生成策略 → 回测 → 入 strategy 表 → 回写 strategy_id
 ```
@@ -489,7 +489,7 @@ Corr(Rank($close, 5), Rank($volume, 5), 10)              # 量价背离
 
 ```bash
 quantify factor dump-data [--ts-code ...] [--start-date ...] [--end-date ...]
-quantify factor mine --universe 000300.SH --single-rounds 3 --compose-rounds 2 [--top-n 20] [--rebalance 5]
+quantify factor mine --universe 000300.SH --n-factors 15 --n-compose 2 [--top-n 20] [--rebalance 5]
 quantify factor eval "<表达式>" --universe 000300.SH [--save]
 quantify factor list [--status passed]
 quantify factor compose --universe 000300.SH --top-n 50 --weight icir [--export holdings.csv]

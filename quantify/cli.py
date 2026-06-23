@@ -747,9 +747,8 @@ def factor_dump_data(
 
 @factor_app.command("mine")
 def factor_mine(
-    single_rounds: int = typer.Option(3, "--single-rounds", help="单因子挖掘轮数"),
-    compose_rounds: int = typer.Option(2, "--compose-rounds", help="合成因子挖掘轮数"),
-    per_round: int = typer.Option(5, "--per-round", help="每轮生成候选因子数"),
+    n_factors: int = typer.Option(15, "--n-factors", help="单因子挖掘数量（LLM一次性生成）"),
+    n_compose: int = typer.Option(2, "--n-compose", help="合成因子数量（每个独立生成，带反馈迭代）"),
     universe: Optional[str] = typer.Option(None, "--universe", help="股票池：all / 指数代码(如 000300.SH)"),
     start_date: Optional[str] = typer.Option(None, "--start-date", help="评估起始日"),
     end_date: Optional[str] = typer.Option(None, "--end-date", help="评估结束日"),
@@ -762,6 +761,7 @@ def factor_mine(
     top_n: int = typer.Option(20, "--top-n", help="策略选股数量"),
     rebalance: int = typer.Option(5, "--rebalance", help="策略调仓频率(交易日)"),
     initial_cash: float = typer.Option(1_000_000, "--initial-cash", help="策略初始资金"),
+    max_retries: int = typer.Option(3, "--max-retries", help="回测失败后反馈LLM重试次数"),
     instruction: Optional[str] = typer.Option(None, "--instruction", help="给 LLM 的额外要求"),
 ) -> None:
     """两阶段闭环：单因子挖掘+回测 → 合成因子挖掘+回测，全部入库并关联策略。"""
@@ -770,9 +770,8 @@ def factor_mine(
 
     period_tuple = tuple(int(p) for p in periods.split(",") if p.strip())
     config = MiningConfig(
-        single_rounds=single_rounds,
-        per_round=per_round,
-        compose_rounds=compose_rounds,
+        n_factors=n_factors,
+        n_compose=n_compose,
         universe=universe,
         start_date=start_date,
         end_date=end_date,
@@ -784,8 +783,13 @@ def factor_mine(
         backtest_top_n=top_n,
         backtest_rebalance_days=rebalance,
         backtest_initial_cash=initial_cash,
+        backtest_max_retries=max_retries,
     )
-    result = mine_factors(config)
+    try:
+        result = mine_factors(config)
+    except Exception as exc:
+        typer.echo(f"❌ 挖掘流程出错: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
     typer.echo(
         f"=== 完成：单因子评估 {result.n_evaluated} 个(入库 {result.n_passed})，合成因子 {len(result.composed)} 个 ==="
     )
