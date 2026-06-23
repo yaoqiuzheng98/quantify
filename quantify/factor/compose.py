@@ -394,3 +394,194 @@ def compose_factors(config: ComposeConfig | None = None) -> ComposeResult:
         f"日胜率={m.get('win_rate', 0):.2%}"
     )
     return result
+
+
+# ---------------------------------------------------------------------------
+# LLM-driven composition (used by the mining pipeline)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ComposePlan:
+    """LLM's plan for composing a composite factor."""
+
+    name: str
+    factor_ids: list[int]
+    weight_method: WeightMethod
+    hypothesis: str
+    top_n: int = 20
+    rebalance_days: int = 5
+
+
+def _factor_library_summary(factors: list[FactorRecord], max_show: int = 30) -> str:
+    """Build a text summary of the factor library for the LLM."""
+    lines = []
+    for f in factors[:max_show]:
+        ic = f"{f.ic_mean:.4f}" if f.ic_mean is not None else "NA"
+        ir = f"{f.icir:.4f}" if f.icir is not None else "NA"
+        lines.append(f"  [id={f.id}] {f.name}  IC={ic} IR={ir}  type={f.factor_type}  {f.expression[:80]}")
+    if len(factors) > max_show:
+        lines.append(f"  ... 共 {len(factors)} 个因子")
+    return "\n".join(lines)
+
+
+def compose_factors_llm(
+    *,
+    universe: str | list[str] | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    feedback: str | None = None,
+    extra_instruction: str | None = None,
+) -> tuple[ComposePlan | None, pd.DataFrame | None, dict | None]:
+    """LLM-driven composition: LLM picks factors + weights, we compute the
+    composite factor panel and evaluate it via Alphalens.
+
+    Returns (plan, composite_score_panel, evaluation_metrics).
+    """
+    from quantify.factor.evaluator import evaluation_window_default
+    from quantify.factor.llm import LLMClient
+
+    if not start_date or not end_date:
+        ds, de = evaluation_window_default()
+        start_date = start_date or ds
+        end_date = end_date or de
+
+    all_factors = list_factors()
+    if not all_factors:
+        log.warning("因子库为空，无法合成。")
+        return None, None, None
+
+    summary = _factor_library_summary(all_factors)
+    llm = LLMClient()
+    plan_raw = llm.generate_compose_plan(
+        factor_library_summary=summary,
+        feedback=feedback,
+        extra_instruction=extra_instruction,
+    )
+    if not plan_raw or not plan_raw.get("factor_ids"):
+        log.warning("LLM 未给出有效合成计划。")
+        return None, None, None
+
+    # Resolve factor IDs to records
+    id_map = {f.id: f for f in all_factors if f.id is not None}
+    selected = [id_map[fid] for fid in plan_raw["factor_ids"] if fid in id_map]
+    if not selected:
+        log.warning(f"LLM 选择的因子ID {plan_raw['factor_ids']} 在库中不存在。")
+        return None, None, None
+
+    plan = ComposePlan(
+        name=str(plan_raw.get("name", "composed")),
+        factor_ids=[f.id for f in selected],
+        weight_method=plan_raw.get("weight_method", "icir"),
+        hypothesis=str(plan_raw.get("hypothesis", "")),
+        top_n=int(plan_raw.get("top_n", 20)),
+        rebalance_days=int(plan_raw.get("rebalance_days", 5)),
+    )
+    log.info(f"LLM 合成计划: {plan.name}, {len(selected)} 个因子, 权重={plan.weight_method}")
+    for f in selected:
+        log.info(f"  [id={f.id}] {f.expression[:80]}")
+
+    # Compute factor panels
+    panels: dict[str, pd.DataFrame] = {}
+    for f in selected:
+        panel = compute_factor_panel(f.expression, universe, start_date, end_date)
+        if not panel.empty:
+            panels[f.expression] = panel
+    selected = [f for f in selected if f.expression in panels]
+    if not selected:
+        log.warning("所有因子面板为空，无法合成。")
+        return plan, None, None
+
+    # Weights
+    weights = _compute_weights(selected, plan.weight_method)
+
+    # Composite score
+    composite = _compose_score(panels, selected, weights)
+    if composite.empty:
+        log.warning("合成分数为空。")
+        return plan, None, None
+
+    # Evaluate the composite as a single factor via Alphalens
+    # Convert composite panel back to the (asset, date) MultiIndex Series that
+    # evaluate_expression expects internally — but we can't call evaluate_expression
+    # directly since it computes the expression via Qlib. Instead, we compute IC
+    # metrics here using the same logic.
+    eval_metrics = _evaluate_composite_panel(composite, universe, start_date, end_date)
+    log.info(
+        f"合成因子评估: IC={eval_metrics.get('ic_mean', 'NA')} "
+        f"IR={eval_metrics.get('icir', 'NA')} "
+        f"RankIC={eval_metrics.get('rank_ic_mean', 'NA')}"
+    )
+    return plan, composite, eval_metrics
+
+
+def _evaluate_composite_panel(
+    score: pd.DataFrame,
+    universe: str | list[str] | None,
+    start_date: str,
+    end_date: str,
+) -> dict:
+    """Evaluate the composite score panel: compute IC/RankIC/IR using close prices."""
+    from qlib.data import D
+
+    from quantify.factor.evaluator import _resolve_universe
+    from quantify.factor.qlib_data import init_qlib
+
+    init_qlib()
+    instruments = _resolve_universe(universe, start_date, end_date)
+    close_raw = D.features(instruments, ["$close"], start_time=start_date, end_time=end_date)
+    if close_raw is None or close_raw.empty:
+        return {}
+
+    close_s = close_raw.iloc[:, 0]
+    close_s.index = close_s.index.set_names(["asset", "date"])
+    close_s = close_s.reorder_levels(["date", "asset"]).sort_index()
+    close_panel = close_s.unstack("asset")
+
+    # Align dates
+    common_dates = score.index.intersection(close_panel.index)
+    score = score.loc[common_dates]
+    close_panel = close_panel.loc[common_dates]
+
+    # Forward returns
+    fwd_5 = close_panel.pct_change(5).shift(-5)
+
+    # Cross-sectional IC per day
+    import numpy as np
+
+    ic_series = []
+    rank_ic_series = []
+    for dt in score.index:
+        s = score.loc[dt].dropna()
+        r = fwd_5.loc[dt] if dt in fwd_5.index else None
+        if r is None:
+            continue
+        r = r.dropna()
+        common = s.index.intersection(r.index)
+        if len(common) < 10:
+            continue
+        s_aligned = s.loc[common]
+        r_aligned = r.loc[common]
+        ic_series.append(s_aligned.corr(r_aligned))
+        rank_ic_series.append(s_aligned.corr(r_aligned, method="spearman"))
+
+    if not ic_series:
+        return {}
+
+    ic_arr = np.array(ic_series, dtype=float)
+    rank_arr = np.array(rank_ic_series, dtype=float)
+    ic_mean = float(np.nanmean(ic_arr))
+    ic_std = float(np.nanstd(ic_arr, ddof=1)) if len(ic_arr) > 1 else 0.0
+    icir = float(ic_mean / ic_std) if ic_std != 0 else 0.0
+    rank_ic_mean = float(np.nanmean(rank_arr))
+    rank_std = float(np.nanstd(rank_arr, ddof=1)) if len(rank_arr) > 1 else 0.0
+    rank_icir = float(rank_ic_mean / rank_std) if rank_std != 0 else 0.0
+
+    return {
+        "ic_mean": ic_mean,
+        "ic_std": ic_std,
+        "icir": icir,
+        "rank_ic_mean": rank_ic_mean,
+        "rank_icir": rank_icir,
+        "n_days": len(ic_arr),
+    }

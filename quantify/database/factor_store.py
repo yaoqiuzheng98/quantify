@@ -39,6 +39,9 @@ class FactorRecord:
     iteration: int | None = None
     metrics_json: str | None = None
     report_path: str | None = None
+    strategy_id: int | None = None
+    factor_type: str = "single"
+    parent_factor_ids: str | None = None
     id: int | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
@@ -74,6 +77,9 @@ def _to_record(row: FactorLibrary) -> FactorRecord:
         iteration=row.iteration,
         metrics_json=row.metrics_json,
         report_path=row.report_path,
+        strategy_id=row.strategy_id,
+        factor_type=row.factor_type,
+        parent_factor_ids=row.parent_factor_ids,
         created_at=row.created_at,
         updated_at=row.updated_at,
     )
@@ -143,6 +149,18 @@ def delete_factor(factor_id: int) -> bool:
         if row is None:
             return False
         sess.delete(row)
+        return True
+
+
+def update_strategy_id(factor_id: int, strategy_id: int) -> bool:
+    """Link a factor to its backtest strategy row after the strategy is saved."""
+    ensure_factor_table()
+    with session_scope() as sess:
+        row = sess.get(FactorLibrary, factor_id)
+        if row is None:
+            return False
+        row.strategy_id = strategy_id
+        sess.flush()
         return True
 
 

@@ -747,7 +747,8 @@ def factor_dump_data(
 
 @factor_app.command("mine")
 def factor_mine(
-    rounds: int = typer.Option(3, "--rounds", help="LLM 迭代轮数"),
+    single_rounds: int = typer.Option(3, "--single-rounds", help="单因子挖掘轮数"),
+    compose_rounds: int = typer.Option(2, "--compose-rounds", help="合成因子挖掘轮数"),
     per_round: int = typer.Option(5, "--per-round", help="每轮生成候选因子数"),
     universe: Optional[str] = typer.Option(None, "--universe", help="股票池：all / 指数代码(如 000300.SH)"),
     start_date: Optional[str] = typer.Option(None, "--start-date", help="评估起始日"),
@@ -758,16 +759,20 @@ def factor_mine(
     min_icir: float = typer.Option(
         0.3, "--min-icir", help="|IC_IR| 门槛（仅标记 status=passed，不影响入库）"
     ),
+    top_n: int = typer.Option(20, "--top-n", help="策略选股数量"),
+    rebalance: int = typer.Option(5, "--rebalance", help="策略调仓频率(交易日)"),
+    initial_cash: float = typer.Option(1_000_000, "--initial-cash", help="策略初始资金"),
     instruction: Optional[str] = typer.Option(None, "--instruction", help="给 LLM 的额外要求"),
 ) -> None:
-    """运行 LLM 因子挖掘闭环，所有评估完成的因子直接入库 factor_library（无门槛）。"""
+    """两阶段闭环：单因子挖掘+回测 → 合成因子挖掘+回测，全部入库并关联策略。"""
     from quantify.factor.evaluator import QualityThresholds
     from quantify.factor.pipeline import MiningConfig, mine_factors
 
     period_tuple = tuple(int(p) for p in periods.split(",") if p.strip())
     config = MiningConfig(
-        rounds=rounds,
+        single_rounds=single_rounds,
         per_round=per_round,
+        compose_rounds=compose_rounds,
         universe=universe,
         start_date=start_date,
         end_date=end_date,
@@ -776,11 +781,27 @@ def factor_mine(
         primary_period=period_tuple[0] if period_tuple else 1,
         thresholds=QualityThresholds(min_abs_ic=min_ic, min_abs_icir=min_icir),
         extra_instruction=instruction,
+        backtest_top_n=top_n,
+        backtest_rebalance_days=rebalance,
+        backtest_initial_cash=initial_cash,
     )
     result = mine_factors(config)
-    typer.echo(f"=== 完成：评估 {result.n_evaluated} 个，入库 {result.n_passed} 个 ===")
+    typer.echo(
+        f"=== 完成：单因子评估 {result.n_evaluated} 个(入库 {result.n_passed})，合成因子 {len(result.composed)} 个 ==="
+    )
+    typer.echo("\n单因子入库：")
     for rec in result.saved:
-        typer.echo(f"  {rec.name}: IC={rec.ic_mean:.4f} IR={rec.icir:.4f}  {rec.expression}")
+        sid = f"策略#{rec.strategy_id}" if rec.strategy_id else "无策略"
+        ic = f"{rec.ic_mean:.4f}" if rec.ic_mean is not None else "NA"
+        ir = f"{rec.icir:.4f}" if rec.icir is not None else "NA"
+        typer.echo(f"  [{rec.id}] {rec.name}  IC={ic} IR={ir}  {sid}  {rec.expression[:60]}")
+    if result.composed:
+        typer.echo("\n合成因子入库：")
+        for rec in result.composed:
+            sid = f"策略#{rec.strategy_id}" if rec.strategy_id else "无策略"
+            ic = f"{rec.ic_mean:.4f}" if rec.ic_mean is not None else "NA"
+            ir = f"{rec.icir:.4f}" if rec.icir is not None else "NA"
+            typer.echo(f"  [{rec.id}] {rec.name}  IC={ic} IR={ir}  {sid}  父={rec.parent_factor_ids}")
 
 
 @factor_app.command("eval")

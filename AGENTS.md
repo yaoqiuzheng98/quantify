@@ -40,8 +40,8 @@ quantify dashboard                                      # 启动 Streamlit 回�
 quantify dashboard --port 8502                          # 指定端口
 quantify factor dump-data                               # 【因子挖掘前置】MySQL 个股日线(前复权) → Qlib .bin
 quantify factor dump-data --ts-code 600000.SH,000001.SZ # 仅导出指定标的(快速验证)
-quantify factor mine --universe 000300.SH --rounds 3 --per-round 5  # LLM 因子挖掘闭环
-quantify factor mine --min-ic 0.03 --min-icir 0.5       # 自定义 status=passed 标记门槛（不影响入库）
+quantify factor mine --universe 000300.SH --single-rounds 3 --compose-rounds 2  # 两阶段闭环挖掘
+quantify factor mine --single-rounds 5 --compose-rounds 3 --top-n 30  # 自定义轮数+选股数
 quantify factor eval "Mean(\$close,5)/Mean(\$close,20)" --universe 000300.SH  # 评估单个表达式
 quantify factor list                                    # 列出已入库因子
 quantify factor compose --universe 000300.SH --top-n 50 --weight icir  # 多因子合成+选股+简单回测
@@ -59,7 +59,7 @@ quantify version                                        # 打印版本号
 - 回测引擎：事件驱动逐 bar 模拟，兼容 JoinQuant 策略 API（`quantify/backtest/`）
 - Streamlit Web 回测工作台（`quantify/webapp/app.py`）
 - 策略持久化：`quantify/database/strategy_store.py` → `strategy` 表
-- **LLM 因子挖掘（`quantify/factor/`）**：DeepSeek 生成 Qlib 表达式 → 语法校验 → Qlib 求值 + Alphalens IC/分层评估 → 反馈闭环 → **无门槛全部入库** `factor_library`（status 区分 passed/evaluated，保留给后面正交组合使用）（详见下文「因子挖掘」）
+- **LLM 因子挖掘（`quantify/factor/`）**：两阶段闭环——Phase1 单因子挖掘(N轮): LLM生成→评估IC/IR→无门槛入库→LLM生成策略→BacktestEngine回测→入strategy表→回写strategy_id；Phase2 合成因子挖掘(M轮): LLM看因子库+回测反馈决定选哪些因子+合成方式→算合成分→评估IC/IR→入库(factor_type=composed)→LLM生成策略→回测→入strategy表→回写strategy_id（详见下文「因子挖掘」）
 
 **尚未实现**：
 - `agent/`、`analysis/` 子包 —— 这些目录**还不存在**（`factor/` 已实现）
@@ -123,9 +123,13 @@ quantify version                                        # 打印版本号
   - `init_qlib()` 幂等初始化（`qlib.init(provider_uri, region=cn)`）；数据缺失会抛错提示先 `dump-data`。
 - **语法校验（`factor/validator.py`）**：`validate_expression()` 用字段/算子白名单（`QLIB_FIELDS`/`QLIB_OPERATORS`）+ 括号/非法字符检查，失败即给 LLM 精确报错，省下求值开销。LLM 新增字段/算子时要同步更新这两个白名单。
 - **评估（`factor/evaluator.py`）**：`evaluate_expression()` → `D.features([expr, "$close"])` 求值 → 统计质量门槛（覆盖率/常数）→ Alphalens `get_clean_factor_and_forward_returns` → **逐日横截面**算 IC(Pearson)+RankIC(Spearman)，`IR=mean/std`、`t=IR*sqrt(n)`、多空分层收益差、顶层换手率。`QualityThresholds`（`|IC|≥0.02`、`|IC_IR|≥0.3`、`|RankIC|≥0.02`、覆盖率≥0.6）仅用于标记 `status=passed/evaluated`，**不作为入库门槛**（CLI `--min-ic/--min-icir` 可调标记阈值）。⚠️ Qlib 返回 `(instrument, datetime)` MultiIndex，alphalens 要 `(date, asset)`——已在 `_compute_factor_data` 里 `reorder_levels` 转换，改动注意别弄反。
-- **闭环（`factor/pipeline.py`）**：每轮把**现有因子库表达式 + 上一轮评估反馈文本**喂给 LLM → 去重(`_normalize_expr` 去空白)→ 校验 → 评估 → **无门槛全部 `save_factor()` 入库** `factor_library`（按因子名唯一 upsert，名字 = `slug(name)_sha1(expr)[:6]`，`status` 区分 passed/evaluated 供下游 compose 按 `--min-icir` 筛选）。反馈文本来自 `FactorEvaluation.to_feedback_text()`（含通过+未通过原因，帮助 LLM 迭代改进）。
+- **闭环（`factor/pipeline.py`）**：两阶段闭环 `mine_factors(MiningConfig)`：
+  - **Phase 1 单因子挖掘**（`--single-rounds N`）：每轮 LLM 提候选→去重→校验→评估→**无门槛全部入库**（`status` 区分 passed/evaluated）→每个因子调 `strategy_gen.generate_and_backtest_strategy()`：LLM 生成聚宽格式策略代码→`BacktestEngine` 回测→`save_strategy()` 入 `strategy` 表→`update_strategy_id()` 回写 `factor_library.strategy_id`。回测结果也作为反馈喂给下一轮 LLM。
+  - **Phase 2 合成因子挖掘**（`--compose-rounds M`）：`compose_factors_llm()` 让 LLM 看因子库摘要+回测反馈→LLM 决定选哪些因子(`factor_ids`)+合成方式(`equal/ic/icir`)+top_n→算合成分面板→评估合成因子 IC/IR→入库(`factor_type=composed`, `parent_factor_ids` 记录父因子ID)→同样生成策略+回测+入strategy表+回写strategy_id。
+  - `factor_library` 表通过 `strategy_id` 字段关联 `strategy` 表，形成因子→策略→回测结果的完整链路。
 - **DB（`database/factor_store.py`）**：`FactorRecord` dataclass + `save_factor`/`list_factors`/`existing_expressions`/`delete_factor`；`factor_library` 表是**因子的唯一权威来源**（本地表，模型在 `models.py`）。
-- **LLM（`factor/llm.py`）**：`LLMClient` 用 openai SDK 指向 DeepSeek（`response_format=json_object` + tenacity 重试）；`parse_factor_response()` 容错解析（去 ```json 围栏、提取首个 JSON 对象）。prompt 在 `_SYSTEM_PROMPT`，要求 LLM 组合已有 alpha 或基于数据提假说，并产出严格 JSON。
+- **LLM（`factor/llm.py`）**：`LLMClient` 用 openai SDK 指向 DeepSeek（`response_format=json_object` + tenacity 重试）；`parse_factor_response()` 容错解析（去 ```json 围栏、提取首个 JSON 对象）。prompt 在 `_SYSTEM_PROMPT`，要求 LLM 组合已有 alpha 或基于数据提假说，并产出严格 JSON。新增 `generate_strategy()`（LLM 生成聚宽格式策略代码，不走 json_object）和 `generate_compose_plan()`（LLM 决定合成因子方案，返回 JSON）。
+- **策略生成（`factor/strategy_gen.py`）**：`generate_and_backtest_strategy(factor, ...)` 全流程：LLM 看因子表达式+评估指标→生成聚宽格式策略代码→`BacktestEngine` 回测（含交易摩擦/T+1/涨跌停）→`save_strategy()` 入 `strategy` 表→`update_strategy_id()` 回写 `factor_library.strategy_id`。回测结果（总收益/夏普/回撤等）作为反馈文本喂给下一轮 LLM 优化。
 - **典型流程**：`pip install -e ".[mining]"` → `.env` 配 `LLM_API_KEY` → `quantify factor dump-data`（先 `fetch stock all`）→ `quantify factor mine --universe 000300.SH`。
 - **组合构建（`factor/compose.py`）**：从 `factor_library` 选因子（按 |ICIR| 排序，`--min-icir` 门槛）→ 各因子 Qlib 求值得 (date×asset) 面板 → 截面 zscore 标准化 + `sign(ic_mean)` 方向对齐 → 加权合成（`--weight equal/ic/icir`）→ 去相关过滤（`--max-corr`，因子间 |corr| 超阈值则剔除）→ 每日按合成分选 top-N（`--top-n`），`--rebalance` 日调仓 → 向量化回测算总收益/年化/夏普/最大回撤/日胜率。`--export` 可导出每日持仓矩阵 CSV。**注意**：这是轻量向量化回测，不经过事件驱动 `backtest` 引擎（那是策略层，含交易摩擦/T+1/涨跌停等）；compose 的定位是"多因子合成效果快检"，真正跑策略仍需把选股结果接入 backtest 引擎。
 

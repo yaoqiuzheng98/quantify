@@ -132,10 +132,21 @@ class FactorLibrary(Base):
     turnover: Mapped[float | None] = mapped_column(Float, comment="顶层分位换手率")
     coverage: Mapped[float | None] = mapped_column(Float, comment="有效覆盖率(非空占比)")
 
-    status: Mapped[str] = mapped_column(String(16), default="passed", comment="状态 passed/candidate")
+    status: Mapped[str] = mapped_column(
+        String(16), default="passed", comment="状态 passed/evaluated/composed"
+    )
     iteration: Mapped[int | None] = mapped_column(Integer, comment="挖掘迭代轮次")
     metrics_json: Mapped[str | None] = mapped_column(Text, comment="完整评估指标 JSON")
     report_path: Mapped[str | None] = mapped_column(Text, comment="Alphalens 报告文件路径")
+
+    # 策略关联：因子对应的回测策略 ID（指向 strategy 表），由 strategy_gen 模块回写
+    strategy_id: Mapped[int | None] = mapped_column(BigInteger, comment="关联策略表ID（回测后回写）")
+    # 因子类型：single（单因子挖掘）/ composed（合成因子）
+    factor_type: Mapped[str] = mapped_column(String(16), default="single", comment="因子类型 single/composed")
+    # 合成因子的父因子 ID 列表（逗号分隔），仅 composed 因子有值
+    parent_factor_ids: Mapped[str | None] = mapped_column(
+        String(256), comment="合成因子的父因子ID列表(逗号分隔)"
+    )
 
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), comment="创建时间")
     updated_at: Mapped[datetime] = mapped_column(

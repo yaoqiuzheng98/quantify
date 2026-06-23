@@ -16,7 +16,7 @@ Quantify 是一个 **Python** 量化研究框架。它从 **Tushare Pro** 拉取
 - **幂等增量同步**：所有写入走 `INSERT ... ON DUPLICATE KEY UPDATE`，重复运行安全，断点续跑无需额外操作；时间序列阶段自动查库内最大日期仅拉增量
 - **事件驱动回测**：逐 bar 模拟，聚宽 `initialize`/`handle_data` 策略 API 兼容，支持 ETF/个股/指数多资产，前复权历史价格、真实开盘价撮合、佣金/滑点/分红/送转、A 股印花税/T+1/涨跌停全建模，并提供聚宽同款 `get_index_stocks` 指数成分点到点选股
 - **Streamlit 工作台**：代码编辑器 + 策略持久化 + 参数面板 + 交互式收益/回撤/持仓图表 + 20+ 指标卡片
-- **LLM 因子挖掘**：DeepSeek 生成 Qlib 因子表达式 → 语法校验 → Alphalens IC/分层回测评估 → 评估反馈回灌 LLM 的**闭环迭代**，**无门槛全部入库** `factor_library`（`status` 区分 passed/evaluated），保留给后面正交组合使用
+- **LLM 因子挖掘**：两阶段闭环——单因子挖掘(N轮)→评估入库→LLM生成策略→回测入库→合成因子挖掘(M轮)→评估入库→LLM生成策略→回测入库，`factor_library` 表通过 `strategy_id` 关联 `strategy` 表形成完整链路
 - **Tushare 客户端**：直连镜像站 HTTP 接口（不走 SDK）、滑动窗口限流、指数退避重试、并发硬上限 2 路的线程池安全调用
 
 ---
@@ -189,8 +189,8 @@ quantify dashboard --port 8502  # 指定端口
 ```bash
 quantify factor dump-data                          # 把 MySQL 个股日线(前复权)导出为 Qlib .bin
 quantify factor dump-data --ts-code 600000.SH,000001.SZ  # 仅导出指定标的(快速验证)
-quantify factor mine --universe 000300.SH --rounds 3 --per-round 5   # 运行 LLM 闭环挖掘
-quantify factor mine --min-ic 0.03 --min-icir 0.5  # 自定义 status=passed 标记门槛（不影响入库）
+quantify factor mine --universe 000300.SH --single-rounds 3 --compose-rounds 2  # 两阶段闭环挖掘
+quantify factor mine --single-rounds 5 --compose-rounds 3 --top-n 30  # 自定义轮数+选股数
 quantify factor eval "Mean($close,5)/Mean($close,20)" --universe 000300.SH  # 评估单个表达式
 quantify factor list                               # 列出已入库因子
 ```
@@ -435,19 +435,24 @@ quantify dashboard --port 8501
 
 ## LLM 因子挖掘
 
-基于 **LLM（DeepSeek）+ Qlib + Alphalens** 的自动化因子挖掘闭环：LLM 生成 Qlib 因子表达式 → 语法校验 → Alphalens IC/分层回测评估 → 评估结果回灌 LLM 进行下一轮迭代，**所有评估完成的因子无门槛直接入库** `factor_library`（`status` 区分 passed/evaluated），保留给后面正交组合使用。
+基于 **LLM（DeepSeek）+ Qlib + Alphalens** 的两阶段自动化因子挖掘闭环：
+
+**Phase 1 — 单因子挖掘（N 轮）**：LLM 生成 Qlib 因子表达式 → 语法校验 → Alphalens IC/分层评估 → **无门槛全部入库** → LLM 生成聚宽格式策略代码 → BacktestEngine 回测（含交易摩擦/T+1/涨跌停）→ 策略入 `strategy` 表 → 回写 `factor_library.strategy_id` → 回测结果回灌 LLM 迭代。
+
+**Phase 2 — 合成因子挖掘（M 轮）**：LLM 看单因子库+回测反馈 → 决定选哪些因子、怎么合成（equal/ic/icir 加权）→ 算合成分面板 → 评估合成因子 IC/IR → 入库（`factor_type=composed`, `parent_factor_ids` 记录父因子）→ LLM 生成策略 → 回测 → 入 strategy 表 → 回写 strategy_id。
 
 ### 流水线
 
 ```
-LLM 生成因子表达式 ──► 语法校验 ──► 统计质量门槛 ──► Qlib 求值 + Alphalens 评估
-      ▲                  (validator)   (覆盖率/常数)        (IC/RankIC/IR/分层/换手)
-      │                                                              │
-      └──────────────── 评估反馈(通过+未通过) ◄───────────────────────┘
-                              每轮回灌，迭代优化
-                                     │
-                        全部入库 factor_library（无门槛）
-                        status=passed（满足门槛）/ evaluated（不满足）
+Phase 1: 单因子挖掘 (--single-rounds N)
+  LLM 生成因子 → 校验 → 评估IC/IR → 全部入库 factor_library
+    → 每个因子: LLM 生成策略 → BacktestEngine 回测 → 入 strategy 表 → 回写 strategy_id
+    → 回测结果作为反馈喂给下一轮
+
+Phase 2: 合成因子挖掘 (--compose-rounds M)
+  LLM 看因子库+回测反馈 → 决定选哪些因子+合成方式
+    → 算合成分 → 评估IC/IR → 入库(factor_type=composed)
+    → LLM 生成策略 → 回测 → 入 strategy 表 → 回写 strategy_id
 ```
 
 ### 前置步骤
@@ -484,9 +489,10 @@ Corr(Rank($close, 5), Rank($volume, 5), 10)              # 量价背离
 
 ```bash
 quantify factor dump-data [--ts-code ...] [--start-date ...] [--end-date ...]
-quantify factor mine --universe 000300.SH --rounds 3 --per-round 5 [--instruction "侧重低换手"]
+quantify factor mine --universe 000300.SH --single-rounds 3 --compose-rounds 2 [--top-n 20] [--rebalance 5]
 quantify factor eval "<表达式>" --universe 000300.SH [--save]
 quantify factor list [--status passed]
+quantify factor compose --universe 000300.SH --top-n 50 --weight icir [--export holdings.csv]
 ```
 
 > `--universe` 可填 `all`（全部已导出标的）或指数代码（如 `000300.SH` 沪深300，运行时展开为区间内成分并集）。重依赖（qlib/alphalens/openai）全部**惰性导入**，不装 `[mining]` 也不影响其他功能。
@@ -546,12 +552,14 @@ quantify/
 │   │   ├── codes.py              # 代码格式转换
 │   │   ├── examples.py           # 内置示例策略
 │   │   └── universe.py           # 指数成分查询（get_index_stocks 后端，读 index_weight）
-│   ├── factor/                   # LLM 因子挖掘
+│   ├── factor/                   # LLM 因子挖掘（两阶段闭环）
 │   │   ├── qlib_data.py          # MySQL → Qlib .bin 导出 + init_qlib
 │   │   ├── validator.py          # Qlib 表达式语法校验
 │   │   ├── evaluator.py          # Qlib 求值 + 质量门槛 + Alphalens 评估
-│   │   ├── llm.py                # DeepSeek 客户端 + 生成/迭代 prompt
-│   │   └── pipeline.py           # 生成→校验→评估→反馈闭环 + 入库
+│   │   ├── llm.py                # DeepSeek 客户端 + 因子/策略/合成计划生成
+│   │   ├── strategy_gen.py       # LLM策略生成 + BacktestEngine回测 + 入库 + 回写
+│   │   ├── compose.py            # 多因子合成（LLM驱动 + 向量化回测）
+│   │   └── pipeline.py           # 两阶段闭环：单因子+回测 → 合成因子+回测
 │   ├── webapp/
 │   │   └── app.py                # Streamlit 工作台
 │   └── utils/
