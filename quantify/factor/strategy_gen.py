@@ -108,6 +108,24 @@ def generate_and_backtest_strategy(
                 continue
             raise StrategyError(f"策略回测 {max_retries} 次均失败: {last_error}") from exc
 
+        # 检测空策略（0 笔交易 = 策略没干活，视为失败重试）
+        trade_count = metrics.get("trade_count", 0)
+        if trade_count == 0:
+            last_error = "回测完成但策略未产生任何交易（可能因子值全为 NaN 或选股逻辑有误）"
+            log.warning(f"  空策略(第{attempt}次): {last_error}")
+            if attempt < max_retries:
+                log.info("  将错误反馈给 LLM，重新生成策略代码...")
+                current_feedback = (
+                    f"上一版策略代码回测未产生任何交易，可能原因:\n"
+                    f"- 因子值计算结果全为 NaN（数据字段不存在或计算逻辑有误）\n"
+                    f"- 选股条件过严导致无股票入选\n"
+                    f"- 调仓逻辑未实际调用 order_target_value 下单\n\n"
+                    f"上一版策略代码:\n```python\n{source[:2000]}\n```\n"
+                    f"请检查因子计算和下单逻辑，确保每个调仓日能选出股票并下单，重新输出完整的策略脚本。"
+                )
+                continue
+            raise StrategyError(f"策略 {max_retries} 次均未产生交易: {last_error}")
+
         # Success — persist and link
         strategy_name = f"factor_{factor.id or 'x'}_{factor.name[:30]}"
         description = (
@@ -121,6 +139,9 @@ def generate_and_backtest_strategy(
 
         if factor.id is not None:
             update_backtest_metrics(factor.id, saved.id, _metrics_to_json(metrics))
+            # 回写到内存对象，让调用方（CLI 打印等）能读到
+            factor.strategy_id = saved.id
+            factor.backtest_metrics_json = _metrics_to_json(metrics)
 
         log.info(
             f"  策略入库 #{saved.id}: 总收益={metrics.get('total_return_pct', 0):.2f}% "
