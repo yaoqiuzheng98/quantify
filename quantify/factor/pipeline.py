@@ -295,7 +295,7 @@ def mine_factors(config: MiningConfig | None = None) -> MiningResult:
             result.evaluations.append(evaluation)
             round_results.append((candidate, evaluation))
 
-            # 无门槛入库
+            # 无门槛入库（低 IC 因子也保留，供合成阶段使用）
             record = _to_record(candidate, evaluation, config)
             saved = save_factor(record)
             result.saved.append(saved)
@@ -308,9 +308,12 @@ def mine_factors(config: MiningConfig | None = None) -> MiningResult:
                     f"  ✓ 入库(evaluated) {saved.name}: IC={evaluation.ic_mean:.4f} IR={evaluation.icir:.4f}  ({evaluation.reason})"
                 )
 
-            # Strategy backtest — raises on failure
-            bt_feedback = _backtest_factor(saved, config)
-            log.info(f"  {bt_feedback}")
+            # 只有 passed 的因子才生成策略+回测（省 LLM 调用和回测时间）
+            if evaluation.passed:
+                bt_feedback = _backtest_factor(saved, config)
+                log.info(f"  {bt_feedback}")
+            else:
+                log.info("  跳过策略生成（IC 未过门槛，保留供合成阶段使用）")
 
         # Build feedback for next round
         if round_idx < config.rounds:
