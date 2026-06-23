@@ -167,6 +167,33 @@ def _backtest_factor(
     )
 
 
+def _build_existing_summary() -> list[str]:
+    """Build a summary of all existing factors in the library for the LLM.
+
+    Returns a list of "expression (IC=x.xxx, category=xxx)" strings,
+    sorted by |IC| descending so the LLM sees the most effective factors first.
+    """
+    from quantify.database.factor_store import list_factors
+
+    factors = list_factors()
+    if not factors:
+        return []
+
+    def _fmt(rec: FactorRecord) -> str:
+        ic = f"{rec.ic_mean:.4f}" if rec.ic_mean is not None else "NA"
+        cat = rec.category or "other"
+        status = rec.status or "evaluated"
+        return f"{rec.expression}  (IC={ic}, {cat}, {status})"
+
+    # Sort by |IC| descending — most effective first
+    factors_sorted = sorted(
+        factors,
+        key=lambda r: abs(r.ic_mean) if r.ic_mean is not None else 0,
+        reverse=True,
+    )
+    return [_fmt(r) for r in factors_sorted]
+
+
 def _build_round_feedback(
     candidates: list[tuple[FactorCandidate, FactorEvaluation]],
 ) -> str:
@@ -260,9 +287,13 @@ def mine_factors(config: MiningConfig | None = None) -> MiningResult:
 
     for round_idx in range(1, config.rounds + 1):
         log.info(f"=== 单因子挖掘 第 {round_idx}/{config.rounds} 轮：生成 {config.n_factors} 个候选 ===")
+
+        # 把数据库中所有已有因子的表达式+IC+类别传给 LLM，防止重复
+        existing_summary = _build_existing_summary()
+
         candidates = llm.generate_factors(
             config.n_factors,
-            existing=sorted(seen)[:40],
+            existing=existing_summary,
             feedback=round_feedback,
             extra_instruction=config.extra_instruction,
         )

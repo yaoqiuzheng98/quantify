@@ -79,8 +79,9 @@ def _user_prompt(
 ) -> str:
     parts = [f"请提出 {n} 个新的候选因子。"]
     if existing:
-        shown = existing[:40]
-        parts.append("已有因子库（请勿重复，可在其基础上改进/组合）:\n" + "\n".join(f"- {e}" for e in shown))
+        parts.append(
+            "已有因子库（请勿重复，可在其基础上改进/组合）:\n" + "\n".join(f"- {e}" for e in existing)
+        )
     if feedback:
         parts.append("上一轮评估反馈（请据此优化：保留并改进表现好的方向，放弃无效方向）:\n" + feedback)
     if extra_instruction:
