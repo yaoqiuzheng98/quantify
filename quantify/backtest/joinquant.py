@@ -15,6 +15,230 @@ from .codes import to_joinquant_code, to_tushare_code
 from .universe import index_constituents
 
 
+# ---------------------------------------------------------------------------
+# JoinQuant-style query() + valuation table for get_fundamentals()
+# ---------------------------------------------------------------------------
+
+
+class _ValuationField:
+    """A column descriptor on the JoinQuant ``valuation`` table.
+
+    Holds the JQ field name and the corresponding Tushare ``daily_basic`` column
+    name + optional transform (e.g. 万元→亿元).
+    """
+
+    # Note: no __slots__ — we need to attach .desc/.asc/.in_ as methods
+    jq_name: str
+    ts_column: str
+    transform: "Callable[[float], float] | None"
+
+    def __init__(self, jq_name: str, ts_column: str, transform: "Callable[[float], float] | None" = None):
+        self.jq_name = jq_name
+        self.ts_column = ts_column
+        self.transform = transform
+
+    def __repr__(self) -> str:
+        return f"valuation.{self.jq_name}"
+
+
+def _wan_to_yi(v: float) -> float:
+    """万元 → 亿元 (JoinQuant market_cap 单位是亿元, Tushare total_mv 单位是万元)."""
+    return v / 1e4 if v is not None else None
+
+
+def _wan_gu_to_gu(v: float) -> float:
+    """万股 → 股 (JoinQuant capitalization 单位是股, Tushare total_share 单位是万股)."""
+    return v * 1e4 if v is not None else None
+
+
+class _ValuationTable:
+    """Mimics JoinQuant's ``valuation`` ORM table object.
+
+    Usage in strategy code (identical to JoinQuant)::
+
+        q = query(valuation.code, valuation.pb_ratio).filter(valuation.code == '000001.XSHE')
+        df = get_fundamentals(q, date='2024-01-05')
+    """
+
+    code = _ValuationField("code", "ts_code")
+    day = _ValuationField("day", "trade_date")
+    pe_ratio = _ValuationField("pe_ratio", "pe_ttm")
+    pe_ratio_lyr = _ValuationField("pe_ratio_lyr", "pe")
+    pb_ratio = _ValuationField("pb_ratio", "pb")
+    ps_ratio = _ValuationField("ps_ratio", "ps_ttm")
+    pcf_ratio = _ValuationField("pcf_ratio", "dv_ratio")
+    turnover_ratio = _ValuationField("turnover_ratio", "turnover_rate")
+    market_cap = _ValuationField("market_cap", "total_mv", _wan_to_yi)
+    circulating_market_cap = _ValuationField("circulating_market_cap", "circ_mv", _wan_to_yi)
+    capitalization = _ValuationField("capitalization", "total_share", _wan_gu_to_gu)
+    circulating_cap = _ValuationField("circulating_cap", "float_share", _wan_gu_to_gu)
+
+    # Map JQ field name → _ValuationField for dynamic lookup
+    _FIELDS: dict[str, _ValuationField] = {}
+
+    def __init__(self) -> None:
+        # Allow `valuation` to be both a class-like (valuation.code) and instance
+        pass
+
+    @classmethod
+    def _init_fields_map(cls) -> None:
+        if not cls._FIELDS:
+            for name in dir(cls):
+                val = getattr(cls, name)
+                if isinstance(val, _ValuationField):
+                    cls._FIELDS[name] = val
+
+    @classmethod
+    def get_field(cls, jq_name: str) -> _ValuationField | None:
+        cls._init_fields_map()
+        return cls._FIELDS.get(jq_name)
+
+    @classmethod
+    def all_fields(cls) -> dict[str, _ValuationField]:
+        cls._init_fields_map()
+        return cls._FIELDS
+
+
+# Singleton instance — strategies use `valuation.code` etc.
+valuation = _ValuationTable()
+
+
+class _FundamentalsQuery:
+    """A parsed ``query(valuation.field1, valuation.field2, ...).filter(...).order_by(...).limit(...)`` call.
+
+    We don't use real SQLAlchemy ORM; instead we parse the query object's
+    attributes to know which fields to select, which filters to apply, and
+    how many rows to return.
+    """
+
+    def __init__(self) -> None:
+        self.select_fields: list[_ValuationField] = []
+        self.filters: list[tuple[str, Any]] = []  # (jq_name, op, value)
+        self._order_by: tuple[_ValuationField, str] | None = None  # (field, "asc"/"desc")
+        self._limit_n: int | None = None
+        # If select_fields is empty, select all
+        self.select_all = False
+
+
+def query(*args: Any) -> _FundamentalsQuery:
+    """JoinQuant-style ``query()`` builder for ``get_fundamentals``.
+
+    Supports:
+    - ``query(valuation)`` — select all valuation fields
+    - ``query(valuation.code, valuation.pb_ratio)`` — select specific fields
+    - ``.filter(valuation.code == '000001.XSHE')`` — equality filter on code
+    - ``.filter(valuation.code.in_([...]))`` — IN filter on code
+    - ``.filter(valuation.market_cap > 1000)`` — comparison filter on numeric fields
+    - ``.order_by(valuation.market_cap.desc())`` — order by a field
+    - ``.limit(100)`` — limit number of rows
+
+    Returns a ``_FundamentalsQuery`` that ``get_fundamentals`` interprets.
+    """
+    q = _FundamentalsQuery()
+
+    for arg in args:
+        if isinstance(arg, _ValuationTable):
+            q.select_all = True
+        elif isinstance(arg, _ValuationField):
+            q.select_fields.append(arg)
+
+    return q
+
+
+# Add builder methods to _FundamentalsQuery via monkey-patch so that
+# the returned object from query() supports .filter().order_by().limit()
+# chaining, matching JoinQuant's API.
+
+
+def _query_filter(self: _FundamentalsQuery, *conditions: Any) -> _FundamentalsQuery:
+    for cond in conditions:
+        parsed = _parse_filter_condition(cond)
+        if parsed:
+            self.filters.append(parsed)
+    return self
+
+
+def _query_order_by(self: _FundamentalsQuery, *args: Any) -> _FundamentalsQuery:
+    if args:
+        field, direction = _parse_order_arg(args[0])
+        if field:
+            self._order_by = (field, direction)
+    return self
+
+
+def _query_limit(self: _FundamentalsQuery, n: int) -> _FundamentalsQuery:
+    self._limit_n = n
+    return self
+
+
+def _parse_filter_condition(cond: Any) -> tuple[str, Any] | None:
+    """Parse a filter condition like ``valuation.code == '000001.XSHE'``.
+
+    We rely on Python's operator overloading: ``_ValuationField.__eq__`` etc.
+    return a tuple describing the comparison.
+    """
+    if isinstance(cond, tuple) and len(cond) == 3:
+        return cond  # already parsed (jq_name, op, value)
+    return None
+
+
+def _parse_order_arg(arg: Any) -> tuple[_ValuationField | None, str]:
+    """Parse an order_by argument like ``valuation.market_cap.desc()``."""
+    if isinstance(arg, tuple) and len(arg) == 2:
+        return arg
+    return None, "asc"
+
+
+# Operator overloading on _ValuationField so that ``valuation.code == 'x'``
+# produces a parseable tuple instead of a bool.
+def _field_eq(self: _ValuationField, other: Any) -> tuple[str, str, Any]:
+    return (self.jq_name, "==", other)
+
+
+def _field_gt(self: _ValuationField, other: Any) -> tuple[str, str, Any]:
+    return (self.jq_name, ">", other)
+
+
+def _field_lt(self: _ValuationField, other: Any) -> tuple[str, str, Any]:
+    return (self.jq_name, "<", other)
+
+
+def _field_ge(self: _ValuationField, other: Any) -> tuple[str, str, Any]:
+    return (self.jq_name, ">=", other)
+
+
+def _field_le(self: _ValuationField, other: Any) -> tuple[str, str, Any]:
+    return (self.jq_name, "<=", other)
+
+
+def _field_in(self: _ValuationField, values: list[str]) -> tuple[str, str, list]:
+    return (self.jq_name, "in", values)
+
+
+def _field_desc(self: _ValuationField) -> tuple[_ValuationField, str]:
+    return (self, "desc")
+
+
+def _field_asc(self: _ValuationField) -> tuple[_ValuationField, str]:
+    return (self, "asc")
+
+
+# Attach operators
+_ValuationField.__eq__ = _field_eq  # type: ignore[assignment]
+_ValuationField.__gt__ = _field_gt  # type: ignore[assignment]
+_ValuationField.__lt__ = _field_lt  # type: ignore[assignment]
+_ValuationField.__ge__ = _field_ge  # type: ignore[assignment]
+_ValuationField.__le__ = _field_le  # type: ignore[assignment]
+_ValuationField.in_ = _field_in  # type: ignore[attr-defined]
+_ValuationField.desc = _field_desc  # type: ignore[attr-defined]
+_ValuationField.asc = _field_asc  # type: ignore[attr-defined]
+
+# Attach builder methods
+_FundamentalsQuery.filter = _query_filter  # type: ignore[attr-defined]
+_FundamentalsQuery.order_by = _query_order_by  # type: ignore[attr-defined]
+_FundamentalsQuery.limit = _query_limit  # type: ignore[attr-defined]
+
+
 def _sw_industry_map(ts_codes: list[str], as_of: Any = None) -> dict[str, str]:
     """Return {joinquant_code: sw_l1_name} for *ts_codes* (tushare format).
 
@@ -185,6 +409,115 @@ class JoinQuantCompat:
             result[jq_code] = {"sw_l1": ind, "industry": ind}
         return result
 
+    def get_fundamentals(
+        self,
+        query_obj: _FundamentalsQuery,
+        date: Any = None,
+    ) -> pd.DataFrame:
+        """JoinQuant-style ``get_fundamentals`` backed by the ``daily_basic`` table.
+
+        Queries valuation data (PE/PB/PS/turnover/market_cap etc.) from MySQL
+        ``daily_basic`` for the given date. If *date* is None, uses the current
+        backtest date (``context.current_dt``).
+
+        Supports:
+        - Field selection: ``query(valuation.code, valuation.pb_ratio)``
+        - Filter on code: ``.filter(valuation.code == '000001.XSHE')``
+        - Filter on code list: ``.filter(valuation.code.in_([...]))``
+        - Filter on numeric fields: ``.filter(valuation.market_cap > 1000)``
+        - Order by: ``.order_by(valuation.market_cap.desc())``
+        - Limit: ``.limit(100)``
+        """
+        from sqlalchemy import text as sa_text
+
+        from quantify.database.engine import session_scope
+
+        # Resolve date
+        if date is None:
+            date = getattr(self._require_context(), "current_dt", None)
+        if date is None:
+            raise RuntimeError("get_fundamentals: date is required (no backtest context)")
+
+        # Normalize date to YYYY-MM-DD string
+        if hasattr(date, "strftime"):
+            date_str = date.strftime("%Y-%m-%d")
+        else:
+            date_str = str(date)
+
+        # Determine which fields to select
+        if query_obj.select_all or not query_obj.select_fields:
+            fields_map = _ValuationTable.all_fields()
+            select_fields = list(fields_map.values())
+        else:
+            select_fields = query_obj.select_fields
+
+        # Build SQL: select ts_code, trade_date, + all needed columns
+        ts_columns = set()
+        for f in select_fields:
+            ts_columns.add(f.ts_column)
+        # Also need ts_code and trade_date for filtering/transform
+        ts_columns.add("ts_code")
+        ts_columns.add("trade_date")
+
+        col_list = ", ".join(sorted(ts_columns))
+        sql = f"SELECT {col_list} FROM daily_basic WHERE trade_date = :dt"
+        params: dict[str, Any] = {"dt": date_str}
+
+        # Apply filters
+        for jq_name, op, value in query_obj.filters:
+            field = _ValuationTable.get_field(jq_name)
+            if field is None:
+                continue
+            if jq_name == "code":
+                # Convert JQ codes to Tushare codes for filtering
+                if op == "==":
+                    ts_code = to_tushare_code(value)
+                    sql += f" AND ts_code = :f_{jq_name}"
+                    params[f"f_{jq_name}"] = ts_code
+                elif op == "in":
+                    ts_codes = [to_tushare_code(v) for v in value]
+                    placeholders = ", ".join(f":f_{jq_name}_{i}" for i in range(len(ts_codes)))
+                    sql += f" AND ts_code IN ({placeholders})"
+                    for i, tc in enumerate(ts_codes):
+                        params[f"f_{jq_name}_{i}"] = tc
+            else:
+                # Numeric filter on a valuation field
+                ts_col = field.ts_column
+                if op in ("==", ">", "<", ">=", "<="):
+                    sql += f" AND {ts_col} {op} :f_{jq_name}"
+                    params[f"f_{jq_name}"] = value
+
+        # Order by
+        if query_obj._order_by:
+            field, direction = query_obj._order_by
+            sql += f" ORDER BY {field.ts_column} {'DESC' if direction == 'desc' else 'ASC'}"
+
+        # Limit
+        if query_obj._limit_n:
+            sql += f" LIMIT {int(query_obj._limit_n)}"
+
+        # Execute
+        with session_scope() as sess:
+            rows = sess.execute(sa_text(sql), params).fetchall()
+
+        if not rows:
+            return pd.DataFrame(columns=[f.jq_name for f in select_fields])
+
+        # Build result DataFrame
+        result_data: dict[str, list] = {}
+        for f in select_fields:
+            col_values = []
+            for row in rows:
+                raw = getattr(row, f.ts_column, None)
+                if f.transform and raw is not None:
+                    raw = f.transform(raw)
+                if f.jq_name == "code":
+                    raw = to_joinquant_code(raw) if raw else raw
+                col_values.append(raw)
+            result_data[f.jq_name] = col_values
+
+        return pd.DataFrame(result_data)
+
     def order(self, security: str, amount: int):
         return self._require_context().order(security, amount)
 
@@ -223,6 +556,9 @@ class JoinQuantCompat:
             "attribute_history": self.attribute_history,
             "get_index_stocks": self.get_index_stocks,
             "get_industry": self.get_industry,
+            "get_fundamentals": self.get_fundamentals,
+            "query": query,
+            "valuation": valuation,
             "order": self.order,
             "order_value": self.order_value,
             "order_target_value": self.order_target_value,

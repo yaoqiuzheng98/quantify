@@ -18,6 +18,9 @@
 | `attribute_history(code, count, "1d", [fields])` | 获取前复权历史数据，返回 DataFrame（**只支持 1d**） |
 | `get_index_stocks(index_code, date=None)` | 获取指数成分股（聚宽格式代码，点到点选股） |
 | `get_industry(security)` | 获取股票所属行业 |
+| `get_fundamentals(query_obj, date=None)` | 查询基本面数据（PE/PB/PS/换手率/市值等），聚宽兼容 API |
+| `query(*args)` | 构建 get_fundamentals 查询对象（SQLAlchemy 风格） |
+| `valuation` | 估值表对象，字段见下文 get_fundamentals 章节 |
 | `order(code, amount)` | 按股数下单 |
 | `order_value(code, value)` | 按市值下单 |
 | `order_target_value(code, target_value)` | 调仓至目标市值（**推荐用这个**） |
@@ -56,7 +59,91 @@
 7. 调仓时先卖后买（先 `order_target_value(code, 0)` 清仓不在目标中的，再买入目标）
 8. **`run_daily` 只支持 `time="open"`**，不支持 `time="9:30"` 等具体时间
 9. **`attribute_history` 只支持 `unit="1d"`**，不支持分钟数据
-10. 可用字段：`["open", "high", "low", "close", "volume", "money", "factor"]`（factor 为复权因子）
+10. 可用字段：`["open", "high", "low", "close", "volume", "amount", "pre_close", "pct_chg", "adj_factor"]`（factor 为复权因子）
+
+## ⚠️ attribute_history 只支持 OHLCV 字段
+
+`attribute_history(code, count, "1d", [fields])` 中的 `fields` **只能取以下字段**：
+- `"open"`, `"high"`, `"low"`, `"close"` — 前复权价格
+- `"volume"`, `"amount"` — 成交量/成交额
+- `"pre_close"`, `"pct_chg"` — 昨收/涨跌幅
+- `"adj_factor"` — 复权因子
+
+**不支持** `"pb"`, `"pe"`, `"turn"` 等基本面字段。要获取基本面数据（PE/PB/PS/换手率/市值等），请用 `get_fundamentals()`（见下文）。
+
+## get_fundamentals — 基本面数据查询（聚宽兼容）
+
+获取股票的估值数据（PE/PB/PS/换手率/市值等），用法与聚宽完全一致：
+
+```python
+# 查询某只股票的 PB
+df = get_fundamentals(
+    query(valuation.code, valuation.pb_ratio).filter(valuation.code == '000001.XSHE'),
+    date='2024-01-05'
+)
+
+# 查询多只股票的市值和 PE
+df = get_fundamentals(
+    query(valuation.code, valuation.market_cap, valuation.pe_ratio).filter(
+        valuation.code.in_(['000001.XSHE', '600000.XSHG'])
+    ),
+    date='2024-01-05'
+)
+
+# 选出总市值大于1000亿、PE<10的股票，按市值降序，最多100个
+df = get_fundamentals(
+    query(valuation.code, valuation.market_cap, valuation.pe_ratio).filter(
+        valuation.market_cap > 1000,
+        valuation.pe_ratio < 10
+    ).order_by(valuation.market_cap.desc()).limit(100),
+    date='2024-01-05'
+)
+```
+
+### valuation 表可用字段
+
+| 字段名 | 含义 | 单位 |
+|---|---|---|
+| `code` | 股票代码（聚宽格式） | — |
+| `day` | 日期 | — |
+| `pe_ratio` | 市盈率(TTM) | 倍 |
+| `pe_ratio_lyr` | 市盈率(LYR) | 倍 |
+| `pb_ratio` | 市净率 | 倍 |
+| `ps_ratio` | 市销率(TTM) | 倍 |
+| `pcf_ratio` | 股息率 | % |
+| `turnover_ratio` | 换手率 | % |
+| `market_cap` | 总市值 | 亿元 |
+| `circulating_market_cap` | 流通市值 | 亿元 |
+| `capitalization` | 总股本 | 股 |
+| `circulating_cap` | 流通股本 | 股 |
+
+### 用法说明
+
+- `query(valuation)` 或 `query(valuation.code, valuation.pb_ratio, ...)` 选择字段
+- `.filter(valuation.code == '000001.XSHE')` 按代码筛选
+- `.filter(valuation.code.in_([...]))` 按代码列表筛选
+- `.filter(valuation.market_cap > 1000)` 按数值筛选
+- `.order_by(valuation.market_cap.desc())` 排序（`.asc()` 升序）
+- `.limit(100)` 限制返回行数
+- `date` 参数：查询日期（字符串或 datetime），不传则用回测当日 `context.current_dt`
+- 返回 `pandas.DataFrame`，每行一只股票，列为查询的字段
+
+### 在策略中使用基本面因子
+
+```python
+def rebalance(context):
+    stocks = get_index_stocks("000300.XSHG")
+    # 用 get_fundamentals 取 PB
+    df = get_fundamentals(
+        query(valuation.code, valuation.pb_ratio).filter(valuation.code.in_(stocks)),
+        date=context.current_dt
+    )
+    # PB 反转：取 PB 最低的 20 只
+    df = df.dropna(subset=['pb_ratio'])
+    df = df.sort_values('pb_ratio').head(context.top_n)
+    target_stocks = set(df['code'].tolist())
+    # ... 下单逻辑
+```
 
 ## A 股摩擦（引擎自动处理，策略无需关心）
 

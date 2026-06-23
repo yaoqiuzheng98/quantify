@@ -348,10 +348,36 @@ def _strategy_user_prompt(
         "- 初始资金: 1,000,000",
         f"- 基准: {universe if universe.endswith('.XSHG') or universe.endswith('.XSHE') else '000300.XSHG'}",
     ]
+
+    # 检测因子是否用了非 OHLCV 字段，给出明确提示
+    non_ohlcv = _detect_non_ohlcv_fields(factor_expression)
+    if non_ohlcv:
+        parts.append(
+            f"\n## ⚠️ 因子使用了基本面字段 {non_ohlcv}\n"
+            f"`attribute_history` 不支持 {non_ohlcv} 等基本面字段（会返回全 0）。\n"
+            f"请在策略中用 `get_fundamentals(query(valuation.code, valuation.pb_ratio).filter(valuation.code.in_(stocks)), date=context.current_dt)` "
+            f"获取基本面数据。具体用法见引擎使用手册中的 get_fundamentals 章节。\n"
+            f"例如：$pb 反转 → 用 `get_fundamentals` 取 `valuation.pb_ratio`，按 PB 排序选股；"
+            f"$turn 波动率 → 用 `get_fundamentals` 取 `valuation.turnover_ratio`。"
+        )
+
     if feedback:
         parts.append(f"\n## 上一版策略回测反馈（请据此优化）\n{feedback}")
     parts.append("\n请根据以上因子编写完整的聚宽格式策略脚本。只输出 ```python``` 代码块。")
     return "\n".join(parts)
+
+
+# 因子表达式中可能出现的基本面字段（Qlib 支持 but 回测引擎不支持）
+_NON_OHLCV_FIELDS = {"pb", "pe", "turn", "ps", "total_mv", "circ_mv"}
+
+
+def _detect_non_ohlcv_fields(expression: str) -> list[str]:
+    """Detect non-OHLCV field references like $pb, $pe, $turn in a factor expression."""
+    found = []
+    for field in _NON_OHLCV_FIELDS:
+        if f"${field}" in expression.lower():
+            found.append(f"${field}")
+    return found
 
 
 def _extract_strategy_code(content: str) -> str:
