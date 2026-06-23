@@ -141,6 +141,8 @@ class FactorLibrary(Base):
 
     # 策略关联：因子对应的回测策略 ID（指向 strategy 表），由 strategy_gen 模块回写
     strategy_id: Mapped[int | None] = mapped_column(BigInteger, comment="关联策略表ID（回测后回写）")
+    # 回测结果快照（完整 BacktestMetrics.to_dict() 的 JSON），回测后回写
+    backtest_metrics_json: Mapped[str | None] = mapped_column(Text, comment="回测结果指标快照 JSON")
     # 因子类型：single（单因子挖掘）/ composed（合成因子）
     factor_type: Mapped[str] = mapped_column(String(16), default="single", comment="因子类型 single/composed")
     # 合成因子的父因子 ID 列表（逗号分隔），仅 composed 因子有值

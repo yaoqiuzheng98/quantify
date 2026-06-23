@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from quantify.database.factor_store import FactorRecord, update_strategy_id
+from quantify.database.factor_store import FactorRecord, update_backtest_metrics
 from quantify.database.strategy_store import save_strategy
 from quantify.utils.logger import log
 
@@ -120,7 +120,7 @@ def generate_and_backtest_strategy(
         saved = save_strategy(name=strategy_name, source=source, description=description)
 
         if factor.id is not None:
-            update_strategy_id(factor.id, saved.id)
+            update_backtest_metrics(factor.id, saved.id, _metrics_to_json(metrics))
 
         log.info(
             f"  策略入库 #{saved.id}: 总收益={metrics.get('total_return_pct', 0):.2f}% "
@@ -204,3 +204,10 @@ def _factor_metrics_text(factor: FactorRecord) -> str:
     if factor.hypothesis:
         lines.append(f"因子逻辑: {factor.hypothesis}")
     return "\n".join(str(x) for x in lines)
+
+
+def _metrics_to_json(metrics: dict) -> str:
+    """Serialize backtest metrics dict to compact JSON for storage."""
+    import json
+
+    return json.dumps(metrics, ensure_ascii=False, separators=(",", ":"))

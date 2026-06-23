@@ -40,6 +40,7 @@ class FactorRecord:
     metrics_json: str | None = None
     report_path: str | None = None
     strategy_id: int | None = None
+    backtest_metrics_json: str | None = None
     factor_type: str = "single"
     parent_factor_ids: str | None = None
     id: int | None = None
@@ -78,6 +79,7 @@ def _to_record(row: FactorLibrary) -> FactorRecord:
         metrics_json=row.metrics_json,
         report_path=row.report_path,
         strategy_id=row.strategy_id,
+        backtest_metrics_json=row.backtest_metrics_json,
         factor_type=row.factor_type,
         parent_factor_ids=row.parent_factor_ids,
         created_at=row.created_at,
@@ -160,6 +162,19 @@ def update_strategy_id(factor_id: int, strategy_id: int) -> bool:
         if row is None:
             return False
         row.strategy_id = strategy_id
+        sess.flush()
+        return True
+
+
+def update_backtest_metrics(factor_id: int, strategy_id: int, metrics_json: str) -> bool:
+    """Write back the backtest result snapshot (strategy_id + metrics JSON) to a factor."""
+    ensure_factor_table()
+    with session_scope() as sess:
+        row = sess.get(FactorLibrary, factor_id)
+        if row is None:
+            return False
+        row.strategy_id = strategy_id
+        row.backtest_metrics_json = metrics_json
         sess.flush()
         return True
 
