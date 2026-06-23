@@ -330,14 +330,12 @@ def mine_factors(config: MiningConfig | None = None) -> MiningResult:
             record = _to_record(candidate, evaluation, config)
             saved = save_factor(record)
             result.saved.append(saved)
+            ic_str = f"{evaluation.ic_mean:.4f}" if evaluation.ic_mean is not None else "NA"
+            ir_str = f"{evaluation.icir:.4f}" if evaluation.icir is not None else "NA"
             if evaluation.passed:
-                log.info(
-                    f"  ✓ 入库(passed) {saved.name}: IC={evaluation.ic_mean:.4f} IR={evaluation.icir:.4f}"
-                )
+                log.info(f"  ✓ 入库(passed) {saved.name}: IC={ic_str} IR={ir_str}")
             else:
-                log.info(
-                    f"  ✓ 入库(evaluated) {saved.name}: IC={evaluation.ic_mean:.4f} IR={evaluation.icir:.4f}  ({evaluation.reason})"
-                )
+                log.info(f"  ✓ 入库(evaluated) {saved.name}: IC={ic_str} IR={ir_str}  ({evaluation.reason})")
 
             # 只有 passed 的因子才生成策略+回测（省 LLM 调用和回测时间）
             if evaluation.passed:
