@@ -306,41 +306,24 @@ def parse_factor_response(content: str) -> list[FactorCandidate]:
 # ---------------------------------------------------------------------------
 
 _STRATEGY_SYSTEM_PROMPT = """你是一名精通 JoinQuant（聚宽）平台和 A 股量化交易的策略工程师。
-你的任务：根据给定的因子表达式和评估指标，编写一个完整的聚宽格式策略脚本。
+你的任务：根据给定的因子表达式和评估指标，编写一个完整的聚宽格式策略脚本，在本地回测引擎（聚宽兼容层）上运行。
 
-# 策略 API（聚宽兼容）
-- `initialize(context)`: 策略初始化，设置基准、佣金、滑点、调仓频率
-- `handle_data(context, data)`: 逐 bar 回调（一般只用来触发 run_daily 调度的逻辑）
-- `run_daily(func, time="open")`: 每日定时执行
-- `get_index_stocks(index_code, date=None)`: 获取指数成分股（聚宽格式代码如 000300.XSHG）
-- `attribute_history(code, count, "1d", [fields])`: 获取前复权历史数据，返回 DataFrame
-- `context.portfolio.total_value`: 当前总资产
-- `context.portfolio.positions`: 持仓字典
-- `order_target_value(code, target_value)`: 调仓至目标市值（**统一用这个下单**）
-- `set_benchmark(code)`: 设置基准（聚宽格式如 000300.XSHG）
-- `set_order_cost(OrderCost(...), type="stock")`: 设置佣金
-- `set_slippage(PriceRelatedSlippage(0.002))`: 设置滑点
+以下是本地回测引擎的使用手册，请严格遵守其中的 API 规范和避坑规则：
 
-# 关键规则
-1. **代码格式一律用聚宽格式** `.XSHG`（上交所）/`.XSHE`（深交所），如 `000300.XSHG`
-2. **下单一律用 `order_target_value(code, value)`**，不要用 `order_target_percent`
-3. **`from jqdata import *` 后需绑回 builtins**：`import builtins; sum=builtins.sum; max=builtins.max; min=builtins.min`
-4. **`attribute_history(...)["close"]` 返回日期索引的 Series**，取值用 `.iloc[-1]`/`.iloc[0]`，不能用 `[-1]`
-5. 因子计算在策略内用 `attribute_history` 取历史数据手动计算（不依赖 Qlib）
-6. 选股逻辑：按因子值排序，取 top-N，等权配置
-7. 调仓时先卖后买，避免资金不足
-8. **只输出 Python 代码**，不要任何解释文字。用 ```python ``` 围栏包裹。
+{engine_guide}
 
-# A 股摩擦
-- 印花税：卖出单边 0.05%（引擎自动处理，策略无需关心）
-- T+1：当日买入次日才能卖出（引擎自动处理）
-- 涨跌停：±10%（引擎自动处理）
-- 买入按 100 股整数倍取整（引擎自动处理）
+## 输出要求
+
+**只输出 Python 代码**，不要任何解释文字。用 ```python ``` 围栏包裹。
 """
 
 
 def _strategy_system_prompt() -> str:
-    return _STRATEGY_SYSTEM_PROMPT
+    import pathlib
+
+    guide_path = pathlib.Path(__file__).parent / "strategy_engine_guide.md"
+    guide = guide_path.read_text(encoding="utf-8")
+    return _STRATEGY_SYSTEM_PROMPT.format(engine_guide=guide)
 
 
 def _strategy_user_prompt(
