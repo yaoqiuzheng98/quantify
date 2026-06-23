@@ -417,6 +417,24 @@ print(result.metrics.to_llm_prompt())
 > 聚宽只认 `.XSHG`（上交所）/`.XSHE`（深交所），沪深300 指数是 `000300.XSHG` 而非 `000300.SH`；写成 Tushare 的 `.SH/.SZ` 会让聚宽报 `InvalidParam: 标的'xxx'不存在`。本地引擎两种格式都兼容，所以以聚宽格式为准即可两边通跑。
 > 另：`attribute_history(...)["close"]` 返回日期索引的 Series，取值用 `.iloc[-1]` / `.iloc[0]`（按位置），用 `closes[-1]` 会按标签查找而抛 `KeyError: -1`。
 
+> **策略关键节点必须加 `log.info()` 打印。**
+>
+> 策略代码在选股、评分、调仓等关键节点用 `log.info()` / `log.warning()` 输出调试信息（如评分股票数、目标持仓数、Top-N 因子值等），方便在 Web 端回测后通过「策略日志」折叠面板查看执行过程。引擎通过 `StrategyLogCollector` 收集策略代码的 `log.*()` 输出，存入 `BacktestResult.strategy_logs`，Web 端在交易明细下方展示，每条日志自动带上当前回测日期。
+>
+> ```python
+> def rebalance(context):
+>     # ...
+>     if not scores:
+>         log.warning(f"{context.current_dt.date()} 无有效评分股票")
+>         return
+>     sorted_stocks = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+>     target_stocks = set(code for code, _ in sorted_stocks[:context.top_n])
+>     log.info(f"{context.current_dt.date()} 评分股票数={len(scores)} 目标持仓={len(target_stocks)}")
+>     for code, score in sorted_stocks[:5]:
+>         log.info(f"  {code}: score={score:.4f}")
+>     # ... 下单逻辑
+> ```
+
 ---
 
 ## Streamlit 回测工作台

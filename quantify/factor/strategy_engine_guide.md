@@ -61,6 +61,25 @@
 9. **`attribute_history` 只支持 `unit="1d"`**，不支持分钟数据
 10. 可用字段：`["open", "high", "low", "close", "volume", "amount", "pre_close", "pct_chg", "adj_factor"]`（factor 为复权因子）
 11. **可以用 `log.info("msg")` / `log.warning("msg")` 打印调试信息**——Web 端回测后会在「策略日志」折叠面板中显示，每条日志自动带上当前回测日期。
+12. **策略关键节点必须加 `log.info()` 打印**（必须遵守）：在选股、评分、调仓等关键节点输出调试信息，方便在 Web 端查看执行过程。至少包括：
+    - 每次调仓时打印评分股票数、目标持仓数
+    - 打印 Top-5 选中的股票及其因子值
+    - 无有效评分时用 `log.warning()` 提示
+
+    示例：
+    ```python
+    def rebalance(context):
+        # ... 计算 scores ...
+        if not scores:
+            log.warning(f"{context.current_dt.date()} 无有效评分股票")
+            return
+        sorted_stocks = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+        target_stocks = set(code for code, _ in sorted_stocks[:context.top_n])
+        log.info(f"{context.current_dt.date()} 评分股票数={len(scores)} 目标持仓={len(target_stocks)}")
+        for code, score in sorted_stocks[:5]:
+            log.info(f"  {code}: score={score:.4f}")
+        # ... 下单逻辑
+    ```
 
 ## ⚠️ attribute_history 只支持 OHLCV 字段
 

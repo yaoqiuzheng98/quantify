@@ -164,6 +164,12 @@ def _load_strategy(source: str, strategy_log: StrategyLogCollector | None = None
     if strategy_log is not None:
         ns["log"] = strategy_log
     jqdata_module = make_jqdata_module(compat)
+    # ``from jqdata import *`` would overwrite ns["log"] with the module's log,
+    # so remove ``log`` from jqdata's exports to preserve the strategy_log collector.
+    if strategy_log is not None and "log" in jqdata_module.__dict__:
+        del jqdata_module.__dict__["log"]
+        if "log" in getattr(jqdata_module, "__all__", []):
+            jqdata_module.__all__.remove("log")
     previous_jqdata = sys.modules.get("jqdata")
     sys.modules["jqdata"] = jqdata_module
     try:
