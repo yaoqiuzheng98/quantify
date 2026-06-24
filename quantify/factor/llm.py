@@ -142,6 +142,7 @@ class LLMClient:
                 log.warning("回复因 max_tokens 截断（finish_reason=length），建议调大 LLM_MAX_TOKENS。")
         return candidates
 
+    @retry(reraise=True, stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=20))
     def _chat_strategy(self, messages: list[dict[str, str]]) -> tuple[str, str | None]:
         """Like _chat but without response_format=json_object (strategy code is not JSON)."""
         resp = self._client.chat.completions.create(
@@ -438,7 +439,7 @@ _COMPOSE_SYSTEM_PROMPT = """你是一名量化因子组合研究员。
 - "icir": 按 |ICIR| 加权（推荐）
 
 # 要求
-1. 选 2-8 个因子合成，因子之间应尽量覆盖不同维度（动量/反转/波动/量价/估值等）
+1. 选 2-4 个因子合成（不要超过 4 个，因子太多策略代码复杂易出错），因子之间应尽量覆盖不同维度（动量/反转/波动/量价/估值等）
 2. 优先选 |ICIR| 高的因子，但避免高度相关的因子
 3. hypothesis 要说明组合逻辑（如"动量+反转+量价三维互补"）
 4. **只能选 factor_type=single 的因子ID，不要选 composed 因子**
