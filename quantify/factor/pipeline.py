@@ -194,6 +194,41 @@ def _build_existing_summary() -> list[str]:
     return [_fmt(r) for r in factors_sorted]
 
 
+def _build_compose_detail(
+    selected: list[FactorRecord],
+    weights: dict[str, float],
+) -> str:
+    """Build a description of the composite factor plan for strategy generation.
+
+    Tells the LLM exactly which sub-factors to compute, their weights, and
+    direction (sign of IC), so the strategy code matches the evaluation.
+    """
+    lines = [
+        "## 合成因子方案（必须按此方案实现，不要等权）",
+        "加权方式: ICIR 加权",
+        f"子因子数量: {len(selected)}",
+        "",
+        "子因子列表（表达式 → 权重 → 方向）:",
+    ]
+    for f in selected:
+        w = weights.get(f.expression, 0)
+        direction = "正向（值越大越好）" if (f.ic_mean or 0) >= 0 else "反向（值越小越好，取负号）"
+        ic = f"{f.ic_mean:.4f}" if f.ic_mean is not None else "NA"
+        ir = f"{f.icir:.4f}" if f.icir is not None else "NA"
+        lines.append(f"  1. 表达式: {f.expression}")
+        lines.append(f"     IC={ic}, ICIR={ir}, 权重={w:.4f}, 方向: {direction}")
+        if f.hypothesis:
+            lines.append(f"     逻辑: {f.hypothesis}")
+    lines.append("")
+    lines.append("实现要求:")
+    lines.append("- 每个子因子用 attribute_history 取数据后手动计算（和表达式一致）")
+    lines.append("- 每个子因子做截面 z-score 标准化：(值-均值)/标准差")
+    lines.append("- 方向为反向的子因子取负号")
+    lines.append("- 合成分 = Σ(子因子 z-score × 权重)，权重严格按上表")
+    lines.append("- 按合成分排序选 top-N")
+    return "\n".join(lines)
+
+
 def _build_round_feedback(
     candidates: list[tuple[FactorCandidate, FactorEvaluation]],
 ) -> str:
@@ -373,7 +408,7 @@ def mine_factors(config: MiningConfig | None = None) -> MiningResult:
         compose_feedback: str | None = None
         for comp_idx in range(1, config.n_compose + 1):
             log.info(f"=== 合成因子挖掘 第 {comp_idx}/{config.n_compose} 个 ===")
-            plan, composite_panel, eval_metrics = compose_factors_llm(
+            plan, composite_panel, eval_metrics, selected_factors, comp_weights = compose_factors_llm(
                 universe=config.universe,
                 start_date=config.start_date,
                 end_date=config.end_date,
@@ -414,7 +449,9 @@ def mine_factors(config: MiningConfig | None = None) -> MiningResult:
             )
 
             # Strategy backtest for composite factor — raises on failure
-            bt_feedback = _backtest_factor(saved_comp, config)
+            # 把合成方案（子因子表达式+权重+方向）传给策略生成，避免 LLM 猜等权
+            compose_detail = _build_compose_detail(selected_factors, comp_weights)
+            bt_feedback = _backtest_factor(saved_comp, config, feedback=compose_detail)
             ic = eval_metrics.get("ic_mean", "NA")
             ir = eval_metrics.get("icir", "NA")
             compose_feedback = (

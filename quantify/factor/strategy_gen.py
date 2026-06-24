@@ -63,7 +63,8 @@ def generate_and_backtest_strategy(
     universe : str
         Index code (e.g. ``"000300.SH"``) or ``"all"``.
     feedback : str, optional
-        Previous backtest feedback for the LLM to improve upon.
+        Initial instructions for the LLM (e.g. composite factor plan details).
+        Preserved across retries — error feedback is appended, not replacing it.
     max_retries : int
         Number of times to retry on backtest failure (error fed back to LLM).
 
@@ -77,6 +78,7 @@ def generate_and_backtest_strategy(
     llm = LLMClient()
     factor_metrics = _factor_metrics_text(factor)
 
+    base_instruction = feedback  # 保留初始指令（如合成因子方案），重试时不丢失
     current_feedback = feedback
     last_error = ""
 
@@ -111,9 +113,10 @@ def generate_and_backtest_strategy(
             if attempt < max_retries:
                 log.info("  将错误反馈给 LLM，重新生成策略代码...")
                 current_feedback = (
-                    f"上一版策略代码回测失败，错误信息:\n{last_error}\n\n"
-                    f"上一版策略代码:\n```python\n{source[:2000]}\n```\n"
-                    f"请根据错误信息修复上述代码，重新输出完整的策略脚本。"
+                    (f"{base_instruction}\n\n" if base_instruction else "")
+                    + f"上一版策略代码回测失败，错误信息:\n{last_error}\n\n"
+                    + f"上一版策略代码:\n```python\n{source[:2000]}\n```\n"
+                    + "请根据错误信息修复上述代码，重新输出完整的策略脚本。"
                 )
                 continue
             raise StrategyError(f"策略回测 {max_retries} 次均失败: {last_error}") from exc
@@ -134,14 +137,15 @@ def generate_and_backtest_strategy(
                     "\n".join(bt_output.strategy_logs[-20:]) if bt_output.strategy_logs else "(无日志输出)"
                 )
                 current_feedback = (
-                    f"上一版策略代码回测未产生任何交易，可能原因:\n"
-                    f"- 因子值计算结果全为 NaN（数据字段不存在或计算逻辑有误）\n"
-                    f"- 选股条件过严导致无股票入选\n"
-                    f"- 调仓逻辑未实际调用 order_target_value 下单\n"
-                    f"- get_index_stocks 返回空列表（指数代码错误或 universe 不匹配）\n\n"
+                    (f"{base_instruction}\n\n" if base_instruction else "")
+                    + "上一版策略代码回测未产生任何交易，可能原因:\n"
+                    "- 因子值计算结果全为 NaN（数据字段不存在或计算逻辑有误）\n"
+                    "- 选股条件过严导致无股票入选\n"
+                    "- 调仓逻辑未实际调用 order_target_value 下单\n"
+                    "- get_index_stocks 返回空列表（指数代码错误或 universe 不匹配）\n\n"
                     f"策略日志输出（最后20条）:\n{logs_text}\n\n"
                     f"上一版策略代码:\n```python\n{source[:2000]}\n```\n"
-                    f"请检查因子计算和下单逻辑，确保每个调仓日能选出股票并下单，重新输出完整的策略脚本。"
+                    "请检查因子计算和下单逻辑，确保每个调仓日能选出股票并下单，重新输出完整的策略脚本。"
                 )
                 continue
             raise StrategyError(f"策略 {max_retries} 次均未产生交易: {last_error}")

@@ -432,11 +432,11 @@ def compose_factors_llm(
     end_date: str | None = None,
     feedback: str | None = None,
     extra_instruction: str | None = None,
-) -> tuple[ComposePlan, pd.DataFrame, dict]:
+) -> tuple[ComposePlan, pd.DataFrame, dict, list[FactorRecord], dict[str, float]]:
     """LLM-driven composition: LLM picks factors + weights, we compute the
     composite factor panel and evaluate it via Alphalens.
 
-    Returns (plan, composite_score_panel, evaluation_metrics).
+    Returns (plan, composite_score_panel, evaluation_metrics, selected_factors, weights).
 
     Raises on any failure — empty library, invalid LLM plan, empty panels, etc.
     """
@@ -519,7 +519,7 @@ def compose_factors_llm(
         f"IR={eval_metrics.get('icir', 'NA')} "
         f"RankIC={eval_metrics.get('rank_ic_mean', 'NA')}"
     )
-    return plan, composite, eval_metrics
+    return plan, composite, eval_metrics, selected, weights
 
 
 def _evaluate_composite_panel(
