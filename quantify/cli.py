@@ -35,7 +35,6 @@ def dashboard(
     import os
     import socket
     import sys
-    from pathlib import Path
 
     os.environ.setdefault("STREAMLIT_BROWSER_GATHER_USAGE_STATS", "false")
     os.environ.setdefault("STREAMLIT_SERVER_HEADLESS", "true")
@@ -1306,12 +1305,7 @@ def ml_run(
                 ),
             )
             typer.echo(f"\n策略已入库: #{saved.id} {strategy_name}")
-
-            # 同时输出 .py 文件方便查看和 Dashboard 加载
-            output_path = f"{strategy_name}.py"
-            Path(output_path).write_text(event_result.source, encoding="utf-8")
-            typer.echo(f"策略代码已保存: {output_path}")
-            typer.echo("  → 可在 Dashboard 加载，或直接用 quantify backtest 运行")
+            typer.echo("  → 可在 Dashboard 加载运行")
 
         # ── 汇总 ──
         if results:
