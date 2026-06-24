@@ -33,7 +33,7 @@ from quantify.utils.logger import log
 
 def _safe_div(x, y):
     result = np.divide(x, y, out=np.zeros_like(x, dtype=float), where=np.abs(y) > 1e-10)
-    return result
+    return result + 1e-10  # avoid all-zero output for gplearn closure check
 
 
 def _safe_log(x):
@@ -43,31 +43,31 @@ def _safe_log(x):
 def _rolling(x, window, func):
     """Apply a rolling function to a 1-D array."""
     s = pd.Series(x)
-    return s.rolling(window, min_periods=1).apply(func, raw=True).to_numpy()
+    return s.rolling(window, min_periods=1).apply(func, raw=True).to_numpy() + 1e-10
 
 
 def _rolling_delta(x, n):
     """x[t] - x[t-n]."""
     s = pd.Series(x)
-    return (s - s.shift(n)).to_numpy()
+    return (s - s.shift(n)).to_numpy() + 1e-10
 
 
 def _shift(x, n):
     """x[t-n]."""
-    return pd.Series(x).shift(n).to_numpy()
+    return pd.Series(x).shift(n).to_numpy() + 1e-10
 
 
 def _rolling_rank(x, window):
     """Rolling percentile rank (0-1)."""
     s = pd.Series(x)
-    return s.rolling(window, min_periods=1).rank(pct=True).to_numpy()
+    return s.rolling(window, min_periods=1).rank(pct=True).to_numpy() + 1e-10
 
 
 def _rolling_corr(x, y, window):
     """Rolling correlation of two series."""
     sx = pd.Series(x)
     sy = pd.Series(y)
-    return sx.rolling(window, min_periods=5).corr(sy).to_numpy()
+    return sx.rolling(window, min_periods=5).corr(sy).to_numpy() + 1e-10
 
 
 # ---------------------------------------------------------------------------
@@ -194,9 +194,7 @@ class GPMiner:
 
         functions = []
         for name, (arity, func) in GP_FUNCTION_MAP.items():
-            # _closure_check=False: rolling/stats functions naturally return 0
-            # for all-zero input, which gplearn's default check rejects.
-            wrapped = make_function(function=func, name=name, arity=arity, _closure_check=False)
+            wrapped = make_function(function=func, name=name, arity=arity)
             functions.append(wrapped)
         return tuple(functions)
 
