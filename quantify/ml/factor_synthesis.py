@@ -213,7 +213,14 @@ class MLSynthesizer:
         5. Compute IC metrics
         6. Run vectorized backtest
         """
+        from quantify.factor.evaluator import evaluation_window_default
+
         cfg = self.config
+        # Fill in default dates if not provided
+        if not cfg.start_date or not cfg.end_date:
+            ds, de = evaluation_window_default()
+            cfg.start_date = cfg.start_date or ds
+            cfg.end_date = cfg.end_date or de
 
         # 1. Select factors
         expressions = self._select_factors()
