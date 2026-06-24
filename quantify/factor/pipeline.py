@@ -285,80 +285,89 @@ def mine_factors(config: MiningConfig | None = None) -> MiningResult:
     # ===================================================================
     round_feedback: str | None = None
 
-    for round_idx in range(1, config.rounds + 1):
-        log.info(f"=== 单因子挖掘 第 {round_idx}/{config.rounds} 轮：生成 {config.n_factors} 个候选 ===")
+    if config.n_factors > 0:
+        for round_idx in range(1, config.rounds + 1):
+            log.info(f"=== 单因子挖掘 第 {round_idx}/{config.rounds} 轮：生成 {config.n_factors} 个候选 ===")
 
-        # 把数据库中所有已有因子的表达式+IC+类别传给 LLM，防止重复
-        existing_summary = _build_existing_summary()
+            # 把数据库中所有已有因子的表达式+IC+类别传给 LLM，防止重复
+            existing_summary = _build_existing_summary()
 
-        candidates = llm.generate_factors(
-            config.n_factors,
-            existing=existing_summary,
-            feedback=round_feedback,
-            extra_instruction=config.extra_instruction,
+            candidates = llm.generate_factors(
+                config.n_factors,
+                existing=existing_summary,
+                feedback=round_feedback,
+                extra_instruction=config.extra_instruction,
+            )
+
+            round_results: list[tuple[FactorCandidate, FactorEvaluation]] = []
+
+            for candidate in candidates:
+                norm = _normalize_expr(candidate.expression)
+                if norm in seen:
+                    log.info(f"  跳过重复因子: {candidate.expression}")
+                    continue
+                seen.add(norm)
+
+                syntax = validate_expression(candidate.expression)
+                if not syntax.ok:
+                    log.info(f"  语法不通过: {candidate.expression} -> {syntax.error}")
+                    continue
+
+                log.info(f"  评估: {candidate.expression}")
+                evaluation = evaluate_expression(
+                    candidate.expression,
+                    universe=config.universe,
+                    start_date=config.start_date,
+                    end_date=config.end_date,
+                    periods=config.periods,
+                    quantiles=config.quantiles,
+                    primary_period=config.primary_period,
+                    thresholds=config.thresholds,
+                )
+                result.evaluations.append(evaluation)
+                round_results.append((candidate, evaluation))
+
+                # 无门槛入库（低 IC 因子也保留，供合成阶段使用）
+                record = _to_record(candidate, evaluation, config)
+                saved = save_factor(record)
+                result.saved.append(saved)
+                ic_str = f"{evaluation.ic_mean:.4f}" if evaluation.ic_mean is not None else "NA"
+                ir_str = f"{evaluation.icir:.4f}" if evaluation.icir is not None else "NA"
+                if evaluation.passed:
+                    log.info(f"  ✓ 入库(passed) {saved.name}: IC={ic_str} IR={ir_str}")
+                else:
+                    log.info(
+                        f"  ✓ 入库(evaluated) {saved.name}: IC={ic_str} IR={ir_str}  ({evaluation.reason})"
+                    )
+
+                # 只有 passed 的因子才生成策略+回测（省 LLM 调用和回测时间）
+                if evaluation.passed:
+                    bt_feedback = _backtest_factor(saved, config)
+                    log.info(f"  {bt_feedback}")
+                else:
+                    log.info("  跳过策略生成（IC 未过门槛，保留供合成阶段使用）")
+
+            # Build feedback for next round
+            if round_idx < config.rounds:
+                round_feedback = _build_round_feedback(round_results)
+                n_passed_round = sum(1 for _, ev in round_results if ev.passed)
+                log.info(
+                    f"--- 第 {round_idx} 轮结束：评估 {len(round_results)} 个，"
+                    f"有效 {n_passed_round} 个，反馈给 LLM 进行第 {round_idx + 1} 轮 ---"
+                )
+
+        log.info(
+            f"单因子挖掘完成：{config.rounds} 轮，评估 {result.n_evaluated} 个，入库 {result.n_passed} 个。"
         )
-
-        round_results: list[tuple[FactorCandidate, FactorEvaluation]] = []
-
-        for candidate in candidates:
-            norm = _normalize_expr(candidate.expression)
-            if norm in seen:
-                log.info(f"  跳过重复因子: {candidate.expression}")
-                continue
-            seen.add(norm)
-
-            syntax = validate_expression(candidate.expression)
-            if not syntax.ok:
-                log.info(f"  语法不通过: {candidate.expression} -> {syntax.error}")
-                continue
-
-            log.info(f"  评估: {candidate.expression}")
-            evaluation = evaluate_expression(
-                candidate.expression,
-                universe=config.universe,
-                start_date=config.start_date,
-                end_date=config.end_date,
-                periods=config.periods,
-                quantiles=config.quantiles,
-                primary_period=config.primary_period,
-                thresholds=config.thresholds,
-            )
-            result.evaluations.append(evaluation)
-            round_results.append((candidate, evaluation))
-
-            # 无门槛入库（低 IC 因子也保留，供合成阶段使用）
-            record = _to_record(candidate, evaluation, config)
-            saved = save_factor(record)
-            result.saved.append(saved)
-            ic_str = f"{evaluation.ic_mean:.4f}" if evaluation.ic_mean is not None else "NA"
-            ir_str = f"{evaluation.icir:.4f}" if evaluation.icir is not None else "NA"
-            if evaluation.passed:
-                log.info(f"  ✓ 入库(passed) {saved.name}: IC={ic_str} IR={ir_str}")
-            else:
-                log.info(f"  ✓ 入库(evaluated) {saved.name}: IC={ic_str} IR={ir_str}  ({evaluation.reason})")
-
-            # 只有 passed 的因子才生成策略+回测（省 LLM 调用和回测时间）
-            if evaluation.passed:
-                bt_feedback = _backtest_factor(saved, config)
-                log.info(f"  {bt_feedback}")
-            else:
-                log.info("  跳过策略生成（IC 未过门槛，保留供合成阶段使用）")
-
-        # Build feedback for next round
-        if round_idx < config.rounds:
-            round_feedback = _build_round_feedback(round_results)
-            n_passed_round = sum(1 for _, ev in round_results if ev.passed)
-            log.info(
-                f"--- 第 {round_idx} 轮结束：评估 {len(round_results)} 个，"
-                f"有效 {n_passed_round} 个，反馈给 LLM 进行第 {round_idx + 1} 轮 ---"
-            )
-
-    log.info(f"单因子挖掘完成：{config.rounds} 轮，评估 {result.n_evaluated} 个，入库 {result.n_passed} 个。")
+    else:
+        log.info("跳过单因子挖掘（--n-factors 0），直接进入合成因子阶段。")
 
     # ===================================================================
     # Phase 2: Composite-factor mining + strategy backtest
     # ===================================================================
-    if config.n_compose > 0 and result.saved:
+    # 合成阶段可以用本次新挖的因子，也可以用数据库中已有的因子
+    has_factors = bool(result.saved) or bool(existing_expressions())
+    if config.n_compose > 0 and has_factors:
         from quantify.factor.compose import compose_factors_llm
 
         compose_feedback: str | None = None
