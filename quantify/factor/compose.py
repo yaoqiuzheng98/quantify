@@ -248,7 +248,7 @@ def _portfolio_returns(holdings: pd.DataFrame, close_panel: pd.DataFrame) -> pd.
     holdings = holdings.loc[common_dates]
     close_panel = close_panel.loc[common_dates]
 
-    daily_ret = close_panel.pct_change().fillna(0.0)
+    daily_ret = close_panel.pct_change(fill_method=None).fillna(0.0)
     # shift holdings by one day so that today's return is earned on yesterday's holdings
     holdings_shifted = holdings.shift(1).fillna(0.0)
     portfolio_ret = (holdings_shifted * daily_ret).sum(axis=1)
@@ -551,7 +551,7 @@ def _evaluate_composite_panel(
     close_panel = close_panel.loc[common_dates]
 
     # Forward returns
-    fwd_5 = close_panel.pct_change(5).shift(-5)
+    fwd_5 = close_panel.pct_change(5, fill_method=None).shift(-5)
 
     # Cross-sectional IC per day
     import numpy as np
