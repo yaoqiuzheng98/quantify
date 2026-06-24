@@ -42,6 +42,7 @@ class FactorDataset:
     dates_test: list[str]
     feature_names: list[str]
     forward_period: int
+    assets: list[str] = None  # all asset codes in the dataset
 
     @property
     def n_train(self) -> int:
@@ -213,7 +214,11 @@ def build_dataset(
     feature_names = list(panels.keys())
 
     def _stack(dates: list[str]) -> tuple[pd.DataFrame, pd.Series]:
-        """Stack cross-sectional data for given dates into (X, y)."""
+        """Stack cross-sectional data for given dates into (X, y).
+
+        Preserves a (date, asset) MultiIndex so predictions can be reshaped
+        back into (date × asset) panels without reloading data.
+        """
         X_rows = []
         y_rows = []
         idx = []
@@ -233,8 +238,11 @@ def build_dataset(
         if not X_rows:
             return pd.DataFrame(columns=feature_names), pd.Series(dtype=float)
 
+        multi_idx = pd.MultiIndex.from_tuples(idx, names=["date", "asset"])
         X = pd.concat(X_rows, ignore_index=True)
         y = pd.concat(y_rows, ignore_index=True)
+        X.index = multi_idx
+        y.index = multi_idx
         return X, y
 
     X_train, y_train = _stack(dates_train)
@@ -254,6 +262,7 @@ def build_dataset(
         dates_test=dates_test,
         feature_names=feature_names,
         forward_period=forward_period,
+        assets=common_assets,
     )
 
 

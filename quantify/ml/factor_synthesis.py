@@ -28,7 +28,7 @@ from quantify.database.factor_store import list_factors
 from quantify.utils.logger import log
 
 from .backtest import VectorBacktestResult, compute_ic, vectorized_backtest
-from .data import FactorDataset, build_dataset, load_factor_panels, load_forward_returns
+from .data import FactorDataset, build_dataset, load_forward_returns
 
 
 @dataclass
@@ -331,48 +331,17 @@ class MLSynthesizer:
     ) -> pd.DataFrame:
         """Rebuild (date × asset) panel from flat predictions.
 
-        The dataset was stacked with ignore_index=True, losing the (date, asset)
-        mapping. We rebuild by re-loading the factor panels and using their
-        structure to place predictions.
+        Uses the MultiIndex preserved in the dataset (date, asset) to place
+        predictions back into a 2D panel.
         """
-        # Re-load the first factor panel to get the (date, asset) structure
-        panels = load_factor_panels(
-            dataset.feature_names[:1],
-            universe=self.config.universe,
-            start_date=self.config.start_date,
-            end_date=self.config.end_date,
-        )
-        if not panels:
-            raise RuntimeError("无法重建因子面板")
-
-        ref_panel = list(panels.values())[0]
+        X = dataset.X_train if is_train else dataset.X_test
         dates = dataset.dates_train if is_train else dataset.dates_test
-        assets = list(ref_panel.columns)
+        assets = dataset.assets or list(X.index.get_level_values("asset").unique())
 
-        panel = pd.DataFrame(np.nan, index=ref_panel.index, columns=assets)
+        # Create a Series with the same MultiIndex, then unstack
+        pred_series = pd.Series(predictions, index=X.index, name="score")
+        panel = pred_series.unstack(level="asset")
 
-        # We need to map predictions back. Since the dataset was built by
-        # iterating dates and filtering valid rows, we need to replicate that.
-        # Load forward returns to know which (date, asset) pairs were valid.
-        fwd = load_forward_returns(
-            universe=self.config.universe,
-            start_date=self.config.start_date,
-            end_date=self.config.end_date,
-            period=dataset.forward_period,
-        )
-
-        pred_idx = 0
-        for dt in dates:
-            if dt not in fwd.index:
-                continue
-            y_dt = fwd.loc[dt, assets]
-            valid = y_dt.notna()
-            n_valid = int(valid.sum())
-            if n_valid == 0:
-                continue
-            if pred_idx + n_valid > len(predictions):
-                break
-            panel.loc[dt, valid.index[valid]] = predictions[pred_idx : pred_idx + n_valid]
-            pred_idx += n_valid
-
-        return panel.loc[dates]
+        # Reindex to cover all dates and assets (fill missing with NaN)
+        panel = panel.reindex(index=dates, columns=assets)
+        return panel

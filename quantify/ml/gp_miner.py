@@ -194,8 +194,9 @@ class GPMiner:
 
         functions = []
         for name, (arity, func) in GP_FUNCTION_MAP.items():
-            # Wrap with make_function for gplearn
-            wrapped = make_function(function=func, name=name, arity=arity)
+            # _closure_check=False: rolling/stats functions naturally return 0
+            # for all-zero input, which gplearn's default check rejects.
+            wrapped = make_function(function=func, name=name, arity=arity, _closure_check=False)
             functions.append(wrapped)
         return tuple(functions)
 
@@ -303,15 +304,30 @@ class GPMiner:
         function_set = self._build_function_set()
 
         # Fitness: cross-sectional IC (Spearman rank correlation)
-        # gplearn maximizes fitness, so we use IC directly (higher = better)
-        metric = cfg.metric
+        # gplearn maximizes fitness for 'ic' (we define a custom metric)
+        # gplearn's built-in metrics are MSE-based (minimized). We want to
+        # maximize IC, so we use negative MSE as a proxy and also define
+        # a custom IC metric.
+        from gplearn.fitness import make_fitness
+
+        def _ic_metric(y, y_pred, w):
+            """Custom fitness: Spearman rank IC (higher = better)."""
+            from scipy.stats import spearmanr
+
+            mask = np.isfinite(y_pred) & np.isfinite(y)
+            if mask.sum() < 10:
+                return 0.0
+            corr, _ = spearmanr(y_pred[mask], y[mask])
+            return float(corr) if np.isfinite(corr) else 0.0
+
+        ic_fitness = make_fitness(function=_ic_metric, greater_is_better=True, wrap=False)
 
         est = SymbolicRegressor(
             population_size=cfg.population,
             generations=cfg.generations,
             tournament_size=cfg.tournament_size,
             function_set=function_set,
-            metric=metric,
+            metric=ic_fitness,
             p_crossover=cfg.p_crossover,
             p_subtree_mutation=cfg.p_subtree_mutation,
             p_hoist_mutation=cfg.p_hoist_mutation,
