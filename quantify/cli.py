@@ -18,9 +18,11 @@ app = typer.Typer(help="Quantify CLI", no_args_is_help=True)
 db_app = typer.Typer(help="Database management")
 fetch_app = typer.Typer(help="Data fetching tasks")
 factor_app = typer.Typer(help="LLM factor mining (Qlib + Alphalens)", no_args_is_help=True)
+ml_app = typer.Typer(help="ML/DL factor mining (sklearn + XGBoost + PyTorch)", no_args_is_help=True)
 app.add_typer(db_app, name="db")
 app.add_typer(fetch_app, name="fetch")
 app.add_typer(factor_app, name="factor")
+app.add_typer(ml_app, name="ml")
 
 
 @app.command("dashboard")
@@ -943,6 +945,437 @@ def version() -> None:
     from quantify import __version__
 
     typer.echo(__version__)
+
+
+# ---------------------------------------------------------------------------
+# ML / DL factor mining
+# ---------------------------------------------------------------------------
+@ml_app.command("synth")
+def ml_synth(
+    universe: Optional[str] = typer.Option(None, "--universe", help="股票池：all / 指数代码(如 000300.SH)"),
+    start_date: Optional[str] = typer.Option(None, "--start-date", help="评估起始日"),
+    end_date: Optional[str] = typer.Option(None, "--end-date", help="评估结束日"),
+    forward_period: int = typer.Option(5, "--forward-period", help="前瞻收益周期(交易日)"),
+    test_ratio: float = typer.Option(0.3, "--test-ratio", help="测试集比例(按时间切分)"),
+    top_n: int = typer.Option(20, "--top-n", help="选股数量"),
+    rebalance: int = typer.Option(5, "--rebalance", help="调仓频率(交易日)"),
+    model: str = typer.Option("xgboost", "--model", help="模型: xgboost/lightgbm/ridge/lasso/rf/gbdt"),
+    min_icir: float = typer.Option(0.0, "--min-icir", help="因子筛选 |ICIR| 门槛"),
+    max_factors: int = typer.Option(20, "--max-factors", help="最多使用因子数"),
+) -> None:
+    """ML 因子合成：从因子库选因子 → XGBoost/LightGBM/sklearn 预测截面收益 → 向量化回测。"""
+    from quantify.ml.factor_synthesis import MLSynthConfig, MLSynthesizer
+
+    config = MLSynthConfig(
+        universe=universe,
+        start_date=start_date,
+        end_date=end_date,
+        forward_period=forward_period,
+        test_ratio=test_ratio,
+        top_n=top_n,
+        rebalance_days=rebalance,
+        model_type=model,
+        min_icir=min_icir,
+        max_factors=max_factors,
+    )
+    try:
+        synth = MLSynthesizer(config)
+        result = synth.run()
+        typer.echo(result.summary())
+    except Exception as exc:
+        typer.echo(f"❌ ML 合成出错: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+
+@ml_app.command("gp")
+def ml_gp(
+    universe: Optional[str] = typer.Option(None, "--universe", help="股票池：all / 指数代码(如 000300.SH)"),
+    start_date: Optional[str] = typer.Option(None, "--start-date", help="评估起始日"),
+    end_date: Optional[str] = typer.Option(None, "--end-date", help="评估结束日"),
+    forward_period: int = typer.Option(5, "--forward-period", help="前瞻收益周期(交易日)"),
+    population: int = typer.Option(1000, "--population", help="种群大小"),
+    generations: int = typer.Option(50, "--generations", help="进化代数"),
+    max_depth: int = typer.Option(8, "--max-depth", help="表达式最大深度"),
+    top_k: int = typer.Option(10, "--top-k", help="返回前 K 个最优表达式"),
+    save: bool = typer.Option(False, "--save", help="将发现的因子保存到 factor_library"),
+) -> None:
+    """GP 因子发现：遗传规划进化 Qlib 因子表达式，适应度=IC。"""
+    from quantify.ml.gp_miner import GPConfig, GPMiner
+
+    config = GPConfig(
+        universe=universe,
+        start_date=start_date,
+        end_date=end_date,
+        forward_period=forward_period,
+        population=population,
+        generations=generations,
+        max_depth=max_depth,
+        top_k=top_k,
+    )
+    try:
+        miner = GPMiner(config)
+        result = miner.run()
+        typer.echo(f"\n=== GP 因子发现完成：{len(result.expressions)} 个表达式 ===")
+        for i, (expr, tr, te) in enumerate(
+            zip(result.expressions, result.fitness, result.test_fitness, strict=False)
+        ):
+            typer.echo(f"  #{i + 1}: train_IC={tr:.4f} test_IC={te:.4f}  {expr[:100]}")
+
+        if save:
+            from quantify.database.factor_store import FactorRecord, save_factor
+            from quantify.factor.evaluator import evaluate_expression
+            from quantify.factor.pipeline import _normalize_expr, metrics_to_json
+
+            seen = set()
+            for i, expr in enumerate(result.expressions):
+                norm = _normalize_expr(expr)
+                if norm in seen:
+                    continue
+                seen.add(norm)
+                evaluation = evaluate_expression(
+                    expr,
+                    universe=universe,
+                    start_date=start_date,
+                    end_date=end_date,
+                )
+                record = FactorRecord(
+                    name=f"gp_factor_{i + 1}",
+                    expression=expr,
+                    hypothesis="GP evolved factor",
+                    category="gp",
+                    universe=universe or "all",
+                    ic_mean=evaluation.ic_mean,
+                    ic_std=evaluation.ic_std,
+                    icir=evaluation.icir,
+                    rank_ic_mean=evaluation.rank_ic_mean,
+                    rank_icir=evaluation.rank_icir,
+                    coverage=evaluation.coverage,
+                    status="passed" if evaluation.passed else "evaluated",
+                    factor_type="single",
+                    metrics_json=metrics_to_json(evaluation.to_dict()),
+                )
+                save_factor(record)
+                typer.echo(f"  入库: {record.name} IC={evaluation.ic_mean:.4f}")
+    except Exception as exc:
+        typer.echo(f"❌ GP 挖掘出错: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+
+@ml_app.command("dl")
+def ml_dl(
+    universe: Optional[str] = typer.Option(None, "--universe", help="股票池：all / 指数代码(如 000300.SH)"),
+    start_date: Optional[str] = typer.Option(None, "--start-date", help="评估起始日"),
+    end_date: Optional[str] = typer.Option(None, "--end-date", help="评估结束日"),
+    forward_period: int = typer.Option(5, "--forward-period", help="前瞻收益周期(交易日)"),
+    lookback: int = typer.Option(20, "--lookback", help="输入序列长度(历史天数)"),
+    model: str = typer.Option("lstm", "--model", help="模型: lstm/transformer"),
+    hidden_dim: int = typer.Option(64, "--hidden-dim", help="隐藏层维度"),
+    num_layers: int = typer.Option(2, "--num-layers", help="层数"),
+    epochs: int = typer.Option(50, "--epochs", help="训练轮数"),
+    batch_size: int = typer.Option(256, "--batch-size", help="批大小"),
+    lr: float = typer.Option(0.001, "--lr", help="学习率"),
+    top_n: int = typer.Option(20, "--top-n", help="选股数量"),
+    rebalance: int = typer.Option(5, "--rebalance", help="调仓频率(交易日)"),
+    test_ratio: float = typer.Option(0.3, "--test-ratio", help="测试集比例"),
+) -> None:
+    """DL 端到端选股：LSTM/Transformer 从原始OHLCV预测截面收益。"""
+    from quantify.ml.dl_miner import DLConfig, DLMiner
+
+    config = DLConfig(
+        universe=universe,
+        start_date=start_date,
+        end_date=end_date,
+        forward_period=forward_period,
+        lookback=lookback,
+        model_type=model,
+        hidden_dim=hidden_dim,
+        num_layers=num_layers,
+        epochs=epochs,
+        batch_size=batch_size,
+        lr=lr,
+        top_n=top_n,
+        rebalance_days=rebalance,
+        test_ratio=test_ratio,
+    )
+    try:
+        miner = DLMiner(config)
+        result = miner.run()
+        typer.echo(result.summary())
+    except Exception as exc:
+        typer.echo(f"❌ DL 训练出错: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+
+@ml_app.command("run")
+def ml_run(
+    universe: Optional[str] = typer.Option("000300.SH", "--universe", help="股票池"),
+    start_date: Optional[str] = typer.Option(None, "--start-date", help="评估起始日"),
+    end_date: Optional[str] = typer.Option(None, "--end-date", help="评估结束日"),
+    forward_period: int = typer.Option(5, "--forward-period", help="前瞻收益周期(交易日)"),
+    top_n: int = typer.Option(20, "--top-n", help="选股数量"),
+    rebalance: int = typer.Option(5, "--rebalance", help="调仓频率(交易日)"),
+    test_ratio: float = typer.Option(0.3, "--test-ratio", help="测试集比例"),
+    # ML 合成
+    ml_model: str = typer.Option(
+        "xgboost", "--ml-model", help="ML模型: xgboost/lightgbm/ridge/lasso/rf/gbdt"
+    ),
+    skip_ml: bool = typer.Option(False, "--skip-ml", help="跳过ML因子合成"),
+    # GP 发现
+    skip_gp: bool = typer.Option(False, "--skip-gp", help="跳过GP因子发现"),
+    gp_population: int = typer.Option(500, "--gp-population", help="GP种群大小"),
+    gp_generations: int = typer.Option(30, "--gp-generations", help="GP进化代数"),
+    gp_save: bool = typer.Option(False, "--gp-save", help="GP发现的因子入库"),
+    # DL 端到端
+    skip_dl: bool = typer.Option(False, "--skip-dl", help="跳过DL端到端选股"),
+    dl_model: str = typer.Option("lstm", "--dl-model", help="DL模型: lstm/transformer"),
+    dl_lookback: int = typer.Option(20, "--dl-lookback", help="DL输入序列长度"),
+    dl_epochs: int = typer.Option(30, "--dl-epochs", help="DL训练轮数"),
+    dl_hidden: int = typer.Option(64, "--dl-hidden", help="DL隐藏层维度"),
+    # 两阶段验证
+    skip_validate: bool = typer.Option(False, "--skip-validate", help="跳过两阶段回测验证"),
+    validate_model: str = typer.Option(
+        "auto", "--validate-model", help="验证哪个模型: auto(取最优)/ml/gp/dl"
+    ),
+) -> None:
+    """一键全流程：ML合成 + GP发现 + DL选股 + 两阶段回测验证。
+
+    默认跑全部4个阶段，可用 --skip-ml/--skip-gp/--skip-dl/--skip-validate 跳过。
+    """
+    from quantify.ml.factor_synthesis import MLSynthConfig, MLSynthesizer
+    from quantify.ml.gp_miner import GPConfig, GPMiner
+    from quantify.ml.dl_miner import DLConfig, DLMiner
+    from quantify.ml.two_stage import TwoStageBacktest, TwoStageConfig
+
+    results: list[tuple[str, float, object]] = []  # (name, test_ic, vector_bt)
+
+    try:
+        # ── Phase 1: ML 因子合成 ──
+        if not skip_ml:
+            typer.echo("=" * 60)
+            typer.echo("Phase 1: ML 因子合成")
+            typer.echo("=" * 60)
+            ml_cfg = MLSynthConfig(
+                universe=universe,
+                start_date=start_date,
+                end_date=end_date,
+                forward_period=forward_period,
+                top_n=top_n,
+                rebalance_days=rebalance,
+                test_ratio=test_ratio,
+                model_type=ml_model,
+            )
+            synth = MLSynthesizer(ml_cfg)
+            ml_result = synth.run()
+            typer.echo(ml_result.summary())
+            results.append(
+                (
+                    f"ML-{ml_model}",
+                    ml_result.test_ic.get("ic_mean", 0),
+                    ml_result.test_backtest,
+                )
+            )
+
+        # ── Phase 2: GP 因子发现 ──
+        if not skip_gp:
+            typer.echo("\n" + "=" * 60)
+            typer.echo("Phase 2: GP 因子发现")
+            typer.echo("=" * 60)
+            gp_cfg = GPConfig(
+                universe=universe,
+                start_date=start_date,
+                end_date=end_date,
+                forward_period=forward_period,
+                population=gp_population,
+                generations=gp_generations,
+            )
+            miner = GPMiner(gp_cfg)
+            gp_result = miner.run()
+            typer.echo(f"\nGP 发现 {len(gp_result.expressions)} 个表达式:")
+            for i, (expr, tr, te) in enumerate(
+                zip(gp_result.expressions, gp_result.fitness, gp_result.test_fitness, strict=False)
+            ):
+                typer.echo(f"  #{i + 1}: train_IC={tr:.4f} test_IC={te:.4f}  {expr[:100]}")
+
+            if gp_save:
+                from quantify.database.factor_store import FactorRecord, save_factor
+                from quantify.factor.evaluator import evaluate_expression
+                from quantify.factor.pipeline import _normalize_expr, metrics_to_json
+
+                seen = set()
+                for i, expr in enumerate(gp_result.expressions):
+                    norm = _normalize_expr(expr)
+                    if norm in seen:
+                        continue
+                    seen.add(norm)
+                    evaluation = evaluate_expression(
+                        expr, universe=universe, start_date=start_date, end_date=end_date
+                    )
+                    record = FactorRecord(
+                        name=f"gp_factor_{i + 1}",
+                        expression=expr,
+                        hypothesis="GP evolved factor",
+                        category="gp",
+                        universe=universe or "all",
+                        ic_mean=evaluation.ic_mean,
+                        ic_std=evaluation.ic_std,
+                        icir=evaluation.icir,
+                        rank_ic_mean=evaluation.rank_ic_mean,
+                        rank_icir=evaluation.rank_icir,
+                        coverage=evaluation.coverage,
+                        status="passed" if evaluation.passed else "evaluated",
+                        factor_type="single",
+                        metrics_json=metrics_to_json(evaluation.to_dict()),
+                    )
+                    save_factor(record)
+                    typer.echo(f"  入库: {record.name} IC={evaluation.ic_mean:.4f}")
+
+        # ── Phase 3: DL 端到端选股 ──
+        if not skip_dl:
+            typer.echo("\n" + "=" * 60)
+            typer.echo("Phase 3: DL 端到端选股")
+            typer.echo("=" * 60)
+            dl_cfg = DLConfig(
+                universe=universe,
+                start_date=start_date,
+                end_date=end_date,
+                forward_period=forward_period,
+                lookback=dl_lookback,
+                model_type=dl_model,
+                hidden_dim=dl_hidden,
+                top_n=top_n,
+                rebalance_days=rebalance,
+                test_ratio=test_ratio,
+                epochs=dl_epochs,
+            )
+            dl_miner = DLMiner(dl_cfg)
+            dl_result = dl_miner.run()
+            typer.echo(dl_result.summary())
+            results.append(
+                (
+                    f"DL-{dl_model}",
+                    dl_result.test_ic.get("ic_mean", 0),
+                    dl_result.test_backtest,
+                )
+            )
+
+        # ── Phase 4: 两阶段回测验证 ──
+        if not skip_validate and results:
+            typer.echo("\n" + "=" * 60)
+            typer.echo("Phase 4: 两阶段回测验证")
+            typer.echo("=" * 60)
+
+            # 选哪个模型去验证
+            if validate_model == "auto":
+                # 取 test IC 最高的
+                results.sort(key=lambda x: abs(x[1]), reverse=True)
+                chosen_name, chosen_ic, chosen_bt = results[0]
+                typer.echo(f"自动选择最优模型: {chosen_name} (test IC={chosen_ic:.4f})")
+            elif validate_model == "ml" and any(r[0].startswith("ML") for r in results):
+                chosen_name, chosen_ic, chosen_bt = next(r for r in results if r[0].startswith("ML"))
+                typer.echo(f"验证 ML 模型: {chosen_name}")
+            elif validate_model == "dl" and any(r[0].startswith("DL") for r in results):
+                chosen_name, chosen_ic, chosen_bt = next(r for r in results if r[0].startswith("DL"))
+                typer.echo(f"验证 DL 模型: {chosen_name}")
+            else:
+                chosen_name, chosen_ic, chosen_bt = results[0]
+                typer.echo(f"验证模型: {chosen_name}")
+
+            two_stage = TwoStageBacktest(
+                TwoStageConfig(
+                    universe=universe or "000300.SH",
+                    start_date=start_date or "2020-06-16",
+                    end_date=end_date or "2026-06-16",
+                )
+            )
+            event_result = two_stage.validate_vector_result(chosen_bt, rebalance_days=rebalance)
+            typer.echo(event_result.summary())
+
+        # ── 汇总 ──
+        if results:
+            typer.echo("\n" + "=" * 60)
+            typer.echo("全流程汇总")
+            typer.echo("=" * 60)
+            typer.echo(f"{'模型':<20} {'Test IC':>10} {'向量化收益':>12} {'Sharpe':>8}")
+            typer.echo("-" * 52)
+            for name, ic, bt in results:
+                typer.echo(f"{name:<20} {ic:>10.4f} {bt.total_return:>11.2f}% {bt.sharpe:>8.2f}")
+
+    except Exception as exc:
+        typer.echo(f"❌ 全流程出错: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+
+@ml_app.command("validate")
+def ml_validate(
+    universe: Optional[str] = typer.Option("000300.SH", "--universe", help="股票池"),
+    start_date: Optional[str] = typer.Option("2020-06-16", "--start-date", help="回测起始日"),
+    end_date: Optional[str] = typer.Option("2026-06-16", "--end-date", help="回测结束日"),
+    model: str = typer.Option(
+        "xgboost", "--model", help="先跑哪个模型: xgboost/lightgbm/ridge/lstm/transformer"
+    ),
+    top_n: int = typer.Option(20, "--top-n", help="选股数量"),
+    rebalance: int = typer.Option(5, "--rebalance", help="调仓频率"),
+    forward_period: int = typer.Option(5, "--forward-period", help="前瞻收益周期"),
+    lookback: int = typer.Option(20, "--lookback", help="DL lookback (仅 DL 模型)"),
+    epochs: int = typer.Option(30, "--epochs", help="DL epochs (仅 DL 模型)"),
+) -> None:
+    """两阶段回测：先向量化筛选 → 再事件驱动验证（含交易摩擦/T+1/涨跌停）。"""
+    from quantify.ml.two_stage import TwoStageBacktest, TwoStageConfig
+
+    try:
+        # Step 1: Run ML/DL model to get vectorized backtest result
+        if model in ("lstm", "transformer"):
+            from quantify.ml.dl_miner import DLConfig, DLMiner
+
+            dl_cfg = DLConfig(
+                universe=universe,
+                start_date=start_date,
+                end_date=end_date,
+                forward_period=forward_period,
+                lookback=lookback,
+                model_type=model,
+                top_n=top_n,
+                rebalance_days=rebalance,
+                epochs=epochs,
+            )
+            typer.echo(f"=== Stage 1: DL ({model}) 向量化回测 ===")
+            miner = DLMiner(dl_cfg)
+            dl_result = miner.run()
+            typer.echo(dl_result.summary())
+            vector_bt = dl_result.test_backtest
+        else:
+            from quantify.ml.factor_synthesis import MLSynthConfig, MLSynthesizer
+
+            ml_cfg = MLSynthConfig(
+                universe=universe,
+                start_date=start_date,
+                end_date=end_date,
+                forward_period=forward_period,
+                top_n=top_n,
+                rebalance_days=rebalance,
+                model_type=model,
+            )
+            typer.echo(f"=== Stage 1: ML ({model}) 向量化回测 ===")
+            synth = MLSynthesizer(ml_cfg)
+            ml_result = synth.run()
+            typer.echo(ml_result.summary())
+            vector_bt = ml_result.test_backtest
+
+        # Step 2: Event-driven validation
+        typer.echo("\n=== Stage 2: 事件驱动回测验证 ===")
+        two_stage = TwoStageBacktest(
+            TwoStageConfig(
+                universe=universe or "000300.SH",
+                start_date=start_date or "2020-06-16",
+                end_date=end_date or "2026-06-16",
+            )
+        )
+        event_result = two_stage.validate_vector_result(vector_bt, rebalance_days=rebalance)
+        typer.echo(event_result.summary())
+
+    except Exception as exc:
+        typer.echo(f"❌ 两阶段回测出错: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
 
 
 if __name__ == "__main__":

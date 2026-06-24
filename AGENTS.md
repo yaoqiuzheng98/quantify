@@ -4,7 +4,7 @@
 
 - **Python 3.11.9**（通过 pyenv 锁定在 `.python-version`）
 - 虚拟环境：项目根目录的 `.venv/`
-- 安装命令：`pip install -e ".[dev]"`；Web 依赖：`pip install -e ".[web]"`；因子挖掘依赖：`pip install -e ".[mining]"`（Qlib + Alphalens + OpenAI SDK）
+- 安装命令：`pip install -e ".[dev]"`；Web 依赖：`pip install -e ".[web]"`；因子挖掘依赖：`pip install -e ".[mining]"`（Qlib + Alphalens + OpenAI SDK）；ML 依赖：`pip install -e ".[ml]"`（scikit-learn + XGBoost + LightGBM + gplearn）；DL 依赖：`pip install -e ".[dl]"`（PyTorch）
 - `.env` 文件**必须**放在项目根目录（已 gitignore），从 `.env.example` 复制
 - **☠️ 运行环境（重要）**：本仓在 **WSL** 下开发。run_command 的 shell 是 **bash（WSL）**，Cwd 传 Windows 路径 `D:\learning\quantify`（映射为 `/mnt/d/learning/quantify`）。Windows PATH 上的 `python` 是 3.14（无 ruff）；**可用解释器是 WSL venv `.venv/bin/python`**（Python 3.11.9，含 ruff/pytest）。`.venv/Scripts/*.exe`（Windows 端 shim）**已损坏**（指向 Linux pyenv 路径），**勿用**。质量检查：`.venv/bin/python -m ruff check quantify tests`、`-m ruff format`、`-m pytest tests/ -q`。
 
@@ -141,6 +141,19 @@ quantify version                                        # 打印版本号
 - Tushare 客户端**直接用 `requests.post` 调镜像站 HTTP 接口**，不走 `tushare` SDK。SDK 的 `DataApi.query` 会把非 2xx 响应静默吞成空 DataFrame，与"标的本就无数据"无法区分；本地实现用 `res.raise_for_status()` + `code != 0` 抛异常，让传输层/业务层错误都能触发重试，而真正的空结果（`items=[]` 或 `data=null`）才返回干净的空 DataFrame
 - Tushare 客户端失败重试 5 次，指数退避（tenacity，`retry_if_exception_type(Exception)` 覆盖 HTTPError/ChunkedEncodingError/JSONDecodeError 等镜像站大响应截断的瞬时错误）
 - `_fetch_concurrent()` 中无论单次请求有无数据，每行都打印进度（空数据 `"empty"`，有数据 `"+N rows"`），保持终端可见性。写新 fetcher 时要遵循相同模式。空 DataFrame 现在**只可能**是真没数据，故 `_run_one` 拿到空就直接跳过、不重试（重试已在 client 层用异常机制收口）
+
+## ML/DL 因子挖掘（`quantify/ml/`）
+
+独立于 LLM 因子挖掘管线，**不考虑聚宽可移植性**，完全发挥 ML/DL 能力。重依赖（scikit-learn/XGBoost/LightGBM/gplearn/PyTorch）全部惰性导入。
+
+- **安装**：`pip install -e ".[ml]"`（sklearn+XGBoost+LightGBM+gplearn）、`pip install -e ".[dl]"`（PyTorch）
+- **三个阶段**：
+  1. **ML 因子合成**（`ml/factor_synthesis.py`）：从因子库选因子做特征 → XGBoost/LightGBM/sklearn 预测截面收益 → 向量化回测。CLI: `quantify ml synth --universe 000300.SH --model xgboost`
+  2. **GP 因子发现**（`ml/gp_miner.py`）：遗传规划进化 Qlib 表达式，适应度=IC，输出表达式可入库。CLI: `quantify ml gp --universe 000300.SH --population 1000 --generations 50 --save`
+  3. **DL 端到端选股**（`ml/dl_miner.py`）：LSTM/Transformer 从原始 OHLCV 序列直接预测截面收益。CLI: `quantify ml dl --universe 000300.SH --model lstm --lookback 20 --epochs 50`
+- **数据层**（`ml/data.py`）：`load_factor_panels()` / `load_forward_returns()` / `load_raw_ohlcv()` 从 Qlib 加载，`build_dataset()` 构建时序切分的 train/test
+- **回测层**（`ml/backtest.py`）：`vectorized_backtest()` 轻量向量化回测（无交易摩擦），`compute_ic()` 计算 IC/RankIC/ICIR
+- **一键全流程** CLI: `quantify ml run --universe 000300.SH`（默认跑全部4阶段，可用 `--skip-ml/--skip-gp/--skip-dl/--skip-validate` 跳过；`--validate-model auto` 自动选 test IC 最高的模型做事件驱动验证）
 
 ## 配置
 

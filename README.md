@@ -519,6 +519,51 @@ quantify factor compose --universe 000300.SH --top-n 50 --weight icir [--export 
 
 ---
 
+## ML/DL 因子挖掘
+
+独立于 LLM 管线，不考虑聚宽可移植性，完全发挥 ML/DL 能力。
+
+### 安装
+
+```bash
+pip install -e ".[ml]"   # scikit-learn + XGBoost + LightGBM + gplearn
+pip install -e ".[dl]"   # PyTorch
+```
+
+### Phase 1: ML 因子合成
+
+从因子库选因子做特征，XGBoost/LightGBM/sklearn 预测截面收益：
+
+### 一键全流程
+
+```bash
+# 跑全部4个阶段：ML合成 + GP发现 + DL选股 + 两阶段验证
+quantify ml run --universe 000300.SH
+
+# 只跑 ML + 验证（跳过 GP 和 DL）
+quantify ml run --universe 000300.SH --skip-gp --skip-dl
+
+# 只跑 DL + 验证
+quantify ml run --universe 000300.SH --skip-ml --skip-gp --dl-model transformer
+
+# GP 发现并入库
+quantify ml run --universe 000300.SH --skip-ml --skip-dl --gp-save
+
+# 自定义参数
+quantify ml run --universe 000300.SH --ml-model lightgbm --dl-epochs 50 --top-n 30 --rebalance 10
+```
+
+### 单独运行各阶段
+
+```bash
+quantify ml synth --universe 000300.SH --model xgboost
+quantify ml gp --universe 000300.SH --population 1000 --generations 50 --save
+quantify ml dl --universe 000300.SH --model lstm --lookback 20 --epochs 50
+quantify ml validate --universe 000300.SH --model xgboost
+```
+
+---
+
 ## 技术栈
 
 | 层级 | 选型 |
@@ -598,6 +643,7 @@ quantify/
 - [x] **回测层**：事件驱动引擎 + 聚宽 API 兼容 + 佣金/滑点/分红/拆股
 - [x] **Web 工作台**：Streamlit 策略编辑器 + 交互式图表 + 策略持久化
 - [x] **因子层**（`factor/`）：LLM 因子挖掘闭环（Qlib 求值 + Alphalens IC/分层评估 + 自动入库）
+- [x] **ML/DL 层**（`ml/`）：ML 因子合成（XGBoost/LightGBM）+ GP 因子发现（遗传规划）+ DL 端到端选股（LSTM/Transformer）
 - [ ] **Agent 层**（`agent/`）：LLM 策略生成 + 报告解读
 - [ ] **分析层**（`analysis/`）：行业稳健性诊断 + 因子组合/中性化
 
