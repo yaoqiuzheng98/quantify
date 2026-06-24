@@ -8,6 +8,7 @@ Subcommands implemented in this milestone:
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Optional
 
 import typer
@@ -1289,6 +1290,28 @@ def ml_run(
             )
             event_result = two_stage.validate_vector_result(chosen_bt, rebalance_days=rebalance)
             typer.echo(event_result.summary())
+
+            # 保存策略到 strategy 表 + 输出 .py 文件
+            from quantify.database.strategy_store import save_strategy
+
+            strategy_name = f"ml_{chosen_name}_{universe or 'all'}".replace(".", "_").replace("/", "_")
+            saved = save_strategy(
+                name=strategy_name,
+                source=event_result.source,
+                description=(
+                    f"ML/DL 全流程生成的策略 | 模型={chosen_name} | "
+                    f"universe={universe} | test IC={chosen_ic:.4f} | "
+                    f"向量化收益={event_result.vectorized_metrics.get('total_return_pct', 0):.2f}% | "
+                    f"事件驱动收益={event_result.metrics.get('total_return_pct', 0):.2f}%"
+                ),
+            )
+            typer.echo(f"\n策略已入库: #{saved.id} {strategy_name}")
+
+            # 同时输出 .py 文件方便查看和 Dashboard 加载
+            output_path = f"{strategy_name}.py"
+            Path(output_path).write_text(event_result.source, encoding="utf-8")
+            typer.echo(f"策略代码已保存: {output_path}")
+            typer.echo("  → 可在 Dashboard 加载，或直接用 quantify backtest 运行")
 
         # ── 汇总 ──
         if results:
