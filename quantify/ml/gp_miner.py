@@ -43,31 +43,36 @@ def _safe_log(x):
 def _rolling(x, window, func):
     """Apply a rolling function to a 1-D array."""
     s = pd.Series(x)
-    return s.rolling(window, min_periods=1).apply(func, raw=True).to_numpy() + 1e-10
+    out = s.rolling(window, min_periods=1).apply(func, raw=True).to_numpy()
+    return np.nan_to_num(out, nan=1e-10) + 1e-10
 
 
 def _rolling_delta(x, n):
     """x[t] - x[t-n]."""
     s = pd.Series(x)
-    return (s - s.shift(n)).to_numpy() + 1e-10
+    out = (s - s.shift(n)).to_numpy()
+    return np.nan_to_num(out, nan=1e-10) + 1e-10
 
 
 def _shift(x, n):
     """x[t-n]."""
-    return pd.Series(x).shift(n).to_numpy() + 1e-10
+    out = pd.Series(x).shift(n).to_numpy()
+    return np.nan_to_num(out, nan=1e-10) + 1e-10
 
 
 def _rolling_rank(x, window):
     """Rolling percentile rank (0-1)."""
     s = pd.Series(x)
-    return s.rolling(window, min_periods=1).rank(pct=True).to_numpy() + 1e-10
+    out = s.rolling(window, min_periods=1).rank(pct=True).to_numpy()
+    return np.nan_to_num(out, nan=1e-10) + 1e-10
 
 
 def _rolling_corr(x, y, window):
     """Rolling correlation of two series."""
     sx = pd.Series(x)
     sy = pd.Series(y)
-    return sx.rolling(window, min_periods=5).corr(sy).to_numpy() + 1e-10
+    out = sx.rolling(window, min_periods=5).corr(sy).to_numpy()
+    return np.nan_to_num(out, nan=1e-10) + 1e-10
 
 
 # ---------------------------------------------------------------------------
@@ -262,14 +267,19 @@ class GPMiner:
             for dt in dates:
                 y_dt = fwd.loc[dt, common_assets]
                 x_dt = pd.DataFrame({f: field_panels[f].loc[dt, common_assets] for f in cfg.fields})
-                valid = y_dt.notna() & x_dt.notna().any(axis=1)
+                valid = y_dt.notna() & x_dt.notna().all(axis=1)
                 if valid.sum() == 0:
                     continue
                 X_rows.append(x_dt.loc[valid])
                 y_rows.append(y_dt.loc[valid])
             if not X_rows:
                 return pd.DataFrame(columns=cfg.fields), pd.Series(dtype=float)
-            return pd.concat(X_rows, ignore_index=True), pd.concat(y_rows, ignore_index=True)
+            X = pd.concat(X_rows, ignore_index=True)
+            y = pd.concat(y_rows, ignore_index=True)
+            # Final safety: fill any residual NaN
+            X = X.fillna(0.0)
+            y = y.fillna(0.0)
+            return X, y
 
         X_train, y_train = _stack(dates_train)
         X_test, y_test = _stack(dates_test)
@@ -315,7 +325,10 @@ class GPMiner:
             mask = np.isfinite(y_pred) & np.isfinite(y)
             if mask.sum() < 10:
                 return 0.0
-            corr, _ = spearmanr(y_pred[mask], y[mask])
+            yp = y_pred[mask]
+            if np.std(yp) < 1e-12 or np.std(y[mask]) < 1e-12:
+                return 0.0
+            corr, _ = spearmanr(yp, y[mask])
             return float(corr) if np.isfinite(corr) else 0.0
 
         ic_fitness = make_fitness(function=_ic_metric, greater_is_better=True, wrap=False)
@@ -363,7 +376,7 @@ class GPMiner:
             expressions.append(expr)
             train_fitness.append(prog.raw_fitness_)
             # Evaluate on test set
-            test_pred = prog.predict(X_test)
+            test_pred = prog.execute(X_test.to_numpy())
             test_ic = self._compute_ic(test_pred, y_test.to_numpy())
             test_fitness.append(test_ic)
 
@@ -450,10 +463,16 @@ class GPMiner:
         # gplearn uses a simplified Lisp syntax: func(arg1, arg2, ...)
         raw_str = str(program)
 
+        # gplearn names terminals as X0, X1, ... matching column order
+        terminal_map = {f"X{i}": f"${fld}" for i, fld in enumerate(self.config.fields)}
+
         # Recursively convert
         def convert(s: str) -> str:
             s = s.strip()
-            # Check if it's a terminal (field name)
+            # Check if it's a terminal (X0, X1, ...)
+            if s in terminal_map:
+                return terminal_map[s]
+            # Check if it's a field name directly
             if s in self.config.fields:
                 return f"${s}"
             # Check if it's a number
@@ -501,7 +520,10 @@ class GPMiner:
         mask = np.isfinite(pred) & np.isfinite(actual)
         if mask.sum() < 10:
             return 0.0
-        corr, _ = spearmanr(pred[mask], actual[mask])
+        p, a = pred[mask], actual[mask]
+        if np.std(p) < 1e-12 or np.std(a) < 1e-12:
+            return 0.0
+        corr, _ = spearmanr(p, a)
         return float(corr) if np.isfinite(corr) else 0.0
 
 

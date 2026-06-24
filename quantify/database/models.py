@@ -72,6 +72,7 @@ from sqlalchemy import (
     Text,
     func,
 )
+from sqlalchemy.dialects.mysql import MEDIUMTEXT
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -88,7 +89,7 @@ class SavedStrategy(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True, comment="自增主键")
     name: Mapped[str] = mapped_column(String(128), comment="策略名称")
     description: Mapped[str | None] = mapped_column(Text, comment="策略说明")
-    source: Mapped[str] = mapped_column(Text, comment="策略源码")
+    source: Mapped[str] = mapped_column(MEDIUMTEXT, comment="策略源码")
 
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), comment="创建时间")
     updated_at: Mapped[datetime] = mapped_column(
