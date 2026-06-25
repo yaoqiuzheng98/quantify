@@ -62,7 +62,7 @@ def _rolling_std_2d(x, w):
         else:
             mean = (csum[i] - padded[s]) / cnt
             mean2 = (csum2[i] - padded2[s]) / cnt
-            var = np.maximum(mean2 - mean * mean, 0.0)
+            var = np.maximum((mean2 - mean * mean) * cnt / (cnt - 1), 0.0)  # ddof=1
             out[i] = np.sqrt(var)
     return out
 
@@ -109,10 +109,14 @@ def _rolling_skew_2d(x, w):
         if cnt < 3:
             out[i] = 0.0
         else:
+            n_ = cnt
             m = v.mean(axis=0)
-            sd = v.std(axis=0)
-            mask = sd > 1e-12
-            out[i] = np.where(mask, ((v - m) ** 3).mean(axis=0) / np.where(mask, sd**3, 1.0), 0.0)
+            m3 = ((v - m) ** 3).sum(axis=0) / n_
+            m2 = ((v - m) ** 2).sum(axis=0) / n_
+            mask = m2 > 1e-24
+            out[i] = np.where(
+                mask, (m3 / np.where(mask, m2**1.5, 1.0)) * np.sqrt(n_ * (n_ - 1)) / (n_ - 2), 0.0
+            )
     return out
 
 
@@ -126,10 +130,17 @@ def _rolling_kurt_2d(x, w):
         if cnt < 4:
             out[i] = 0.0
         else:
+            n_ = cnt
             m = v.mean(axis=0)
-            sd = v.std(axis=0)
+            sd = v.std(axis=0, ddof=1)
             mask = sd > 1e-12
-            out[i] = np.where(mask, ((v - m) ** 4).mean(axis=0) / np.where(mask, sd**4, 1.0) - 3.0, 0.0)
+            g2 = (
+                ((n_ + 1) * n_ / ((n_ - 1) * (n_ - 2) * (n_ - 3)))
+                * ((v - m) ** 4).sum(axis=0)
+                / np.where(mask, sd**4, 1.0)
+            )
+            g2 -= 3 * (n_ - 1) ** 2 / ((n_ - 2) * (n_ - 3))
+            out[i] = np.where(mask, g2, 0.0)
     return out
 
 

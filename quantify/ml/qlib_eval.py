@@ -226,7 +226,7 @@ def _rolling_std(x, w):
             continue
         mean = (csum[i] - (csum[s - 1] if s > 0 else 0.0)) / cnt
         mean2 = (csum2[i] - (csum2[s - 1] if s > 0 else 0.0)) / cnt
-        var = mean2 - mean * mean
+        var = (mean2 - mean * mean) * cnt / (cnt - 1)  # ddof=1, matching pandas
         out[i] = np.sqrt(max(var, 0.0))
     return out
 
@@ -259,15 +259,20 @@ def _rolling_skew(x, w):
     for i in range(n):
         s = max(0, i - w + 1)
         v = x[s : i + 1]
-        if len(v) < 3:
+        cnt = len(v)
+        if cnt < 3:
             out[i] = 0.0
             continue
         m = v.mean()
-        sd = v.std()
+        sd = v.std(ddof=1)
         if sd < 1e-12:
             out[i] = 0.0
         else:
-            out[i] = ((v - m) ** 3).mean() / sd**3
+            # pandas skew formula (matches scipy skew bias=False)
+            n_ = cnt
+            m3 = ((v - m) ** 3).sum() / n_
+            m2 = ((v - m) ** 2).sum() / n_
+            out[i] = (m3 / (m2**1.5)) * np.sqrt(n_ * (n_ - 1)) / (n_ - 2) if m2 > 1e-24 else 0.0
     return out
 
 
@@ -277,15 +282,21 @@ def _rolling_kurt(x, w):
     for i in range(n):
         s = max(0, i - w + 1)
         v = x[s : i + 1]
-        if len(v) < 4:
+        cnt = len(v)
+        if cnt < 4:
             out[i] = 0.0
             continue
         m = v.mean()
-        sd = v.std()
+        sd = v.std(ddof=1)
         if sd < 1e-12:
             out[i] = 0.0
         else:
-            out[i] = ((v - m) ** 4).mean() / sd**4 - 3.0
+            # pandas/scipy kurt formula (Fisher excess kurtosis, bias-corrected)
+            n_ = cnt
+            sd = v.std(ddof=1)
+            g2 = ((n_ + 1) * n_ / ((n_ - 1) * (n_ - 2) * (n_ - 3))) * ((v - m) ** 4).sum() / sd**4
+            g2 -= 3 * (n_ - 1) ** 2 / ((n_ - 2) * (n_ - 3))
+            out[i] = g2
     return out
 
 
@@ -348,10 +359,10 @@ def _rolling_cov(x, y, w):
 
 
 def _ref(x, n):
-    n = len(x)
-    out = np.zeros(n, dtype=float)
-    if n < len(x):
-        out[n:] = x[: len(x) - n]
+    total = len(x)
+    out = np.zeros(total, dtype=float)
+    if n < total:
+        out[n:] = x[: total - n]
     return out
 
 

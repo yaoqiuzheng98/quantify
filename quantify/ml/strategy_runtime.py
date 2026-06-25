@@ -14,6 +14,7 @@ This module handles:
 
 from __future__ import annotations
 
+import json
 import pickle
 from pathlib import Path
 
@@ -34,10 +35,14 @@ _MODELS_DIR = Path(__file__).resolve().parent.parent.parent / "models"
 def save_model(model, factor_exprs: list[str], config: dict, name: str) -> Path:
     """Save a trained ML model + metadata to disk.
 
+    For XGBoost/LightGBM models, saves the model in native JSON format (fast
+    loading, ~1000x faster than pickle on WSL).  Metadata (factor expressions,
+    config) is saved as a separate JSON file.
+
     Parameters
     ----------
     model : object
-        Trained model (must be picklable, e.g. XGBoost / sklearn).
+        Trained model (XGBoost / LightGBM / sklearn).
     factor_exprs : list[str]
         Qlib factor expressions used as features (order matters).
     config : dict
@@ -48,19 +53,35 @@ def save_model(model, factor_exprs: list[str], config: dict, name: str) -> Path:
     Returns
     -------
     Path
-        Path to the saved ``.pkl`` file.
+        Path to the saved model file.
     """
     _MODELS_DIR.mkdir(parents=True, exist_ok=True)
-    path = _MODELS_DIR / f"{name}.pkl"
-    payload = {
-        "model": model,
+
+    # Check if model supports native save_model (XGBoost, LightGBM)
+    model_type = type(model).__module__.split(".")[0]
+    if hasattr(model, "save_model") and model_type in ("xgboost", "lightgbm"):
+        # Save model in native format
+        model_path = _MODELS_DIR / f"{name}.json"
+        model.save_model(model_path)
+    else:
+        # Fallback: pickle for sklearn models
+        model_path = _MODELS_DIR / f"{name}.pkl"
+        with open(model_path, "wb") as f:
+            pickle.dump(model, f)
+
+    # Save metadata as JSON (always)
+    meta_path = _MODELS_DIR / f"{name}.meta.json"
+    meta = {
         "factor_exprs": factor_exprs,
         "config": config,
+        "model_type": model_type,
+        "model_file": model_path.name,
     }
-    with open(path, "wb") as f:
-        pickle.dump(payload, f)
-    log.info(f"模型已保存: {path}")
-    return path
+    with open(meta_path, "w") as f:
+        json.dump(meta, f, ensure_ascii=False, indent=2)
+
+    log.info(f"模型已保存: {model_path}")
+    return model_path
 
 
 def load_model(name: str) -> dict:
@@ -68,6 +89,36 @@ def load_model(name: str) -> dict:
 
     Returns dict with keys: model, factor_exprs, config.
     """
+    meta_path = _MODELS_DIR / f"{name}.meta.json"
+    if meta_path.exists():
+        # New format: metadata JSON + native model file
+        with open(meta_path) as f:
+            meta = json.load(f)
+        model_file = meta["model_file"]
+        model_path = _MODELS_DIR / model_file
+        if not model_path.exists():
+            raise FileNotFoundError(f"模型文件不存在: {model_path}")
+        model_type = meta.get("model_type", "")
+        if model_type == "xgboost":
+            import xgboost as xgb
+
+            model = xgb.XGBRegressor()
+            model.load_model(model_path)
+        elif model_type == "lightgbm":
+            import lightgbm as lgb
+
+            model = lgb.LGBMRegressor()
+            model.load_model(str(model_path))
+        else:
+            with open(model_path, "rb") as f:
+                model = pickle.load(f)
+        return {
+            "model": model,
+            "factor_exprs": meta["factor_exprs"],
+            "config": meta["config"],
+        }
+
+    # Legacy format: single .pkl file with everything
     path = _MODELS_DIR / f"{name}.pkl"
     if not path.exists():
         raise FileNotFoundError(f"模型文件不存在: {path}")
