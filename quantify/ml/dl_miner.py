@@ -273,8 +273,8 @@ class DLMiner:
                 y = fwd.iloc[t].loc[common_assets].to_numpy(dtype=np.float32)
 
                 # Valid stocks: both input and target are finite
-                valid_input = np.all(np.isfinite(seq.reshape(cfg.lookback, -1)), axis=0)
-                valid_input = valid_input.reshape(len(common_assets))
+                # seq shape: (lookback, n_assets, n_fields) → check all time×field per asset
+                valid_input = np.all(np.isfinite(seq), axis=(0, 2))  # (n_assets,)
                 valid = valid_input & np.isfinite(y)
 
                 if valid.sum() < 10:

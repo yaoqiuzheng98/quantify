@@ -250,7 +250,13 @@ class MLSynthesizer:
         # Handle NaN in features: fill with cross-sectional median
         X_train = dataset.X_train.fillna(dataset.X_train.median()).fillna(0)
         X_test = dataset.X_test.fillna(dataset.X_train.median()).fillna(0)
-        y_train = dataset.y_train.fillna(0)
+        # Drop any remaining NaN targets (shouldn't happen after _stack filtering)
+        y_train = dataset.y_train
+        valid_y = y_train.notna()
+        if not valid_y.all():
+            log.warning(f"丢弃 {(~valid_y).sum()} 行 NaN 目标值")
+            X_train = X_train[valid_y]
+            y_train = y_train[valid_y]
 
         model.fit(X_train, y_train)
         log.info("模型训练完成")

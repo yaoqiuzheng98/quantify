@@ -1281,11 +1281,14 @@ def ml_run(
                 chosen_name, chosen_ic, chosen_bt = results[0]
                 typer.echo(f"验证模型: {chosen_name}")
 
+            from quantify.factor.evaluator import evaluation_window_default
+
+            default_start, default_end = evaluation_window_default()
             two_stage = TwoStageBacktest(
                 TwoStageConfig(
                     universe=universe or "000300.SH",
-                    start_date=start_date or "2020-06-16",
-                    end_date=end_date or "2026-06-16",
+                    start_date=start_date or default_start,
+                    end_date=end_date or default_end,
                 )
             )
             event_result = two_stage.validate_vector_result(chosen_bt, rebalance_days=rebalance)
@@ -1304,11 +1307,11 @@ def ml_run(
                         f"universe={universe} | test IC={chosen_ic:.4f} | "
                         f"向量化收益={event_result.vectorized_metrics.get('total_return_pct', 0):.2f}% | "
                         f"事件驱动收益={event_result.metrics.get('total_return_pct', 0):.2f}% | "
-                        f"模型文件={ml_synth.saved_model_name}.pkl"
+                        f"模型文件={ml_synth.saved_model_name}"
                     ),
                 )
                 typer.echo(f"\n可复用策略已入库: #{saved.id} {strategy_name}")
-                typer.echo(f"  模型文件: models/{ml_synth.saved_model_name}.pkl")
+                typer.echo(f"  模型文件: models/{ml_synth.saved_model_name}.*")
                 typer.echo("  → 策略在运行时实时计算因子+模型预测，可在 Dashboard 任意区间回测")
             else:
                 typer.echo("\n注: 未生成可复用策略（ML 阶段被跳过或策略生成失败）。")

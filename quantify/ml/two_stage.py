@@ -201,21 +201,8 @@ def rebalance(context):
                 self.config.universe, self.config.start_date, self.config.end_date
             )
 
-        # Add all stocks from holdings (convert from Tushare to JQ format if needed)
-        holding_stocks = set()
-        for col in holdings.columns:
-            stock = str(col)
-            # Convert Tushare format (.SH/.SZ) to JQ format (.XSHG/.XSHE) if needed
-            if stock.endswith(".SH"):
-                stock = stock.replace(".SH", ".XSHG")
-            elif stock.endswith(".SZ"):
-                stock = stock.replace(".SZ", ".XSHE")
-            holding_stocks.add(stock)
-
-        # Convert holding stocks back to Tushare format for the engine
-        from quantify.backtest.engine import to_tushare_code
-
-        holding_ts = [to_tushare_code(s) for s in holding_stocks]
+        # Add all stocks from holdings (already in Tushare format from vectorized backtest)
+        holding_ts = [str(col) for col in holdings.columns]
 
         if self.config.handle_missing == "include":
             # Merge: universe + holding stocks

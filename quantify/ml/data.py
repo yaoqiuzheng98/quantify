@@ -227,8 +227,8 @@ def build_dataset(
             y_dt = fwd.loc[dt, common_assets]
             # Factor values
             x_dt = pd.DataFrame({expr: panels[expr].loc[dt, common_assets] for expr in feature_names})
-            # Drop rows where y is NaN or all X are NaN
-            valid = y_dt.notna() & x_dt.notna().any(axis=1)
+            # Drop rows where y is NaN or any X is NaN
+            valid = y_dt.notna() & x_dt.notna().all(axis=1)
             if valid.sum() == 0:
                 continue
             X_rows.append(x_dt.loc[valid])
