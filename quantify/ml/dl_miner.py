@@ -280,8 +280,8 @@ class DLMiner:
                 if valid.sum() < 10:
                     continue
 
-                # Only keep valid stocks
-                seq_valid = seq[:, valid, :]  # (lookback, n_valid, n_fields)
+                # Only keep valid stocks, transpose to (n_valid, lookback, n_fields)
+                seq_valid = seq[:, valid, :].transpose(1, 0, 2)
                 y_valid = y[valid]
 
                 X_list.append(seq_valid)
@@ -291,10 +291,8 @@ class DLMiner:
             if not X_list:
                 return np.array([]), np.array([]), []
 
-            # Stack: (n_dates_total, n_stocks_per_date, lookback, n_fields)
-            # But different dates have different numbers of valid stocks.
-            # We flatten across dates and stocks for training.
-            X_flat = np.concatenate([x.reshape(-1, cfg.lookback, len(cfg.fields)) for x in X_list], axis=0)
+            # Stack: (total_valid_samples, lookback, n_fields)
+            X_flat = np.concatenate(X_list, axis=0)
             y_flat = np.concatenate(y_list, axis=0)
 
             return X_flat, y_flat, score_dates
@@ -433,13 +431,12 @@ class DLMiner:
                         axis=-1,
                     )  # (lookback, n_assets, n_fields)
 
-                    valid_input = np.all(np.isfinite(seq.reshape(cfg.lookback, -1)), axis=0)
-                    valid_input = valid_input.reshape(len(common_assets))
+                    valid_input = np.all(np.isfinite(seq), axis=(0, 2))  # (n_assets,)
 
                     if valid_input.sum() < 10:
                         continue
 
-                    seq_valid = seq[:, valid_input, :].reshape(-1, cfg.lookback, len(cfg.fields))
+                    seq_valid = seq[:, valid_input, :].transpose(1, 0, 2)  # (n_valid, lookback, n_fields)
                     x = torch.from_numpy(seq_valid).float().to(device)
                     pred = model(x).cpu().numpy()
 
