@@ -19,6 +19,7 @@ Usage::
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -310,7 +311,7 @@ class MLSynthesizer:
         # 9. Feature importance
         importance = self._get_feature_importance(model)
 
-        return MLSynthResult(
+        result = MLSynthResult(
             model=model,
             dataset=dataset,
             train_scores=train_scores,
@@ -322,6 +323,63 @@ class MLSynthesizer:
             feature_importance=importance,
             config=cfg,
         )
+
+        # 10. Save model + generate reusable strategy
+        self._save_model_and_strategy(model, expressions, cfg, result)
+
+        return result
+
+    def _save_model_and_strategy(
+        self,
+        model: object,
+        expressions: list[str],
+        cfg: MLSynthConfig,
+        result: MLSynthResult,
+    ) -> None:
+        """Save the trained model to disk and generate a reusable strategy source.
+
+        The strategy computes factor values at runtime using attribute_history()
+        and feeds them to the saved model for predictions — no hardcoded holdings.
+        """
+
+        from quantify.factor.llm import _to_jq_code
+
+        from .strategy_runtime import save_model
+
+        # Save model
+        universe_str = (cfg.universe or "all").replace(".", "_").replace("/", "_")
+        model_name = f"ml_{cfg.model_type}_{universe_str}"
+        config_dict = {
+            "model_type": cfg.model_type,
+            "universe": cfg.universe,
+            "top_n": cfg.top_n,
+            "rebalance_days": cfg.rebalance_days,
+            "forward_period": cfg.forward_period,
+            "test_ic": result.test_ic,
+            "train_ic": result.train_ic,
+        }
+        save_model(model, expressions, config_dict, model_name)
+
+        # Generate strategy source
+        jq_universe = _to_jq_code(cfg.universe) if cfg.universe and cfg.universe != "all" else "000300.XSHG"
+        self._saved_model_name = model_name
+        self._strategy_source = _generate_ml_strategy_source(
+            model_name=model_name,
+            jq_universe=jq_universe,
+            top_n=cfg.top_n,
+            rebalance_days=cfg.rebalance_days,
+            factor_exprs=expressions,
+        )
+
+    @property
+    def strategy_source(self) -> str:
+        """Generated reusable strategy source code (available after run())."""
+        return getattr(self, "_strategy_source", "")
+
+    @property
+    def saved_model_name(self) -> str:
+        """Name of the saved model file (available after run())."""
+        return getattr(self, "_saved_model_name", "")
 
     def _rebuild_panel(
         self,
@@ -345,3 +403,147 @@ class MLSynthesizer:
         # Reindex to cover all dates and assets (fill missing with NaN)
         panel = panel.reindex(index=dates, columns=assets)
         return panel
+
+
+# ---------------------------------------------------------------------------
+# Strategy source generation
+# ---------------------------------------------------------------------------
+
+
+def _generate_ml_strategy_source(
+    model_name: str,
+    jq_universe: str,
+    top_n: int,
+    rebalance_days: int,
+    factor_exprs: list[str],
+) -> str:
+    """Generate a reusable JoinQuant-format strategy source code.
+
+    The strategy:
+    1. Loads the saved ML model at initialize()
+    2. Each rebalance day, gets the stock universe via get_index_stocks()
+    3. For each stock, computes factor values from attribute_history() / get_fundamentals()
+    4. Feeds factor values to the model → predictions
+    5. Selects top-N stocks by prediction score, equal-weight rebalance
+
+    No hardcoded holdings — works on any date range.
+    """
+    # Check if any factors use fundamental fields
+    import re
+
+    all_fields = set()
+    for expr in factor_exprs:
+        all_fields.update(re.findall(r"\$([a-zA-Z_]+)", expr))
+    fundamental_fields = all_fields & {"pe", "pb", "ps", "turn", "total_mv", "circ_mv"}
+
+    # Build factor expressions list for embedding
+    exprs_json = json.dumps(factor_exprs)
+
+    has_fundamentals = bool(fundamental_fields)
+
+    source = f'''from jqdata import *
+import builtins
+sum = builtins.sum
+max = builtins.max
+min = builtins.min
+abs = builtins.abs
+round = builtins.round
+import json
+import numpy as np
+
+from quantify.ml.strategy_runtime import RuntimeContext
+
+_MODEL_NAME = "{model_name}"
+_UNIVERSE = "{jq_universe}"
+_TOP_N = {top_n}
+_REBALANCE_DAYS = {rebalance_days}
+_FACTOR_EXPRS = json.loads('{exprs_json}')
+
+_rt = None
+
+def initialize(context):
+    set_option("use_real_price", True)
+    set_option("avoid_future_data", True)
+    set_benchmark("{jq_universe}")
+    set_order_cost(OrderCost(
+        open_tax=0, close_tax=0,
+        open_commission=0.0005, close_commission=0.0005,
+        min_commission=0.5,
+    ), type="stock")
+    set_slippage(PriceRelatedSlippage(0.002))
+
+    global _rt
+    _rt = RuntimeContext(
+        model_name=_MODEL_NAME,
+        universe_code=_UNIVERSE,
+        top_n=_TOP_N,
+        rebalance_days=_REBALANCE_DAYS,
+    )
+    context.day_count = 0
+    run_daily(rebalance, time="open")
+
+
+def rebalance(context):
+    context.day_count += 1
+    if context.day_count % _REBALANCE_DAYS != 0:
+        return
+
+    dt_str = str(context.current_dt.date())
+
+    # Get stock universe
+    stocks = get_index_stocks(_UNIVERSE)
+    if not stocks:
+        log.warning(f"{{dt_str}} 股票池为空")
+        return
+
+    log.info(f"{{dt_str}} 调仓: 股票池={{len(stocks)}} 只")
+
+    # Compute ML scores
+    scores = _rt.compute_scores(
+        stocks=stocks,
+        attribute_history_fn=attribute_history,
+'''
+
+    if has_fundamentals:
+        source += """        get_fundamentals_fn=get_fundamentals,
+        query_fn=query,
+        valuation_obj=valuation,
+        current_date=dt_str,
+"""
+    else:
+        source += """        current_date=dt_str,
+"""
+
+    source += """    )
+
+    if not scores:
+        log.warning(f"{dt_str} 无有效评分股票")
+        return
+
+    # Select top-N
+    target = _rt.select_top_stocks(scores)
+    if not target:
+        log.warning(f"{dt_str} 选股为空")
+        return
+
+    log.info(f"{dt_str} 评分有效={len(scores)} 目标持仓={len(target)}")
+    sorted_scores = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+    for code, score in sorted_scores[:5]:
+        log.info(f"  {code}: score={score:.4f}")
+
+    # Sell positions not in target
+    current_positions = list(context.portfolio.positions.keys())
+    for code in current_positions:
+        if code not in target:
+            order_target_value(code, 0)
+
+    # Buy / adjust target positions
+    total_value = context.portfolio.total_value * 0.95
+    for code, weight in target.items():
+        try:
+            order_target_value(code, total_value * weight)
+        except Exception as e:
+            log.warning(f"下单失败 {code}: {e}")
+"""
+
+    return source

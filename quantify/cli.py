@@ -1147,6 +1147,7 @@ def ml_run(
     from quantify.ml.two_stage import TwoStageBacktest, TwoStageConfig
 
     results: list[tuple[str, float, object]] = []  # (name, test_ic, vector_bt)
+    ml_synth = None  # ref to MLSynthesizer for reusable strategy generation
 
     try:
         # ── Phase 1: ML 因子合成 ──
@@ -1164,8 +1165,8 @@ def ml_run(
                 test_ratio=test_ratio,
                 model_type=ml_model,
             )
-            synth = MLSynthesizer(ml_cfg)
-            ml_result = synth.run()
+            ml_synth = MLSynthesizer(ml_cfg)
+            ml_result = ml_synth.run()
             typer.echo(ml_result.summary())
             results.append(
                 (
@@ -1290,22 +1291,27 @@ def ml_run(
             event_result = two_stage.validate_vector_result(chosen_bt, rebalance_days=rebalance)
             typer.echo(event_result.summary())
 
-            # 保存策略到 strategy 表 + 输出 .py 文件
-            from quantify.database.strategy_store import save_strategy
+            # 保存可复用策略到 strategy 表（运行时实时计算因子+模型预测，非回放）
+            if ml_synth and ml_synth.strategy_source:
+                from quantify.database.strategy_store import save_strategy
 
-            strategy_name = f"ml_{chosen_name}_{universe or 'all'}".replace(".", "_").replace("/", "_")
-            saved = save_strategy(
-                name=strategy_name,
-                source=event_result.source,
-                description=(
-                    f"ML/DL 全流程生成的策略 | 模型={chosen_name} | "
-                    f"universe={universe} | test IC={chosen_ic:.4f} | "
-                    f"向量化收益={event_result.vectorized_metrics.get('total_return_pct', 0):.2f}% | "
-                    f"事件驱动收益={event_result.metrics.get('total_return_pct', 0):.2f}%"
-                ),
-            )
-            typer.echo(f"\n策略已入库: #{saved.id} {strategy_name}")
-            typer.echo("  → 可在 Dashboard 加载运行")
+                strategy_name = f"ml_{chosen_name}_{universe or 'all'}".replace(".", "_").replace("/", "_")
+                saved = save_strategy(
+                    name=strategy_name,
+                    source=ml_synth.strategy_source,
+                    description=(
+                        f"ML 可复用策略 | 模型={chosen_name} | "
+                        f"universe={universe} | test IC={chosen_ic:.4f} | "
+                        f"向量化收益={event_result.vectorized_metrics.get('total_return_pct', 0):.2f}% | "
+                        f"事件驱动收益={event_result.metrics.get('total_return_pct', 0):.2f}% | "
+                        f"模型文件={ml_synth.saved_model_name}.pkl"
+                    ),
+                )
+                typer.echo(f"\n可复用策略已入库: #{saved.id} {strategy_name}")
+                typer.echo(f"  模型文件: models/{ml_synth.saved_model_name}.pkl")
+                typer.echo("  → 策略在运行时实时计算因子+模型预测，可在 Dashboard 任意区间回测")
+            else:
+                typer.echo("\n注: 未生成可复用策略（ML 阶段被跳过或策略生成失败）。")
 
         # ── 汇总 ──
         if results:
