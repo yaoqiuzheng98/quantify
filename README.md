@@ -557,10 +557,26 @@ quantify ml run --universe 000300.SH --ml-model lightgbm --dl-epochs 50 --top-n 
 
 ```bash
 quantify ml synth --universe 000300.SH --model xgboost
-quantify ml gp --universe 000300.SH --population 1000 --generations 50 --save
+quantify ml gp --universe 000300.SH --population 500 --generations 30 --save
 quantify ml dl --universe 000300.SH --model lstm --lookback 20 --epochs 50
 quantify ml validate --universe 000300.SH --model xgboost
 ```
+
+### 全流程耗时基准
+
+以 `quantify ml run --universe 000300.SH` 为例（沪深300，~470 只股票，2020–2026 数据，WSL / CPU）：
+
+| 阶段 | 耗时 | 说明 |
+|------|------|------|
+| **Phase 1: ML 因子合成** | ~2分30秒 | Qlib 因子加载 1分30秒 + 数据集构建 14秒 + XGBoost 训练+评估 46秒 |
+| **Phase 2: GP 因子发现** (5代) | ~2分40秒 | 51 个原子因子预计算 1分17秒 + GP 进化 1分24秒（每代 ~17秒） |
+| **Phase 3: DL 端到端选股** (5 epochs) | ~11分钟 | 数据加载 23秒 + LSTM 训练 ~10分钟（CPU）+ 预测+回测 ~1分钟 |
+| **Phase 4: 两阶段回测验证** | ~22秒 | 策略代码生成 1秒 + 数据加载 20秒 + 事件驱动回测 1秒 |
+| **总计（跳过 DL）** | **~5分30秒** | ML + GP(5代) + 验证 |
+| **总计（全量，DL 5 epochs）** | **~16分钟** | 含 DL |
+| **总计（全量，DL 30 epochs）** | **~1小时** | DL 训练是主要瓶颈 |
+
+> 瓶颈在 Qlib 因子加载（每次 init + `D.features` 需 1–2 分钟）和 DL 训练（CPU 上 LSTM 较慢）。GP 进化和事件驱动回测本身很快。GP 跑满 30 代约 8–10 分钟。
 
 ---
 
