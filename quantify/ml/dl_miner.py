@@ -53,6 +53,9 @@ class DLConfig:
     # Data
     fields: tuple[str, ...] = ("open", "high", "low", "close", "volume", "amount")
     test_ratio: float = 0.3
+    # Factor-augmented input: load Qlib atomic factors as cross-sectional features
+    use_factors: bool = True
+    factor_dim: int = 32  # MLP hidden dim for factor branch
     # Backtest
     top_n: int = 20
     rebalance_days: int = 5
@@ -110,8 +113,12 @@ class DLResult:
 # ---------------------------------------------------------------------------
 
 
-def _build_model(config: DLConfig, n_features: int):
-    """Build the PyTorch model."""
+def _build_model(config: DLConfig, n_features: int, n_factors: int = 0):
+    """Build the PyTorch model.
+
+    If n_factors > 0, builds a hybrid model: LSTM/Transformer for raw OHLCV
+    time series + MLP for cross-sectional factor features, concatenated.
+    """
     import torch
     import torch.nn as nn
 
@@ -168,12 +175,56 @@ def _build_model(config: DLConfig, n_features: int):
             x = x.mean(dim=1)
             return self.head(x).squeeze(-1)
 
+    class HybridModel(nn.Module):
+        """LSTM/Transformer for time series + MLP for cross-sectional factors."""
+
+        def __init__(self, ts_model, n_factors, factor_dim, hidden_dim, dropout):
+            super().__init__()
+            self.ts_model = ts_model  # LSTM or Transformer (without its head)
+            # Replace ts_model.head with identity — we'll concat before head
+            self.ts_feat_dim = hidden_dim
+            self.factor_mlp = nn.Sequential(
+                nn.Linear(n_factors, factor_dim),
+                nn.ReLU(),
+                nn.Dropout(dropout),
+                nn.Linear(factor_dim, factor_dim),
+                nn.ReLU(),
+                nn.Dropout(dropout),
+            )
+            self.head = nn.Sequential(
+                nn.Linear(hidden_dim + factor_dim, hidden_dim),
+                nn.ReLU(),
+                nn.Dropout(dropout),
+                nn.Linear(hidden_dim, 1),
+            )
+
+        def forward(self, x_ts, x_factor):
+            # x_ts: (batch, seq_len, input_dim), x_factor: (batch, n_factors)
+            # Extract ts features (before head)
+            if isinstance(self.ts_model, LSTMModel):
+                out, _ = self.ts_model.lstm(x_ts)
+                ts_feat = out[:, -1, :]  # (batch, hidden_dim)
+            else:  # TransformerModel
+                seq_len = x_ts.size(1)
+                proj = self.ts_model.input_proj(x_ts) + self.ts_model.pos_encoding[:, :seq_len, :]
+                enc = self.ts_model.encoder(proj)
+                ts_feat = enc.mean(dim=1)  # (batch, hidden_dim)
+            fac_feat = self.factor_mlp(x_factor)  # (batch, factor_dim)
+            combined = torch.cat([ts_feat, fac_feat], dim=1)
+            return self.head(combined).squeeze(-1)
+
     if config.model_type == "lstm":
-        return LSTMModel(n_features, config.hidden_dim, config.num_layers, config.dropout)
+        ts_model = LSTMModel(n_features, config.hidden_dim, config.num_layers, config.dropout)
+        if n_factors > 0:
+            return HybridModel(ts_model, n_factors, config.factor_dim, config.hidden_dim, config.dropout)
+        return ts_model
     if config.model_type == "transformer":
-        return TransformerModel(
+        ts_model = TransformerModel(
             n_features, config.hidden_dim, config.num_layers, config.n_heads, config.dropout
         )
+        if n_factors > 0:
+            return HybridModel(ts_model, n_factors, config.factor_dim, config.hidden_dim, config.dropout)
+        return ts_model
     raise ValueError(f"Unknown model_type: {config.model_type}")
 
 
@@ -199,8 +250,10 @@ class DLMiner:
     def _build_sequences(self) -> dict:
         """Build (date × stock) sequences of past OHLCV for DL input.
 
-        Returns dict with keys: X_train, y_train, X_test, y_test,
-        train_dates, test_dates, assets, close_panel, fwd_returns.
+        If config.use_factors, also loads Qlib atomic factors as cross-sectional
+        features. Returns dict with keys: X_train, y_train, X_test, y_test,
+        train_dates, test_dates, assets, close_panel, fwd_returns, and optionally
+        factor_train/factor_test.
         """
         cfg = self.config
         from quantify.factor.evaluator import evaluation_window_default
@@ -233,16 +286,37 @@ class DLMiner:
         field_arrays = {}
         for fld in cfg.fields:
             panel = panels[fld].loc[common_dates, common_assets]
-            # Per-stock normalization: z-score using expanding window
             arr = panel.to_numpy(dtype=np.float32)
-            # Simple normalization: rank-based to handle different scales
-            # Normalize per column (per stock) using rolling z-score
             df = pd.DataFrame(arr, index=common_dates, columns=common_assets)
-            # Global per-stock standardization
             mean = df.expanding(min_periods=cfg.lookback).mean()
             std = df.expanding(min_periods=cfg.lookback).std()
             normalized = (df - mean) / std.replace(0, 1)
             field_arrays[fld] = normalized.to_numpy(dtype=np.float32)
+
+        # Load atomic factors as cross-sectional features (if enabled)
+        factor_arrays = None  # (n_dates, n_assets, n_factors)
+        if cfg.use_factors:
+            from .gp_miner import ATOMIC_FACTORS
+            from .data import load_factor_panels
+
+            log.info(f"DL 加载 {len(ATOMIC_FACTORS)} 个原子因子 (横截面特征)")
+            factor_exprs = [expr for _, expr in ATOMIC_FACTORS]
+            factor_panels = load_factor_panels(factor_exprs, cfg.universe, cfg.start_date, cfg.end_date)
+            # Build (n_dates, n_assets, n_factors) array
+            n_dates = len(common_dates)
+            n_assets = len(common_assets)
+            n_factors = len(ATOMIC_FACTORS)
+            factor_arrays = np.full((n_dates, n_assets, n_factors), np.nan, dtype=np.float32)
+            for i, (name, _) in enumerate(ATOMIC_FACTORS):
+                panel = factor_panels[factor_exprs[i]].loc[common_dates, common_assets]
+                factor_arrays[:, :, i] = panel.to_numpy(dtype=np.float32)
+            # Cross-sectional z-score per (date, factor) to normalize
+            with np.errstate(invalid="ignore"):
+                cs_mean = np.nanmean(factor_arrays, axis=1, keepdims=True)
+                cs_std = np.nanstd(factor_arrays, axis=1, keepdims=True)
+                factor_arrays = (factor_arrays - cs_mean) / np.where(cs_std > 1e-8, cs_std, 1.0)
+            factor_arrays = np.nan_to_num(factor_arrays, nan=0.0, posinf=0.0, neginf=0.0)
+            log.info(f"DL 因子特征: {n_factors} 个因子, shape={factor_arrays.shape}")
 
         # Chronological split
         split_idx = int(len(common_dates) * (1 - cfg.test_ratio))
@@ -255,6 +329,7 @@ class DLMiner:
         # output = forward return at date t
         def _build_set(date_indices: range) -> tuple:
             X_list = []
+            F_list = []  # factor features
             y_list = []
             score_dates = []
             for t in date_indices:
@@ -277,6 +352,11 @@ class DLMiner:
                 valid_input = np.all(np.isfinite(seq), axis=(0, 2))  # (n_assets,)
                 valid = valid_input & np.isfinite(y)
 
+                # Also check factor validity if enabled
+                if factor_arrays is not None:
+                    fac_t = factor_arrays[t]  # (n_assets, n_factors)
+                    valid = valid & np.all(np.isfinite(fac_t), axis=1)
+
                 if valid.sum() < 10:
                     continue
 
@@ -287,30 +367,43 @@ class DLMiner:
                 X_list.append(seq_valid)
                 y_list.append(y_valid)
                 score_dates.append(common_dates[t])
+                if factor_arrays is not None:
+                    F_list.append(fac_t[valid])
 
             if not X_list:
+                if factor_arrays is not None:
+                    return np.array([]), np.array([]), np.array([]), []
                 return np.array([]), np.array([]), []
 
             # Stack: (total_valid_samples, lookback, n_fields)
             X_flat = np.concatenate(X_list, axis=0)
             y_flat = np.concatenate(y_list, axis=0)
 
+            if factor_arrays is not None:
+                F_flat = np.concatenate(F_list, axis=0)
+                return X_flat, F_flat, y_flat, score_dates
             return X_flat, y_flat, score_dates
 
         # Training set
-        X_train, y_train, train_dates = _build_set(range(start_idx, train_end))
-        # Test set
-        X_test, y_test, test_dates = _build_set(range(test_start, len(common_dates) - cfg.forward_period))
+        if factor_arrays is not None:
+            X_train, F_train, y_train, train_dates = _build_set(range(start_idx, train_end))
+            X_test, F_test, y_test, test_dates = _build_set(
+                range(test_start, len(common_dates) - cfg.forward_period)
+            )
+        else:
+            X_train, y_train, train_dates = _build_set(range(start_idx, train_end))
+            X_test, y_test, test_dates = _build_set(range(test_start, len(common_dates) - cfg.forward_period))
 
         log.info(
             f"DL 数据: train={len(X_train)} samples, test={len(X_test)} samples, "
             f"features={len(cfg.fields)}, lookback={cfg.lookback}"
+            + (f", factors={factor_arrays.shape[2]}" if factor_arrays is not None else "")
         )
 
         # Also prepare close price panel for backtest
         close_panel = panels["close"].loc[common_dates, common_assets]
 
-        return {
+        result = {
             "X_train": X_train,
             "y_train": y_train,
             "X_test": X_test,
@@ -323,30 +416,50 @@ class DLMiner:
             "panels": panels,
             "field_arrays": field_arrays,
             "common_dates": common_dates,
+            "use_factors": factor_arrays is not None,
+            "n_factors": factor_arrays.shape[2] if factor_arrays is not None else 0,
         }
+        if factor_arrays is not None:
+            result["F_train"] = F_train
+            result["F_test"] = F_test
+            result["factor_arrays"] = factor_arrays
+        return result
 
-    def _train_model(self, X_train, y_train, X_val, y_val, device: str):
-        """Train the DL model."""
+    def _train_model(self, X_train, y_train, X_val, y_val, device: str, F_train=None, F_val=None):
+        """Train the DL model. If F_train is provided, uses hybrid (ts + factor) model."""
         import torch
         import torch.nn as nn
         from torch.utils.data import DataLoader, TensorDataset
 
         cfg = self.config
         n_features = X_train.shape[-1]
+        n_factors = F_train.shape[-1] if F_train is not None else 0
 
-        model = _build_model(cfg, n_features).to(device)
+        model = _build_model(cfg, n_features, n_factors).to(device)
         optimizer = torch.optim.Adam(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
         criterion = nn.MSELoss()
 
         # DataLoaders
-        train_ds = TensorDataset(
-            torch.from_numpy(X_train).float(),
-            torch.from_numpy(y_train).float(),
-        )
-        val_ds = TensorDataset(
-            torch.from_numpy(X_val).float(),
-            torch.from_numpy(y_val).float(),
-        )
+        if n_factors > 0:
+            train_ds = TensorDataset(
+                torch.from_numpy(X_train).float(),
+                torch.from_numpy(F_train).float(),
+                torch.from_numpy(y_train).float(),
+            )
+            val_ds = TensorDataset(
+                torch.from_numpy(X_val).float(),
+                torch.from_numpy(F_val).float(),
+                torch.from_numpy(y_val).float(),
+            )
+        else:
+            train_ds = TensorDataset(
+                torch.from_numpy(X_train).float(),
+                torch.from_numpy(y_train).float(),
+            )
+            val_ds = TensorDataset(
+                torch.from_numpy(X_val).float(),
+                torch.from_numpy(y_val).float(),
+            )
         train_loader = DataLoader(train_ds, batch_size=cfg.batch_size, shuffle=True, drop_last=True)
         val_loader = DataLoader(val_ds, batch_size=cfg.batch_size, shuffle=False)
 
@@ -356,15 +469,23 @@ class DLMiner:
         best_state = None
         patience_counter = 0
 
-        log.info(f"训练 {cfg.model_type} 模型: {cfg.epochs} epochs, device={device}")
+        model_desc = f"{cfg.model_type}" + ("+factor" if n_factors > 0 else "")
+        log.info(f"训练 {model_desc} 模型: {cfg.epochs} epochs, device={device}")
 
         for epoch in range(cfg.epochs):
             model.train()
             train_losses = []
-            for xb, yb in train_loader:
-                xb, yb = xb.to(device), yb.to(device)
-                optimizer.zero_grad()
-                pred = model(xb)
+            for batch in train_loader:
+                if n_factors > 0:
+                    xb, fb, yb = batch
+                    xb, fb, yb = xb.to(device), fb.to(device), yb.to(device)
+                    optimizer.zero_grad()
+                    pred = model(xb, fb)
+                else:
+                    xb, yb = batch
+                    xb, yb = xb.to(device), yb.to(device)
+                    optimizer.zero_grad()
+                    pred = model(xb)
                 loss = criterion(pred, yb)
                 loss.backward()
                 optimizer.step()
@@ -373,9 +494,15 @@ class DLMiner:
             model.eval()
             val_losses = []
             with torch.no_grad():
-                for xb, yb in val_loader:
-                    xb, yb = xb.to(device), yb.to(device)
-                    pred = model(xb)
+                for batch in val_loader:
+                    if n_factors > 0:
+                        xb, fb, yb = batch
+                        xb, fb, yb = xb.to(device), fb.to(device), yb.to(device)
+                        pred = model(xb, fb)
+                    else:
+                        xb, yb = batch
+                        xb, yb = xb.to(device), yb.to(device)
+                        pred = model(xb)
                     loss = criterion(pred, yb)
                     val_losses.append(loss.item())
 
@@ -415,6 +542,8 @@ class DLMiner:
         common_dates = data["common_dates"]
         common_assets = data["assets"]
         field_arrays = data["field_arrays"]
+        use_factors = data.get("use_factors", False)
+        factor_arrays = data.get("factor_arrays")
 
         def _predict_for_dates(date_indices: range, dates: list[str]) -> pd.DataFrame:
             panel = pd.DataFrame(np.nan, index=common_dates, columns=common_assets)
@@ -433,12 +562,22 @@ class DLMiner:
 
                     valid_input = np.all(np.isfinite(seq), axis=(0, 2))  # (n_assets,)
 
+                    if use_factors and factor_arrays is not None:
+                        fac_t = factor_arrays[t]  # (n_assets, n_factors)
+                        valid_input = valid_input & np.all(np.isfinite(fac_t), axis=1)
+
                     if valid_input.sum() < 10:
                         continue
 
                     seq_valid = seq[:, valid_input, :].transpose(1, 0, 2)  # (n_valid, lookback, n_fields)
                     x = torch.from_numpy(seq_valid).float().to(device)
-                    pred = model(x).cpu().numpy()
+
+                    if use_factors and factor_arrays is not None:
+                        f_valid = fac_t[valid_input]
+                        f = torch.from_numpy(f_valid).float().to(device)
+                        pred = model(x, f).cpu().numpy()
+                    else:
+                        pred = model(x).cpu().numpy()
 
                     valid_assets = np.array(common_assets)[valid_input]
                     panel.loc[dt, valid_assets] = pred
@@ -476,8 +615,16 @@ class DLMiner:
         X_tr = data["X_train"][:-val_size]
         y_tr = data["y_train"][:-val_size]
 
+        # Factor features for hybrid model
+        F_tr = F_val = None
+        if data.get("use_factors"):
+            F_val = data["F_train"][-val_size:]
+            F_tr = data["F_train"][:-val_size]
+
         # 2. Train
-        model, train_history, val_history = self._train_model(X_tr, y_tr, X_val, y_val, device)
+        model, train_history, val_history = self._train_model(
+            X_tr, y_tr, X_val, y_val, device, F_train=F_tr, F_val=F_val
+        )
 
         # 3. Predict scores
         train_scores, test_scores = self._predict_scores(model, data, device)

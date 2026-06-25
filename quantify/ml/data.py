@@ -87,6 +87,27 @@ def load_factor_panels(
         raise RuntimeError("股票池为空，请先 dump-data 并确认 universe")
 
     panels: dict[str, pd.DataFrame] = {}
+
+    # Batch load: try all expressions in one Qlib call for speed
+    try:
+        raw_all = D.features(instruments, expressions, start_time=start_date, end_time=end_date)
+    except Exception as exc:
+        log.warning(f"批量因子求值失败: {exc}，回退到逐个加载")
+        raw_all = None
+
+    if raw_all is not None and not raw_all.empty:
+        for expr in expressions:
+            if expr not in raw_all.columns:
+                log.warning(f"因子面板为空: {expr}")
+                continue
+            panel = raw_all[expr].unstack(level=0)
+            panel.index = panel.index.strftime("%Y-%m-%d")
+            panel.columns = [qlib_to_ts_code(c) for c in panel.columns]
+            panels[expr] = panel
+            log.info(f"  加载因子面板: {expr}  shape={panel.shape}")
+        return panels
+
+    # Fallback: load one by one
     for expr in expressions:
         try:
             raw = D.features(instruments, [expr], start_time=start_date, end_time=end_date)
@@ -96,11 +117,9 @@ def load_factor_panels(
         if raw is None or raw.empty:
             log.warning(f"因子面板为空: {expr}")
             continue
-        # Qlib returns (instrument, datetime) MultiIndex
         col = raw.columns[0]
-        panel = raw[col].unstack(level=0)  # → (date, instrument)
+        panel = raw[col].unstack(level=0)
         panel.index = panel.index.strftime("%Y-%m-%d")
-        # Convert Qlib instrument codes back to Tushare format for consistency
         panel.columns = [qlib_to_ts_code(c) for c in panel.columns]
         panels[expr] = panel
         log.info(f"  加载因子面板: {expr}  shape={panel.shape}")
