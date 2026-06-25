@@ -1,8 +1,15 @@
 """Phase 2: Genetic Programming factor discovery.
 
-Uses gplearn to evolve Qlib factor expressions.  GP searches the expression
-space by mutating and recombining syntax trees, with fitness = cross-sectional
-IC against forward returns.
+Uses gplearn to evolve cross-sectional factor combinations.  GP terminals are
+**pre-computed atomic factors** (Qlib expressions like ``Mean($close, 20)``,
+``Std($volume, 10)``, ``Corr($close, $turn, 20)``), loaded via Qlib's
+``D.features``.  GP only does **cross-sectional arithmetic** (add/sub/mul/div/
+abs/neg/sign/log) to combine these atoms into new composite factors.
+
+This is the standard approach in factor mining: rolling/time-series operations
+are expensive and need per-stock sequences, so they're pre-computed once.  GP
+then searches the combinatorial space cheaply using element-wise operations on
+stacked (date, stock) arrays.
 
 Output: Qlib expressions (strings) that can be fed into the existing
 ``factor_library`` pipeline for evaluation, strategy generation, etc.
@@ -11,7 +18,7 @@ Usage::
 
     from quantify.ml.gp_miner import GPMiner, GPConfig
 
-    miner = GPMiner(GPConfig(universe="000300.SH", population=500, generations=50))
+    miner = GPMiner(GPConfig(universe="000300.SH", population=500, generations=30))
     results = miner.run()
     for expr, ic in results[:5]:
         print(f"IC={ic:.4f}  {expr}")
@@ -19,7 +26,7 @@ Usage::
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 import pandas as pd
@@ -27,114 +34,109 @@ import pandas as pd
 from quantify.utils.logger import log
 
 # ---------------------------------------------------------------------------
-# Numpy helper functions for GP
+# Atomic factor definitions — pre-computed by Qlib, used as GP terminals
 # ---------------------------------------------------------------------------
+
+# Each entry: (terminal_name, qlib_expression)
+# These are the building blocks GP will combine.  All rolling/time-series
+# computation is done by Qlib upfront; GP only does cross-sectional arithmetic.
+ATOMIC_FACTORS: list[tuple[str, str]] = [
+    # ── Returns ──
+    ("ret_1d", "Div(Sub($close, Ref($close, 1)), Add(Ref($close, 1), 1e-8))"),
+    ("ret_5d", "Div(Sub($close, Ref($close, 5)), Add(Ref($close, 5), 1e-8))"),
+    ("ret_10d", "Div(Sub($close, Ref($close, 10)), Add(Ref($close, 10), 1e-8))"),
+    ("ret_20d", "Div(Sub($close, Ref($close, 20)), Add(Ref($close, 20), 1e-8))"),
+    # ── Volatility ──
+    ("vol_5d", "Std(Div(Sub($close, Ref($close, 1)), Add(Ref($close, 1), 1e-8)), 5)"),
+    ("vol_10d", "Std(Div(Sub($close, Ref($close, 1)), Add(Ref($close, 1), 1e-8)), 10)"),
+    ("vol_20d", "Std(Div(Sub($close, Ref($close, 1)), Add(Ref($close, 1), 1e-8)), 20)"),
+    # ── Volume ratios ──
+    ("vol_ratio_5", "Div(Sub($volume, Mean($volume, 5)), Add(Std($volume, 5), 1e-8))"),
+    ("vol_ratio_10", "Div(Sub($volume, Mean($volume, 10)), Add(Std($volume, 10), 1e-8))"),
+    ("vol_ratio_20", "Div(Sub($volume, Mean($volume, 20)), Add(Std($volume, 20), 1e-8))"),
+    # ── Price range ──
+    ("range_hl", "Div(Sub($high, $low), Add($close, 1e-8))"),
+    ("range_co", "Div(Sub($close, $open), Add($open, 1e-8))"),
+    ("range_oc", "Div(Sub($open, $close), Add(Ref($close, 1), 1e-8))"),
+    # ── Rolling means (normalized) ──
+    ("close_ma5_dev", "Div(Sub($close, Mean($close, 5)), Add(Mean($close, 5), 1e-8))"),
+    ("close_ma10_dev", "Div(Sub($close, Mean($close, 10)), Add(Mean($close, 10), 1e-8))"),
+    ("close_ma20_dev", "Div(Sub($close, Mean($close, 20)), Add(Mean($close, 20), 1e-8))"),
+    # ── Rolling std ──
+    ("close_std_5", "Std($close, 5)"),
+    ("close_std_10", "Std($close, 10)"),
+    ("close_std_20", "Std($close, 20)"),
+    ("vol_std_5", "Std($volume, 5)"),
+    ("vol_std_10", "Std($volume, 10)"),
+    ("vol_std_20", "Std($volume, 20)"),
+    # ── Skew / Kurt ──
+    ("close_skew_20", "Skew($close, 20)"),
+    ("vol_skew_20", "Skew($volume, 20)"),
+    ("close_kurt_20", "Kurt($close, 20)"),
+    ("vol_kurt_20", "Kurt($volume, 20)"),
+    # ── VWAP deviation ──
+    ("vwap_dev", "Div(Sub($close, $vwap), Add($vwap, 1e-8))"),
+    ("vwap_dev_ma5", "Mean(Div(Sub($close, $vwap), Add($vwap, 1e-8)), 5)"),
+    # ── Turnover ──
+    ("turn_ma5", "Mean($turn, 5)"),
+    ("turn_ma10", "Mean($turn, 10)"),
+    ("turn_ma20", "Mean($turn, 20)"),
+    ("turn_std_5", "Std($turn, 5)"),
+    ("turn_std_20", "Std($turn, 20)"),
+    # ── Correlations ──
+    ("corr_cv_5", "Corr($close, $volume, 5)"),
+    ("corr_cv_10", "Corr($close, $volume, 10)"),
+    ("corr_cv_20", "Corr($close, $volume, 20)"),
+    ("corr_ct_5", "Corr($close, $turn, 5)"),
+    ("corr_ct_20", "Corr($close, $turn, 20)"),
+    ("corr_hlv_20", "Corr(Sub($high, $low), $volume, 20)"),
+    # ── Fundamentals ──
+    ("ep", "Div(1, Add($pe, 1e-8))"),
+    ("bp", "Div(1, Add($pb, 1e-8))"),
+    ("sp", "Div(1, Add($ps, 1e-8))"),
+    # ── EMA deviation ──
+    ("ema5_dev", "Div(Sub($close, EMA($close, 5)), Add(EMA($close, 5), 1e-8))"),
+    ("ema10_dev", "Div(Sub($close, EMA($close, 10)), Add(EMA($close, 10), 1e-8))"),
+    ("ema20_dev", "Div(Sub($close, EMA($close, 20)), Add(EMA($close, 20), 1e-8))"),
+    # ── Price position ──
+    ("pos_20", "Div(Sub($close, Min($low, 20)), Add(Sub(Max($high, 20), Min($low, 20)), 1e-8))"),
+    ("pos_40", "Div(Sub($close, Min($low, 40)), Add(Sub(Max($high, 40), Min($low, 40)), 1e-8))"),
+    # ── Rank ──
+    ("rank_close_20", "Rank($close, 20)"),
+    ("rank_vol_20", "Rank($volume, 20)"),
+    # ── Amount ──
+    ("amt_ma5_dev", "Div(Sub($amount, Mean($amount, 5)), Add(Mean($amount, 5), 1e-8))"),
+    ("amt_ma20_dev", "Div(Sub($amount, Mean($amount, 20)), Add(Mean($amount, 20), 1e-8))"),
+]
+
+
+# ---------------------------------------------------------------------------
+# GP helper functions (cross-sectional only — no rolling!)
+# ---------------------------------------------------------------------------
+
+_CLIP_RANGE = 1e6
 
 
 def _safe_div(x, y):
+    """Element-wise safe division, clipped to avoid overflow."""
     result = np.divide(x, y, out=np.zeros_like(x, dtype=float), where=np.abs(y) > 1e-10)
-    return result + 1e-10  # avoid all-zero output for gplearn closure check
+    return np.clip(result, -_CLIP_RANGE, _CLIP_RANGE)
 
 
 def _safe_log(x):
     return np.log(np.abs(x) + 1e-10)
 
 
-def _rolling(x, window, func):
-    """Apply a rolling function to a 1-D array."""
-    s = pd.Series(x)
-    out = s.rolling(window, min_periods=1).apply(func, raw=True).to_numpy()
-    return np.nan_to_num(out, nan=1e-10) + 1e-10
+def _safe_mul(x, y):
+    return np.clip(np.multiply(x, y), -_CLIP_RANGE, _CLIP_RANGE)
 
 
-def _rolling_delta(x, n):
-    """x[t] - x[t-n]."""
-    s = pd.Series(x)
-    out = (s - s.shift(n)).to_numpy()
-    return np.nan_to_num(out, nan=1e-10) + 1e-10
+def _safe_sub(x, y):
+    return np.clip(np.subtract(x, y), -_CLIP_RANGE, _CLIP_RANGE)
 
 
-def _shift(x, n):
-    """x[t-n]."""
-    out = pd.Series(x).shift(n).to_numpy()
-    return np.nan_to_num(out, nan=1e-10) + 1e-10
-
-
-def _rolling_rank(x, window):
-    """Rolling percentile rank (0-1)."""
-    s = pd.Series(x)
-    out = s.rolling(window, min_periods=1).rank(pct=True).to_numpy()
-    return np.nan_to_num(out, nan=1e-10) + 1e-10
-
-
-def _rolling_corr(x, y, window):
-    """Rolling correlation of two series."""
-    sx = pd.Series(x)
-    sy = pd.Series(y)
-    out = sx.rolling(window, min_periods=5).corr(sy).to_numpy()
-    return np.nan_to_num(out, nan=1e-10) + 1e-10
-
-
-# ---------------------------------------------------------------------------
-# Qlib field/operator definitions for GP
-# ---------------------------------------------------------------------------
-
-# Fields available as GP terminals (must match QLIB_FIELDS)
-GP_FIELDS: tuple[str, ...] = (
-    "open",
-    "high",
-    "low",
-    "close",
-    "volume",
-    "amount",
-    "vwap",
-    "turn",
-    "pe",
-    "pb",
-    "ps",
-    "total_mv",
-    "circ_mv",
-)
-
-# Rolling window sizes to try
-GP_WINDOWS: tuple[int, ...] = (5, 10, 20, 40, 60)
-
-# Operators that gplearn will use as function set.
-# Each maps to a numpy function operating on pandas Series.
-# We define them to work on 1-D arrays (single stock time series).
-GP_FUNCTION_MAP: dict[str, tuple] = {
-    # (arity, function)
-    "add": (2, np.add),
-    "sub": (2, np.subtract),
-    "mul": (2, np.multiply),
-    "div": (2, _safe_div),
-    "mean_5": (1, lambda x: _rolling(x, 5, np.nanmean)),
-    "mean_10": (1, lambda x: _rolling(x, 10, np.nanmean)),
-    "mean_20": (1, lambda x: _rolling(x, 20, np.nanmean)),
-    "std_5": (1, lambda x: _rolling(x, 5, np.nanstd)),
-    "std_10": (1, lambda x: _rolling(x, 10, np.nanstd)),
-    "std_20": (1, lambda x: _rolling(x, 20, np.nanstd)),
-    "max_5": (1, lambda x: _rolling(x, 5, np.nanmax)),
-    "max_10": (1, lambda x: _rolling(x, 10, np.nanmax)),
-    "max_20": (1, lambda x: _rolling(x, 20, np.nanmax)),
-    "min_5": (1, lambda x: _rolling(x, 5, np.nanmin)),
-    "min_10": (1, lambda x: _rolling(x, 10, np.nanmin)),
-    "min_20": (1, lambda x: _rolling(x, 20, np.nanmin)),
-    "delta_5": (1, lambda x: _rolling_delta(x, 5)),
-    "delta_10": (1, lambda x: _rolling_delta(x, 10)),
-    "delta_20": (1, lambda x: _rolling_delta(x, 20)),
-    "ref_5": (1, lambda x: _shift(x, 5)),
-    "ref_10": (1, lambda x: _shift(x, 10)),
-    "ref_20": (1, lambda x: _shift(x, 20)),
-    "rank_20": (1, lambda x: _rolling_rank(x, 20)),
-    "rank_60": (1, lambda x: _rolling_rank(x, 60)),
-    "abs": (1, np.abs),
-    "neg": (1, np.negative),
-    "sign": (1, np.sign),
-    "log": (1, _safe_log),
-    "corr_10": (2, lambda x, y: _rolling_corr(x, y, 10)),
-    "corr_20": (2, lambda x, y: _rolling_corr(x, y, 20)),
-}
+def _safe_add(x, y):
+    return np.clip(np.add(x, y), -_CLIP_RANGE, _CLIP_RANGE)
 
 
 # ---------------------------------------------------------------------------
@@ -151,23 +153,23 @@ class GPConfig:
     end_date: str | None = None
     forward_period: int = 5
     # GP parameters
-    population: int = 1000
-    generations: int = 50
+    population: int = 500
+    generations: int = 30
     tournament_size: int = 20
     p_crossover: float = 0.7
     p_subtree_mutation: float = 0.1
     p_hoist_mutation: float = 0.05
     p_point_mutation: float = 0.1
-    max_depth: int = 8
-    init_depth: tuple[int, int] = (2, 6)
+    max_depth: int = 5
+    init_depth: tuple[int, int] = (2, 4)
     # Fitness
     metric: str = "ic"  # "ic" or "rank_ic"
     # Data
     test_ratio: float = 0.3
     # How many top expressions to return
     top_k: int = 10
-    # Fields to use as terminals
-    fields: tuple[str, ...] = GP_FIELDS
+    # Atomic factors to use as terminals (defaults to ATOMIC_FACTORS)
+    atomic_factors: list[tuple[str, str]] = field(default_factory=lambda: list(ATOMIC_FACTORS))
     # Random seed
     random_state: int = 42
 
@@ -177,9 +179,9 @@ class GPResult:
     """Result of GP factor discovery."""
 
     expressions: list[str]  # top-k Qlib expressions
-    fitness: list[float]  # corresponding IC/ICIR values
+    fitness: list[float]  # corresponding IC values
     test_fitness: list[float]  # out-of-sample fitness
-    history: object  # gplearn _program history (for debugging)
+    history: object  # gplearn estimator (for debugging)
 
 
 # ---------------------------------------------------------------------------
@@ -188,29 +190,39 @@ class GPResult:
 
 
 class GPMiner:
-    """Genetic Programming factor discovery using gplearn."""
+    """Genetic Programming factor discovery using gplearn.
+
+    GP terminals are pre-computed atomic factors (Qlib expressions).  GP
+    combines them cross-sectionally using arithmetic operators only.
+    """
 
     def __init__(self, config: GPConfig | None = None) -> None:
         self.config = config or GPConfig()
+        # terminal_name → Qlib expression mapping
+        self._terminal_exprs: dict[str, str] = {}
 
     def _build_function_set(self) -> tuple:
-        """Build gplearn function set from GP_FUNCTION_MAP."""
+        """Build gplearn function set — cross-sectional ops only."""
         from gplearn.functions import make_function
 
-        functions = []
-        for name, (arity, func) in GP_FUNCTION_MAP.items():
-            wrapped = make_function(function=func, name=name, arity=arity)
-            functions.append(wrapped)
+        functions = [
+            make_function(function=_safe_add, name="add", arity=2),
+            make_function(function=_safe_sub, name="sub", arity=2),
+            make_function(function=_safe_mul, name="mul", arity=2),
+            make_function(function=_safe_div, name="div", arity=2),
+            make_function(function=np.abs, name="abs", arity=1),
+            make_function(function=np.negative, name="neg", arity=1),
+            make_function(function=np.sign, name="sign", arity=1),
+            make_function(function=_safe_log, name="log", arity=1),
+        ]
         return tuple(functions)
 
-    def _load_training_data(self) -> tuple[pd.DataFrame, pd.Series]:
-        """Load stacked (date, stock) factor features and forward returns.
+    def _load_training_data(self) -> tuple[pd.DataFrame, pd.Series, pd.DataFrame, pd.Series]:
+        """Load pre-computed atomic factor panels and forward returns.
 
-        Instead of using raw OHLCV (which requires per-stock time series),
-        we use pre-computed Qlib fields as GP terminals.  Each "feature" is
-        a raw field value ($close, $volume, etc.) for a given (date, stock).
-
-        GP then evolves combinations of these fields using rolling operators.
+        Returns stacked (date, stock) datasets: each row = one observation,
+        columns = atomic factor values.  All rolling computation is done by
+        Qlib upfront.
         """
         from qlib.data import D
 
@@ -231,30 +243,34 @@ class GPMiner:
         if not instruments:
             raise RuntimeError("股票池为空")
 
-        # Load raw fields as features
-        field_exprs = [f"${f}" for f in cfg.fields]
-        log.info(f"GP 加载 {len(field_exprs)} 个字段: {cfg.fields}")
-        raw = D.features(instruments, field_exprs, start_time=cfg.start_date, end_time=cfg.end_date)
+        # Build terminal name → Qlib expression mapping
+        atomics = cfg.atomic_factors
+        self._terminal_exprs = {name: expr for name, expr in atomics}
+        qlib_exprs = [expr for _, expr in atomics]
+        terminal_names = [name for name, _ in atomics]
+
+        log.info(f"GP 加载 {len(atomics)} 个原子因子 (Qlib 预计算)")
+
+        # Load all atomic factors in one Qlib call
+        raw = D.features(instruments, qlib_exprs, start_time=cfg.start_date, end_time=cfg.end_date)
         if raw is None or raw.empty:
-            raise RuntimeError("无法加载数据")
+            raise RuntimeError("无法加载原子因子数据")
 
         # Load forward returns
         fwd = load_forward_returns(cfg.universe, cfg.start_date, cfg.end_date, cfg.forward_period)
 
-        # Build stacked dataset: each row = (date, stock), columns = field values
-        # Qlib returns (instrument, datetime) MultiIndex
+        # Build panels: (date × stock) for each atomic factor
         common_dates = sorted(set(raw.index.get_level_values(1).strftime("%Y-%m-%d")) & set(fwd.index))
         common_assets = sorted(
             set(qlib_to_ts_code(c) for c in raw.index.get_level_values(0).unique()) & set(fwd.columns)
         )
 
-        # Build field panels and stack
-        field_panels = {}
-        for i, fld in enumerate(cfg.fields):
-            panel = raw[field_exprs[i]].unstack(level=0)
+        panels = {}
+        for i, (name, expr) in enumerate(atomics):
+            panel = raw[qlib_exprs[i]].unstack(level=0)
             panel.index = panel.index.strftime("%Y-%m-%d")
             panel.columns = [qlib_to_ts_code(c) for c in panel.columns]
-            field_panels[fld] = panel
+            panels[name] = panel
 
         # Chronological split
         split_idx = int(len(common_dates) * (1 - cfg.test_ratio))
@@ -266,25 +282,25 @@ class GPMiner:
             y_rows = []
             for dt in dates:
                 y_dt = fwd.loc[dt, common_assets]
-                x_dt = pd.DataFrame({f: field_panels[f].loc[dt, common_assets] for f in cfg.fields})
+                x_dt = pd.DataFrame({name: panels[name].loc[dt, common_assets] for name in terminal_names})
                 valid = y_dt.notna() & x_dt.notna().all(axis=1)
                 if valid.sum() == 0:
                     continue
                 X_rows.append(x_dt.loc[valid])
                 y_rows.append(y_dt.loc[valid])
             if not X_rows:
-                return pd.DataFrame(columns=cfg.fields), pd.Series(dtype=float)
+                return pd.DataFrame(columns=terminal_names), pd.Series(dtype=float)
             X = pd.concat(X_rows, ignore_index=True)
             y = pd.concat(y_rows, ignore_index=True)
-            # Final safety: fill any residual NaN
-            X = X.fillna(0.0)
+            # Clip extreme values to prevent overflow in GP arithmetic
+            X = X.clip(-_CLIP_RANGE, _CLIP_RANGE).fillna(0.0)
             y = y.fillna(0.0)
             return X, y
 
         X_train, y_train = _stack(dates_train)
         X_test, y_test = _stack(dates_test)
 
-        log.info(f"GP 数据: train={len(X_train)}, test={len(X_test)}, fields={len(cfg.fields)}")
+        log.info(f"GP 数据: train={len(X_train)}, test={len(X_test)}, atoms={len(terminal_names)}")
         return X_train, y_train, X_test, y_test
 
     def run(self) -> GPResult:
@@ -295,12 +311,13 @@ class GPMiner:
         GPResult
             Top-k expressions with train/test fitness.
         """
+        from gplearn.fitness import make_fitness
         from gplearn.genetic import SymbolicRegressor
 
         cfg = self.config
         log.info(
             f"GP 因子发现: population={cfg.population}, generations={cfg.generations}, "
-            f"fields={len(cfg.fields)}"
+            f"atoms={len(cfg.atomic_factors)}"
         )
 
         # Load data
@@ -308,18 +325,11 @@ class GPMiner:
         if len(X_train) < 500:
             raise RuntimeError(f"训练数据太少: {len(X_train)} rows")
 
-        # Build function set
+        # Build function set (cross-sectional only)
         function_set = self._build_function_set()
 
-        # Fitness: cross-sectional IC (Spearman rank correlation)
-        # gplearn maximizes fitness for 'ic' (we define a custom metric)
-        # gplearn's built-in metrics are MSE-based (minimized). We want to
-        # maximize IC, so we use negative MSE as a proxy and also define
-        # a custom IC metric.
-        from gplearn.fitness import make_fitness
-
+        # Fitness: Spearman rank IC
         def _ic_metric(y, y_pred, w):
-            """Custom fitness: Spearman rank IC (higher = better)."""
             from scipy.stats import spearmanr
 
             mask = np.isfinite(y_pred) & np.isfinite(y)
@@ -344,23 +354,21 @@ class GPMiner:
             p_hoist_mutation=cfg.p_hoist_mutation,
             p_point_mutation=cfg.p_point_mutation,
             init_depth=cfg.init_depth,
-            const_range=None,  # no constants — pure field combinations
-            parsimony_coefficient=0.001,  # penalize overly complex trees
+            const_range=None,  # no constants — pure factor combinations
+            parsimony_coefficient=0.01,  # penalize complex trees
             max_samples=1.0,
             n_jobs=-1,
             verbose=1,
             random_state=cfg.random_state,
-            stopping_criteria=0.1,  # stop if IC > 0.1
+            stopping_criteria=0.05,  # stop if IC > 0.05
         )
 
         log.info("开始 GP 进化...")
         est.fit(X_train, y_train)
         log.info("GP 进化完成")
 
-        # Get top-k programs by fitness
-        # gplearn stores the best program in est._program, but we want top-k
-        # from the final population
-        programs = est._programs[-1]  # final generation programs
+        # Get top-k programs by fitness from final population
+        programs = est._programs[-1]
         programs = [p for p in programs if p is not None]
         programs.sort(key=lambda p: p.raw_fitness_, reverse=True)
 
@@ -371,11 +379,9 @@ class GPMiner:
         test_fitness = []
 
         for prog in top_programs:
-            # Convert gplearn program tree to Qlib expression
             expr = self._program_to_qlib(prog)
             expressions.append(expr)
             train_fitness.append(prog.raw_fitness_)
-            # Evaluate on test set
             test_pred = prog.execute(X_test.to_numpy())
             test_ic = self._compute_ic(test_pred, y_test.to_numpy())
             test_fitness.append(test_ic)
@@ -393,121 +399,53 @@ class GPMiner:
     def _program_to_qlib(self, program) -> str:
         """Convert a gplearn program tree to a Qlib expression string.
 
-        Maps gplearn function names back to Qlib operator names.
+        Terminal X0, X1, ... map to atomic factor expressions (not raw $field).
+        Function names map to Qlib operators.
         """
-        # gplearn program has an `__str__` method that produces a Lisp-like
-        # expression: e.g. "sub(mean_5(close), std_20(volume))"
-        # We need to convert this to Qlib syntax: "Sub(Mean($close,5), Std($volume,20))"
-
-        # Build a mapping from GP function names to Qlib operators
+        # gplearn function name → Qlib operator
         name_map = {
             "add": "Add",
             "sub": "Sub",
             "mul": "Mul",
             "div": "Div",
-            "mean_5": "Mean",
-            "mean_10": "Mean",
-            "mean_20": "Mean",
-            "std_5": "Std",
-            "std_10": "Std",
-            "std_20": "Std",
-            "max_5": "Max",
-            "max_10": "Max",
-            "max_20": "Max",
-            "min_5": "Min",
-            "min_10": "Min",
-            "min_20": "Min",
-            "delta_5": "Delta",
-            "delta_10": "Delta",
-            "delta_20": "Delta",
-            "ref_5": "Ref",
-            "ref_10": "Ref",
-            "ref_20": "Ref",
-            "rank_20": "Rank",
-            "rank_60": "Rank",
             "abs": "Abs",
-            "neg": "0 - ",  # Qlib doesn't support unary minus, use 0 - X
+            "neg": "0 - ",  # Qlib has no unary minus
             "sign": "Sign",
             "log": "Log",
-            "corr_10": "Corr",
-            "corr_20": "Corr",
         }
 
-        # Window size mapping
-        window_map = {
-            "mean_5": 5,
-            "mean_10": 10,
-            "mean_20": 20,
-            "std_5": 5,
-            "std_10": 10,
-            "std_20": 20,
-            "max_5": 5,
-            "max_10": 10,
-            "max_20": 20,
-            "min_5": 5,
-            "min_10": 10,
-            "min_20": 20,
-            "delta_5": 5,
-            "delta_10": 10,
-            "delta_20": 20,
-            "ref_5": 5,
-            "ref_10": 10,
-            "ref_20": 20,
-            "rank_20": 20,
-            "rank_60": 60,
-            "corr_10": 10,
-            "corr_20": 20,
-        }
+        # Terminal index → atomic factor Qlib expression
+        atomics = self.config.atomic_factors
+        terminal_map = {f"X{i}": expr for i, (_, expr) in enumerate(atomics)}
 
-        # Parse the gplearn string representation
-        # gplearn uses a simplified Lisp syntax: func(arg1, arg2, ...)
         raw_str = str(program)
 
-        # gplearn names terminals as X0, X1, ... matching column order
-        terminal_map = {f"X{i}": f"${fld}" for i, fld in enumerate(self.config.fields)}
-
-        # Recursively convert
         def convert(s: str) -> str:
             s = s.strip()
-            # Check if it's a terminal (X0, X1, ...)
+            # Terminal?
             if s in terminal_map:
-                return terminal_map[s]
-            # Check if it's a field name directly
-            if s in self.config.fields:
-                return f"${s}"
-            # Check if it's a number
+                return f"({terminal_map[s]})"
+            # Number?
             try:
                 float(s)
                 return s
             except ValueError:
                 pass
-            # Parse function call: func(args)
-            # Find the outermost function name
+            # Function call?
             paren_idx = s.find("(")
             if paren_idx == -1:
-                return s  # bare token
+                return s
 
             func_name = s[:paren_idx].strip()
             args_str = s[paren_idx + 1 : s.rfind(")")].strip()
-
-            # Split args by top-level commas
             args = _split_args(args_str)
             converted_args = [convert(a) for a in args]
 
-            # Map to Qlib
             qlib_name = name_map.get(func_name, func_name.capitalize())
 
-            # Handle neg specially
+            # neg → "0 - X"
             if func_name == "neg":
                 return f"0 - {converted_args[0]}"
-
-            # Add window parameter for rolling functions
-            if func_name in window_map:
-                window = window_map[func_name]
-                if func_name.startswith("corr_"):
-                    # Corr takes two series + window
-                    return f"{qlib_name}({converted_args[0]}, {converted_args[1]}, {window})"
-                return f"{qlib_name}({converted_args[0]}, {window})"
 
             return f"{qlib_name}({', '.join(converted_args)})"
 

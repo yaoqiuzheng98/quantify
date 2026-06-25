@@ -993,9 +993,9 @@ def ml_gp(
     start_date: Optional[str] = typer.Option(None, "--start-date", help="评估起始日"),
     end_date: Optional[str] = typer.Option(None, "--end-date", help="评估结束日"),
     forward_period: int = typer.Option(5, "--forward-period", help="前瞻收益周期(交易日)"),
-    population: int = typer.Option(1000, "--population", help="种群大小"),
-    generations: int = typer.Option(50, "--generations", help="进化代数"),
-    max_depth: int = typer.Option(8, "--max-depth", help="表达式最大深度"),
+    population: int = typer.Option(500, "--population", help="种群大小"),
+    generations: int = typer.Option(30, "--generations", help="进化代数"),
+    max_depth: int = typer.Option(5, "--max-depth", help="表达式最大深度"),
     top_k: int = typer.Option(10, "--top-k", help="返回前 K 个最优表达式"),
     save: bool = typer.Option(False, "--save", help="将发现的因子保存到 factor_library"),
 ) -> None:
