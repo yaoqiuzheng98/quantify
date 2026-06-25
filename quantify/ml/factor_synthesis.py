@@ -498,10 +498,11 @@ def rebalance(context):
 
     log.info(f"{{dt_str}} 调仓: 股票池={{len(stocks)}} 只")
 
-    # Compute ML scores
+    # Compute ML scores (pass context for fast batch data access)
     scores = _rt.compute_scores(
         stocks=stocks,
         attribute_history_fn=attribute_history,
+        context=context,
 '''
 
     if has_fundamentals:

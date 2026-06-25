@@ -19,7 +19,6 @@ Supported operators (28):
 from __future__ import annotations
 
 import numpy as np
-import pandas as pd
 
 
 # ---------------------------------------------------------------------------
@@ -194,138 +193,242 @@ def _safe_div(a, b):
 
 
 def _rolling_mean(x, w):
-    s = pd.Series(x)
-    return s.rolling(w, min_periods=1).mean().to_numpy()
-
-
-def _rolling_std(x, w):
-    s = pd.Series(x)
-    return s.rolling(w, min_periods=1).std().to_numpy()
+    n = len(x)
+    out = np.empty(n, dtype=float)
+    csum = np.cumsum(np.nan_to_num(x, nan=0.0))
+    for i in range(n):
+        s = max(0, i - w + 1)
+        out[i] = (csum[i] - (csum[s - 1] if s > 0 else 0.0)) / (i - s + 1)
+    return out
 
 
 def _rolling_sum(x, w):
-    s = pd.Series(x)
-    return s.rolling(w, min_periods=1).sum().to_numpy()
+    n = len(x)
+    out = np.empty(n, dtype=float)
+    csum = np.cumsum(np.nan_to_num(x, nan=0.0))
+    for i in range(n):
+        s = max(0, i - w + 1)
+        out[i] = csum[i] - (csum[s - 1] if s > 0 else 0.0)
+    return out
+
+
+def _rolling_std(x, w):
+    n = len(x)
+    out = np.empty(n, dtype=float)
+    x2 = np.nan_to_num(x, nan=0.0) ** 2
+    csum = np.cumsum(np.nan_to_num(x, nan=0.0))
+    csum2 = np.cumsum(x2)
+    for i in range(n):
+        s = max(0, i - w + 1)
+        cnt = i - s + 1
+        if cnt < 2:
+            out[i] = 0.0
+            continue
+        mean = (csum[i] - (csum[s - 1] if s > 0 else 0.0)) / cnt
+        mean2 = (csum2[i] - (csum2[s - 1] if s > 0 else 0.0)) / cnt
+        var = mean2 - mean * mean
+        out[i] = np.sqrt(max(var, 0.0))
+    return out
 
 
 def _rolling_min(x, w):
-    s = pd.Series(x)
-    return s.rolling(w, min_periods=1).min().to_numpy()
+    n = len(x)
+    out = np.empty(n, dtype=float)
+    for i in range(n):
+        s = max(0, i - w + 1)
+        out[i] = np.min(x[s : i + 1])
+    return out
 
 
 def _rolling_max(x, w):
-    s = pd.Series(x)
-    return s.rolling(w, min_periods=1).max().to_numpy()
-
-
-def _rolling_skew(x, w):
-    s = pd.Series(x)
-    return s.rolling(w, min_periods=max(3, min(w, 5))).skew().to_numpy()
-
-
-def _rolling_kurt(x, w):
-    s = pd.Series(x)
-    return s.rolling(w, min_periods=max(4, min(w, 5))).kurt().to_numpy()
-
-
-def _rolling_median(x, w):
-    s = pd.Series(x)
-    return s.rolling(w, min_periods=1).median().to_numpy()
-
-
-def _rolling_rank(x, w):
-    s = pd.Series(x)
-    return s.rolling(w, min_periods=1).rank(pct=True).to_numpy()
+    n = len(x)
+    out = np.empty(n, dtype=float)
+    for i in range(n):
+        s = max(0, i - w + 1)
+        out[i] = np.max(x[s : i + 1])
+    return out
 
 
 def _rolling_var(x, w):
-    s = pd.Series(x)
-    return s.rolling(w, min_periods=1).var().to_numpy()
+    return _rolling_std(x, w) ** 2
+
+
+def _rolling_skew(x, w):
+    n = len(x)
+    out = np.empty(n, dtype=float)
+    for i in range(n):
+        s = max(0, i - w + 1)
+        v = x[s : i + 1]
+        if len(v) < 3:
+            out[i] = 0.0
+            continue
+        m = v.mean()
+        sd = v.std()
+        if sd < 1e-12:
+            out[i] = 0.0
+        else:
+            out[i] = ((v - m) ** 3).mean() / sd**3
+    return out
+
+
+def _rolling_kurt(x, w):
+    n = len(x)
+    out = np.empty(n, dtype=float)
+    for i in range(n):
+        s = max(0, i - w + 1)
+        v = x[s : i + 1]
+        if len(v) < 4:
+            out[i] = 0.0
+            continue
+        m = v.mean()
+        sd = v.std()
+        if sd < 1e-12:
+            out[i] = 0.0
+        else:
+            out[i] = ((v - m) ** 4).mean() / sd**4 - 3.0
+    return out
+
+
+def _rolling_median(x, w):
+    n = len(x)
+    out = np.empty(n, dtype=float)
+    for i in range(n):
+        s = max(0, i - w + 1)
+        out[i] = np.median(x[s : i + 1])
+    return out
+
+
+def _rolling_rank(x, w):
+    """Rolling rank (pct) of last element within window."""
+    n = len(x)
+    out = np.empty(n, dtype=float)
+    for i in range(n):
+        s = max(0, i - w + 1)
+        v = x[s : i + 1]
+        out[i] = (v <= x[i]).sum() / len(v)
+    return out
 
 
 def _rolling_quantile(x, w, q):
-    s = pd.Series(x)
-    return s.rolling(w, min_periods=1).quantile(q).to_numpy()
+    n = len(x)
+    out = np.empty(n, dtype=float)
+    for i in range(n):
+        s = max(0, i - w + 1)
+        out[i] = np.quantile(x[s : i + 1], q)
+    return out
 
 
 def _rolling_corr(x, y, w):
-    sx, sy = pd.Series(x), pd.Series(y)
-    return sx.rolling(w, min_periods=max(3, min(w, 5))).corr(sy).to_numpy()
+    n = len(x)
+    out = np.empty(n, dtype=float)
+    for i in range(n):
+        s = max(0, i - w + 1)
+        vx, vy = x[s : i + 1], y[s : i + 1]
+        if len(vx) < 3:
+            out[i] = 0.0
+            continue
+        mx, my = vx.mean(), vy.mean()
+        dx, dy = vx - mx, vy - my
+        denom = np.sqrt((dx**2).sum() * (dy**2).sum())
+        out[i] = (dx * dy).sum() / denom if denom > 1e-12 else 0.0
+    return out
 
 
 def _rolling_cov(x, y, w):
-    sx, sy = pd.Series(x), pd.Series(y)
-    return sx.rolling(w, min_periods=max(3, min(w, 5))).cov(sy).to_numpy()
+    n = len(x)
+    out = np.empty(n, dtype=float)
+    for i in range(n):
+        s = max(0, i - w + 1)
+        vx, vy = x[s : i + 1], y[s : i + 1]
+        if len(vx) < 3:
+            out[i] = 0.0
+            continue
+        out[i] = np.cov(vx, vy)[0, 1]
+    return out
 
 
 def _ref(x, n):
-    s = pd.Series(x)
-    return s.shift(n).to_numpy()
+    n = len(x)
+    out = np.zeros(n, dtype=float)
+    if n < len(x):
+        out[n:] = x[: len(x) - n]
+    return out
 
 
 def _delta(x, n):
-    s = pd.Series(x)
-    return (s - s.shift(n)).to_numpy()
+    out = np.zeros(len(x), dtype=float)
+    if n < len(x):
+        out[n:] = x[n:] - x[: len(x) - n]
+    return out
 
 
 def _ema(x, n):
-    s = pd.Series(x)
-    return s.ewm(span=n, adjust=False).mean().to_numpy()
+    alpha = 2.0 / (n + 1)
+    out = np.empty(len(x), dtype=float)
+    out[0] = x[0]
+    for i in range(1, len(x)):
+        out[i] = alpha * x[i] + (1 - alpha) * out[i - 1]
+    return out
 
 
 def _wma(x, n):
-    s = pd.Series(x)
     weights = np.arange(1, n + 1, dtype=float)
     weights /= weights.sum()
-    return (
-        s.rolling(n, min_periods=1)
-        .apply(lambda v: np.average(v, weights=weights[-len(v) :]), raw=True)
-        .to_numpy()
-    )
+    out = np.empty(len(x), dtype=float)
+    for i in range(len(x)):
+        s = max(0, i - n + 1)
+        v = x[s : i + 1]
+        w = weights[-len(v) :]
+        out[i] = np.average(v, weights=w)
+    return out
 
 
 def _slope(x, w):
-    """Rolling linear regression slope of x against time index."""
-    s = pd.Series(x)
-
-    def _slope_fn(v):
+    n = len(x)
+    out = np.empty(n, dtype=float)
+    for i in range(n):
+        s = max(0, i - w + 1)
+        v = x[s : i + 1]
         if len(v) < 2:
-            return 0.0
+            out[i] = 0.0
+            continue
         x_arr = np.arange(len(v), dtype=float)
-        x_mean = x_arr.mean()
-        y_mean = v.mean()
+        x_mean, y_mean = x_arr.mean(), v.mean()
         denom = ((x_arr - x_mean) ** 2).sum()
-        if denom < 1e-12:
-            return 0.0
-        return ((x_arr - x_mean) * (v - y_mean)).sum() / denom
-
-    return s.rolling(w, min_periods=2).apply(_slope_fn, raw=True).to_numpy()
+        out[i] = ((x_arr - x_mean) * (v - y_mean)).sum() / denom if denom > 1e-12 else 0.0
+    return out
 
 
 def _resi(x, w):
     """Rolling linear regression residual (last point - fitted line)."""
-    s = pd.Series(x)
-
-    def _resi_fn(v):
+    n = len(x)
+    out = np.empty(n, dtype=float)
+    for i in range(n):
+        s = max(0, i - w + 1)
+        v = x[s : i + 1]
         if len(v) < 2:
-            return 0.0
+            out[i] = 0.0
+            continue
         x_arr = np.arange(len(v), dtype=float)
         x_mean, y_mean = x_arr.mean(), v.mean()
         denom = ((x_arr - x_mean) ** 2).sum()
         if denom < 1e-12:
-            return 0.0
+            out[i] = 0.0
+            continue
         slope = ((x_arr - x_mean) * (v - y_mean)).sum() / denom
         intercept = y_mean - slope * x_mean
-        fitted = slope * x_arr + intercept
-        return v[-1] - fitted[-1]
-
-    return s.rolling(w, min_periods=2).apply(_resi_fn, raw=True).to_numpy()
+        out[i] = v[-1] - (slope * x_arr[-1] + intercept)
+    return out
 
 
 def _idxmax(x, w):
     """Rolling index of max value (position from start of window)."""
-    s = pd.Series(x)
-    return s.rolling(w, min_periods=1).apply(lambda v: np.argmax(v), raw=True).to_numpy()
+    n = len(x)
+    out = np.empty(n, dtype=float)
+    for i in range(n):
+        s = max(0, i - w + 1)
+        out[i] = float(np.argmax(x[s : i + 1]))
+    return out
 
 
 # Operator dispatch table

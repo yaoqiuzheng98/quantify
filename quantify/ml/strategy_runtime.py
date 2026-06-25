@@ -200,6 +200,11 @@ class RuntimeContext:
         # Max rolling window in expressions (determines history count)
         self._max_window = self._estimate_max_window()
 
+        # Cache: bars converted to numpy arrays, keyed by ts_code
+        # {ts_code: {field: np.ndarray}}, built on first rebalance
+        self._bars_cache: dict[str, dict[str, np.ndarray]] = {}
+        self._adj_cache: dict[str, np.ndarray] = {}  # {ts_code: adj_factor array}
+
         log.info(
             f"RuntimeContext loaded: model={model_name}, "
             f"factors={len(self.factor_exprs)}, fields={self._needed_fields}, "
@@ -230,25 +235,218 @@ class RuntimeContext:
         query_fn=None,
         valuation_obj=None,
         current_date=None,
+        context=None,
     ) -> dict[str, float]:
         """Compute ML model scores for a list of stocks.
 
-        Parameters
-        ----------
-        stocks : list[str]
-            Stock codes in JoinQuant format (e.g. "000001.XSHE").
-        attribute_history_fn : callable
-            Engine's ``attribute_history(code, count, "1d", fields)``.
-        get_fundamentals_fn, query_fn, valuation_obj : callable
-            For fundamental data (optional, only if factors use pe/pb/turn etc.).
-        current_date : str, optional
-            Date string for get_fundamentals (e.g. "2024-01-05").
-
-        Returns
-        -------
-        dict[str, float]
-            Maps stock code → model score. Higher = better.
+        When ``context`` is provided, directly accesses ``context.data._bars``
+        for batch data retrieval (10x faster than calling attribute_history
+        per stock). Falls back to attribute_history_fn otherwise.
         """
+        if context is not None:
+            return self._compute_scores_from_bars(
+                stocks, context, get_fundamentals_fn, query_fn, valuation_obj, current_date
+            )
+        return self._compute_scores_slow(
+            stocks, attribute_history_fn, get_fundamentals_fn, query_fn, valuation_obj, current_date
+        )
+
+    def _ensure_bars_cache(self, ts_codes: list[str], bars_map: dict) -> None:
+        """Convert Bar objects to numpy arrays for cached stocks. Called once per stock."""
+        all_fields = self._ohlcv_needed | ({"amount", "volume"} if self._needs_vwap else set())
+        for ts_code in ts_codes:
+            if ts_code in self._bars_cache:
+                continue
+            bars = bars_map.get(ts_code)
+            if bars is None or len(bars) == 0:
+                continue
+            cache: dict[str, np.ndarray] = {}
+            for fld in all_fields:
+                cache[fld] = np.array([getattr(b, fld, 0.0) for b in bars], dtype=float)
+            self._adj_cache[ts_code] = np.array(
+                [getattr(b, "adj_factor", 1.0) or 1.0 for b in bars], dtype=float
+            )
+            self._bars_cache[ts_code] = cache
+
+    def _compute_scores_from_bars(
+        self,
+        stocks: list[str],
+        context,
+        get_fundamentals_fn=None,
+        query_fn=None,
+        valuation_obj=None,
+        current_date=None,
+    ) -> dict[str, float]:
+        """Fast path: vectorized across all stocks in one pass.
+
+        Builds 2D arrays (time × stocks) and evaluates each factor once
+        on the full array, instead of looping per stock.
+        """
+        from quantify.backtest.codes import to_tushare_code
+
+        from .qlib_eval_2d import evaluate_2d
+
+        count = self._max_window
+        data_proxy = context.data
+        bars_map = data_proxy._bars  # noqa: SLF001
+        idx_map = data_proxy._current_idx  # noqa: SLF001
+
+        price_fields = {"open", "high", "low", "close", "pre_close"}
+        ohlcv_needed = self._ohlcv_needed
+        if self._needs_vwap:
+            ohlcv_needed = ohlcv_needed | {"amount", "volume"}
+
+        # Batch fetch fundamentals if needed
+        fund_data = {}
+        if self._fundamental_needed and get_fundamentals_fn and query_fn and valuation_obj:
+            date_str = current_date or ""
+            fund_data = _get_fundamentals_batch(
+                get_fundamentals_fn, query_fn, valuation_obj, stocks, date_str
+            )
+
+        # Collect valid stocks and their bar windows
+        valid = []  # (jq_code, ts_code, idx, end)
+        ts_codes_to_cache = []
+        for jq_code in stocks:
+            ts_code = to_tushare_code(jq_code)
+            bars = bars_map.get(ts_code)
+            idx = idx_map.get(ts_code, -1)
+            if bars is None or idx < 0 or idx >= len(bars):
+                continue
+            end = idx - 1
+            if end < 0:
+                continue
+            valid.append((jq_code, ts_code, idx, end))
+            ts_codes_to_cache.append(ts_code)
+
+        if not valid:
+            return {}
+
+        # Build numpy cache from Bar objects (only first time per stock)
+        self._ensure_bars_cache(ts_codes_to_cache, bars_map)
+
+        n_stocks = len(valid)
+        # Determine window length (right-aligned, all same length)
+        max_wlen = min(count, max(end - max(0, end - count + 1) + 1 for _, _, _, end in valid))
+
+        # Build 2D arrays from cached numpy arrays (fast slicing, no getattr)
+        data_2d: dict[str, np.ndarray] = {}
+        for fld in ohlcv_needed:
+            arr = np.zeros((max_wlen, n_stocks), dtype=float)
+            for col, (_, ts_code, idx, end) in enumerate(valid):
+                if ts_code not in self._bars_cache:
+                    continue
+                cached = self._bars_cache[ts_code]
+                start = max(0, end - count + 1)
+                wlen = end - start + 1
+                offset = max_wlen - wlen
+                if fld in price_fields:
+                    adj = self._adj_cache[ts_code]
+                    base = adj[idx]
+                    raw = cached[fld][start : end + 1]
+                    arr[offset : offset + wlen, col] = raw * adj[start : end + 1] / base
+                else:
+                    arr[offset : offset + wlen, col] = cached[fld][start : end + 1]
+            data_2d[fld] = arr
+
+        # Compute vwap
+        if self._needs_vwap and "amount" in data_2d and "volume" in data_2d:
+            amt, vol = data_2d["amount"], data_2d["volume"]
+            with np.errstate(divide="ignore", invalid="ignore"):
+                data_2d["vwap"] = np.nan_to_num((amt * 10.0) / np.where(vol != 0, vol, np.nan), nan=0.0)
+
+        # Fundamental data: broadcast per-stock value across all time rows
+        if self._fundamental_needed:
+            for fld in self._fundamental_needed:
+                arr = np.zeros((max_wlen, n_stocks), dtype=float)
+                for col, (jq_code, _, _, _) in enumerate(valid):
+                    arr[:, col] = fund_data.get(jq_code, {}).get(fld, 0.0)
+                data_2d[fld] = arr
+
+        # Check all needed fields present
+        if not all(f in data_2d for f in self._needed_fields):
+            return self._compute_scores_slow_stocks(valid, fund_data, price_fields, ohlcv_needed, count)
+
+        # Evaluate all factors on 2D arrays — last row = today's values for all stocks
+        features = np.zeros((n_stocks, len(self._parsed)), dtype=float)
+        for f_idx, ast in enumerate(self._parsed):
+            try:
+                result = evaluate_2d(ast, data_2d)
+                last_row = result[-1] if result.ndim == 2 else result
+                features[:, f_idx] = np.nan_to_num(last_row, nan=0.0)
+            except Exception:
+                features[:, f_idx] = 0.0
+
+        # Predict
+        X = np.nan_to_num(features, nan=0.0)
+        try:
+            predictions = self.model.predict(X)
+        except Exception as e:
+            log.warning(f"模型预测失败: {e}")
+            return {}
+
+        return {code: float(pred) for code, pred in zip([v[0] for v in valid], predictions, strict=False)}
+
+    def _compute_scores_slow_stocks(
+        self, valid, fund_data, price_fields, ohlcv_needed, count
+    ) -> dict[str, float]:
+        """Fallback: per-stock evaluation when 2D path fails."""
+
+        from .qlib_eval import evaluate
+
+        features_list = []
+        valid_stocks = []
+        for jq_code, ts_code, idx, end in valid:
+            bars = self._bars_cache.get(ts_code)
+            if bars is None:
+                continue
+            start = max(0, end - count + 1)
+            adj = self._adj_cache[ts_code]
+            base = adj[idx]
+            data = {}
+            for fld in ohlcv_needed:
+                raw = bars[fld][start : end + 1]
+                if fld in price_fields:
+                    data[fld] = raw * adj[start : end + 1] / base
+                else:
+                    data[fld] = raw.copy()
+            if self._needs_vwap and "amount" in data and "volume" in data:
+                data["vwap"] = _compute_vwap(data["amount"], data["volume"])
+            if self._fundamental_needed:
+                stock_fund = fund_data.get(jq_code, {})
+                ref_len = len(next(iter(data.values()))) if data else 1
+                for fld in self._fundamental_needed:
+                    data[fld] = np.full(ref_len, stock_fund.get(fld, 0.0), dtype=float)
+            factor_values = []
+            for ast in self._parsed:
+                try:
+                    result = evaluate(ast, data)
+                    val = float(result[-1]) if len(result) > 0 else float("nan")
+                    factor_values.append(val if np.isfinite(val) else 0.0)
+                except Exception:
+                    factor_values.append(0.0)
+            features_list.append(factor_values)
+            valid_stocks.append(jq_code)
+        if not valid_stocks:
+            return {}
+        X = np.nan_to_num(np.array(features_list, dtype=float), nan=0.0)
+        try:
+            predictions = self.model.predict(X)
+        except Exception as e:
+            log.warning(f"模型预测失败: {e}")
+            return {}
+        return {code: float(pred) for code, pred in zip(valid_stocks, predictions, strict=False)}
+
+    def _compute_scores_slow(
+        self,
+        stocks: list[str],
+        attribute_history_fn,
+        get_fundamentals_fn=None,
+        query_fn=None,
+        valuation_obj=None,
+        current_date=None,
+    ) -> dict[str, float]:
+        """Slow path: use attribute_history per stock (fallback)."""
         count = self._max_window
         ohlcv_fields = list(self._ohlcv_needed)
         if self._needs_vwap:
