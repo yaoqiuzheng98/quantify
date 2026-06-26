@@ -217,6 +217,54 @@ class GPMiner:
         ]
         return tuple(functions)
 
+    def _load_industry_map(self, ts_codes: list[str]) -> dict[str, str]:
+        """Load SW L1 industry mapping {ts_code: industry_name}."""
+        from sqlalchemy import text as sa_text
+
+        from quantify.database.engine import session_scope
+
+        if not ts_codes:
+            return {}
+        codes_str = "','".join(ts_codes)
+        query = sa_text(
+            f"""
+            SELECT ts_code, l1_name
+            FROM index_member_all
+            WHERE ts_code IN ('{codes_str}')
+              AND is_new = 'Y'
+              AND out_date IS NULL
+            """
+        )
+        mapping: dict[str, str] = {}
+        with session_scope() as sess:
+            rows = sess.execute(query).fetchall()
+        for ts_code, l1_name in rows:
+            mapping[ts_code] = l1_name
+        return mapping
+
+    @staticmethod
+    def _industry_neutralize(panel: pd.DataFrame, industry_map: dict[str, str]) -> pd.DataFrame:
+        """Subtract daily industry mean from each stock's factor value.
+
+        panel: (date × stock) DataFrame
+        industry_map: {ts_code: industry_name}
+        Returns neutralized (date × stock) DataFrame.
+        """
+        # Vectorized: for each date, group by industry and subtract mean
+        # stack to long format, groupby, unstack back
+        long = panel.stack()
+        long.name = "value"
+        long = long.reset_index()
+        long.columns = ["date", "asset", "value"]
+        long["industry"] = long["asset"].map(industry_map)
+        # Industry mean per date
+        ind_mean = long.groupby(["date", "industry"])["value"].transform("mean")
+        long["neutral"] = long["value"] - ind_mean
+        result = long.pivot(index="date", columns="asset", values="neutral")
+        # Restore original column order and fill NaN
+        result = result.reindex(columns=panel.columns, index=panel.index)
+        return result.fillna(0.0)
+
     def _load_training_data(self) -> tuple[pd.DataFrame, pd.Series, pd.DataFrame, pd.Series]:
         """Load pre-computed atomic factor panels and forward returns.
 
@@ -272,6 +320,38 @@ class GPMiner:
             panel.columns = [qlib_to_ts_code(c) for c in panel.columns]
             panels[name] = panel
 
+        # ── Expand terminals with cross-sectional rank (CSRank) versions ──
+        # For each atomic factor, add a csrank_* terminal = daily cross-sectional
+        # percentile rank (0..1). This gives GP access to rank-based combinations
+        # which are more robust to outliers than raw values.
+        csrank_names = []
+        for name, _ in atomics:
+            cs_name = f"csrank_{name}"
+            panels[cs_name] = panels[name].rank(axis=1, pct=True)
+            csrank_names.append(cs_name)
+            self._terminal_exprs[cs_name] = f"CSRank({self._terminal_exprs[name]})"
+
+        # ── Expand terminals with industry-neutralized versions ──
+        # For each atomic factor, subtract the daily industry mean (SW L1),
+        # giving a neutral factor that removes sector bias.
+        industry_names = []
+        industry_map = self._load_industry_map(common_assets)
+        if industry_map:
+            log.info(f"GP 行业中性化: {len(set(industry_map.values()))} 个申万一级行业")
+            for name, _ in atomics:
+                neu_name = f"neu_{name}"
+                panels[neu_name] = self._industry_neutralize(panels[name], industry_map)
+                industry_names.append(neu_name)
+                self._terminal_exprs[neu_name] = f"Neu({self._terminal_exprs[name]})"
+        else:
+            log.warning("无法加载行业映射，跳过行业中性化因子")
+
+        # Update terminal list to include csrank_* and neu_* terminals
+        all_terminal_names = terminal_names + csrank_names + industry_names
+        log.info(
+            f"GP 终端: {len(atomics)} 原子 + {len(csrank_names)} CSRank + {len(industry_names)} 行业中性 = {len(all_terminal_names)}"
+        )
+
         # Chronological split
         split_idx = int(len(common_dates) * (1 - cfg.test_ratio))
         dates_train = common_dates[:split_idx]
@@ -282,14 +362,16 @@ class GPMiner:
             y_rows = []
             for dt in dates:
                 y_dt = fwd.loc[dt, common_assets]
-                x_dt = pd.DataFrame({name: panels[name].loc[dt, common_assets] for name in terminal_names})
+                x_dt = pd.DataFrame(
+                    {name: panels[name].loc[dt, common_assets] for name in all_terminal_names}
+                )
                 valid = y_dt.notna() & x_dt.notna().all(axis=1)
                 if valid.sum() == 0:
                     continue
                 X_rows.append(x_dt.loc[valid])
                 y_rows.append(y_dt.loc[valid])
             if not X_rows:
-                return pd.DataFrame(columns=terminal_names), pd.Series(dtype=float)
+                return pd.DataFrame(columns=all_terminal_names), pd.Series(dtype=float)
             X = pd.concat(X_rows, ignore_index=True)
             y = pd.concat(y_rows, ignore_index=True)
             # Clip extreme values to prevent overflow in GP arithmetic
@@ -300,7 +382,7 @@ class GPMiner:
         X_train, y_train = _stack(dates_train)
         X_test, y_test = _stack(dates_test)
 
-        log.info(f"GP 数据: train={len(X_train)}, test={len(X_test)}, atoms={len(terminal_names)}")
+        log.info(f"GP 数据: train={len(X_train)}, test={len(X_test)}, terminals={len(all_terminal_names)}")
         return X_train, y_train, X_test, y_test
 
     def run(self) -> GPResult:
@@ -414,9 +496,20 @@ class GPMiner:
             "log": "Log",
         }
 
-        # Terminal index → atomic factor Qlib expression
-        atomics = self.config.atomic_factors
-        terminal_map = {f"X{i}": expr for i, (_, expr) in enumerate(atomics)}
+        # Terminal index → Qlib expression (includes atomic, csrank, neu terminals)
+        # self._terminal_exprs is built in _load_training_data with all terminal names
+        # gplearn assigns X0, X1, ... in order of the DataFrame columns
+        if self._terminal_exprs:
+            # Map by order: atomics first, then csrank_*, then neu_*
+            atomics = self.config.atomic_factors
+            all_names = (
+                [name for name, _ in atomics]
+                + [f"csrank_{name}" for name, _ in atomics]
+                + [f"neu_{name}" for name, _ in atomics if f"neu_{name}" in self._terminal_exprs]
+            )
+            terminal_map = {f"X{i}": self._terminal_exprs[name] for i, name in enumerate(all_names)}
+        else:
+            terminal_map = {f"X{i}": expr for i, (_, expr) in enumerate(atomics)}
 
         raw_str = str(program)
 
