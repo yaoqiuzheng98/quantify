@@ -48,7 +48,7 @@ class MLSynthConfig:
     # Model hyperparameters (optional overrides)
     model_params: dict = field(default_factory=dict)
     # Factor selection
-    min_icir: float = 0.0  # only use factors with |ICIR| >= this
+    min_icir: float = 0.3  # only use factors with |ICIR| >= this
     max_factors: int = 20  # cap number of features
 
 
@@ -140,6 +140,7 @@ class MLSynthesizer:
                 colsample_bytree=params.get("colsample_bytree", 0.8),
                 reg_alpha=params.get("reg_alpha", 0.1),
                 reg_lambda=params.get("reg_lambda", 1.0),
+                min_child_weight=params.get("min_child_weight", 10),
                 random_state=42,
                 n_jobs=-1,
             )
@@ -155,6 +156,7 @@ class MLSynthesizer:
                 colsample_bytree=params.get("colsample_bytree", 0.8),
                 reg_alpha=params.get("reg_alpha", 0.1),
                 reg_lambda=params.get("reg_lambda", 1.0),
+                min_child_weight=params.get("min_child_weight", 10),
                 random_state=42,
                 n_jobs=-1,
                 verbose=-1,
@@ -258,6 +260,7 @@ class MLSynthesizer:
             X_train = X_train[valid_y]
             y_train = y_train[valid_y]
 
+        # Train model (no early stopping — let it run full n_estimators)
         model.fit(X_train, y_train)
         log.info("模型训练完成")
 
