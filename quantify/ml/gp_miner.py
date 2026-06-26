@@ -107,6 +107,54 @@ ATOMIC_FACTORS: list[tuple[str, str]] = [
     # ── Amount ──
     ("amt_ma5_dev", "Div(Sub($amount, Mean($amount, 5)), Add(Mean($amount, 5), 1e-8))"),
     ("amt_ma20_dev", "Div(Sub($amount, Mean($amount, 20)), Add(Mean($amount, 20), 1e-8))"),
+    # ── Market cap (new data field) ──
+    ("log_circ_mv", "Log(Add($circ_mv, 1))"),
+    ("log_total_mv", "Log(Add($total_mv, 1))"),
+    ("mv_ret_5d", "Div(Sub($circ_mv, Ref($circ_mv, 5)), Add(Ref($circ_mv, 5), 1e-8))"),
+    ("mv_ret_20d", "Div(Sub($circ_mv, Ref($circ_mv, 20)), Add(Ref($circ_mv, 20), 1e-8))"),
+    ("mv_turn_ratio", "Div($circ_mv, Add(Mul($turn, $close), 1e-8))"),
+    # ── Delta (price/volume changes, new operator) ──
+    ("delta_close_5", "Delta($close, 5)"),
+    ("delta_close_10", "Delta($close, 10)"),
+    ("delta_vol_5", "Delta($volume, 5)"),
+    ("delta_turn_5", "Delta($turn, 5)"),
+    ("delta_amt_5", "Delta($amount, 5)"),
+    # ── Resi (residual from MA, new operator) ──
+    ("resi_close_10", "Resi($close, 10)"),
+    ("resi_close_20", "Resi($close, 20)"),
+    ("resi_vol_20", "Resi($volume, 20)"),
+    ("resi_turn_20", "Resi($turn, 20)"),
+    ("resi_amt_20", "Resi($amount, 20)"),
+    # ── WMA deviation (weighted MA, new operator) ──
+    ("wma5_dev", "Div(Sub($close, WMA($close, 5)), Add(WMA($close, 5), 1e-8))"),
+    ("wma10_dev", "Div(Sub($close, WMA($close, 10)), Add(WMA($close, 10), 1e-8))"),
+    ("wma20_dev", "Div(Sub($close, WMA($close, 20)), Add(WMA($close, 20), 1e-8))"),
+    # ── Slope (trend strength, new operator) ──
+    ("slope_close_20", "Slope($close, 20)"),
+    ("slope_vol_20", "Slope($volume, 20)"),
+    ("slope_turn_20", "Slope($turn, 20)"),
+    # ── Rsquare (trend consistency, new operator) ──
+    ("rsq_close_20", "Rsquare($close, 20)"),
+    ("rsq_vol_20", "Rsquare($volume, 20)"),
+    # ── IdxMax / IdxMin (timing of peaks/troughs, new operator) ──
+    ("idxmax_close_20", "IdxMax($close, 20)"),
+    ("idxmin_close_20", "IdxMin($close, 20)"),
+    ("idxmax_vol_20", "IdxMax($volume, 20)"),
+    ("idxmin_vol_20", "IdxMin($volume, 20)"),
+    # ── Mad (robust volatility, new operator) ──
+    ("mad_close_20", "Mad($close, 20)"),
+    ("mad_vol_20", "Mad($volume, 20)"),
+    ("mad_turn_20", "Mad($turn, 20)"),
+    # ── Med deviation (median, robust to outliers, new operator) ──
+    ("med_close_dev_20", "Div(Sub($close, Med($close, 20)), Add(Med($close, 20), 1e-8))"),
+    ("med_vol_dev_20", "Div(Sub($volume, Med($volume, 20)), Add(Med($volume, 20), 1e-8))"),
+    # ── Sum (cumulative, new operator) ──
+    ("sum_turn_5", "Sum($turn, 5)"),
+    ("sum_turn_20", "Sum($turn, 20)"),
+    ("sum_vol_5", "Sum($volume, 5)"),
+    # ── Cov (covariance, new operator) ──
+    ("cov_cv_20", "Cov($close, $volume, 20)"),
+    ("cov_ct_20", "Cov($close, $turn, 20)"),
 ]
 
 
