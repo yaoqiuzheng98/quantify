@@ -53,6 +53,11 @@ class Position:
             return 0.0
         return (self.current_price / self.avg_cost - 1) * 100
 
+    @property
+    def price(self) -> float:
+        """JoinQuant-compatible alias of ``current_price`` (最新行情价格)."""
+        return self.current_price
+
 
 class PositionBook(dict[str, Position]):
     """Position mapping that accepts both JoinQuant and Tushare codes."""
