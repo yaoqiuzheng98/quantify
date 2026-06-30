@@ -269,10 +269,10 @@ class EtfDataSource(MarketDataSource):
                     EtfDividend.ex_date,
                 )
                 .where(EtfDividend.ts_code.in_(ts_codes))
-                .where(EtfDividend.record_date >= start_date)
-                .where(EtfDividend.record_date <= end_date)
-                .where(EtfDividend.pay_date >= start_date)
-                .where(EtfDividend.pay_date <= end_date)
+                .where(
+                    ((EtfDividend.record_date >= start_date) & (EtfDividend.record_date <= end_date))
+                    | ((EtfDividend.pay_date >= start_date) & (EtfDividend.pay_date <= end_date))
+                )
                 .order_by(EtfDividend.record_date, EtfDividend.pay_date, EtfDividend.ts_code)
             ).all()
         return [
@@ -445,10 +445,10 @@ class StockDataSource(MarketDataSource):
                 )
                 .where(StockDividend.ts_code.in_(ts_codes))
                 .where(StockDividend.div_proc.like("实施%"))
-                .where(StockDividend.record_date >= start_date)
-                .where(StockDividend.record_date <= end_date)
-                .where(StockDividend.pay_date >= start_date)
-                .where(StockDividend.pay_date <= end_date)
+                .where(
+                    ((StockDividend.record_date >= start_date) & (StockDividend.record_date <= end_date))
+                    | ((StockDividend.pay_date >= start_date) & (StockDividend.pay_date <= end_date))
+                )
                 .where(StockDividend.cash_div > 0)
                 .order_by(StockDividend.record_date, StockDividend.pay_date, StockDividend.ts_code)
             ).all()

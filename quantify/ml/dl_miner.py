@@ -671,6 +671,42 @@ class DLMiner:
         log.info(f"Train: return={train_bt.total_return:.2f}% sharpe={train_bt.sharpe:.2f}")
         log.info(f"Test:  return={test_bt.total_return:.2f}% sharpe={test_bt.sharpe:.2f}")
 
+        # Save model to disk for reuse
+        try:
+            import json
+            from pathlib import Path
+
+            import torch
+
+            models_dir = Path.home() / ".local" / "share" / "quantify" / "models"
+            models_dir.mkdir(parents=True, exist_ok=True)
+            universe_str = (cfg.universe or "all").replace(".", "_").replace("/", "_")
+            model_name = f"dl_{cfg.model_type}_{universe_str}"
+            model_path = models_dir / f"{model_name}.pth"
+            meta_path = models_dir / f"{model_name}.meta.json"
+
+            torch.save(model.state_dict(), model_path)
+            meta = {
+                "model_type": "pytorch",
+                "model_file": model_path.name,
+                "config": {
+                    "model_type": cfg.model_type,
+                    "lookback": cfg.lookback,
+                    "hidden_dim": cfg.hidden_dim,
+                    "num_layers": cfg.num_layers,
+                    "fields": cfg.fields,
+                    "universe": cfg.universe,
+                    "forward_period": cfg.forward_period,
+                    "top_n": cfg.top_n,
+                    "rebalance_days": cfg.rebalance_days,
+                },
+            }
+            with open(meta_path, "w") as f:
+                json.dump(meta, f, ensure_ascii=False, indent=2)
+            log.info(f"DL 模型已保存: {model_path}")
+        except Exception as save_exc:
+            log.warning(f"DL 模型保存失败: {save_exc}")
+
         return DLResult(
             model=model,
             train_scores=train_scores,

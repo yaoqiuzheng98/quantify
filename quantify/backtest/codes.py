@@ -29,19 +29,22 @@ def normalize_codes(codes: list[str]) -> list[str]:
 
 
 def classify_asset(ts_code: str) -> str:
-    """Classify a Tushare code as ``"stock"``, ``"etf"`` or ``"index"``.
+    """Classify a Tushare code as ``"stock"``, ``"etf"``, ``"index"`` or ``"futures"``.
 
     Based on A-share code conventions (prefix + exchange suffix):
 
     - ``.SH``: ``5xxxxx`` = fund/ETF, ``000xxx`` = index, otherwise (``6xxxxx``) = stock
     - ``.SZ``: ``15/16/18xxxx`` = fund/ETF, ``399xxx`` = index, otherwise (``00/30xxxx``) = stock
     - ``.BJ``: always stock (Beijing Stock Exchange)
+    - ``.SHF/.DCE/.CZC/.CFF``: futures (Shanghai Futures, Dalian, Zhengzhou, CFFEX)
 
     Defaults to ``"stock"`` for anything unrecognised so a backtest still attempts
     the most common path rather than silently loading nothing.
     """
     code = to_tushare_code(ts_code)
     body, _, suffix = code.partition(".")
+    if suffix in ("SHF", "DCE", "CZC", "CFF", "INE"):
+        return "futures"
     if suffix == "SH":
         if body.startswith("5"):
             return "etf"

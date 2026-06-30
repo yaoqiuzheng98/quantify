@@ -4,6 +4,12 @@ from __future__ import annotations
 
 
 DEFAULT_STRATEGY_SOURCE = """from jqdata import *
+import builtins
+sum = builtins.sum
+max = builtins.max
+min = builtins.min
+abs = builtins.abs
+round = builtins.round
 
 
 def initialize(context):

@@ -45,6 +45,10 @@ class ComposeConfig:
     min_icir: float = 0.3
     rebalance_freq: int = 5  # re-select every N trading days (1=daily)
     max_corr: float = 0.7  # drop a candidate if |corr| with an already-picked factor exceeds this
+    # Transaction costs (per-side rates, applied to turnover)
+    commission_rate: float = 0.0005  # 0.05% per side
+    slippage_rate: float = 0.001  # 0.1% per side
+    stamp_duty_rate: float = 0.0005  # 0.05% sell-side only
 
 
 @dataclass
@@ -231,12 +235,19 @@ def _select_top_n(score: pd.DataFrame, top_n: int, freq: int) -> pd.DataFrame:
     return df.pivot_table(index="date", columns="asset", values="weight", fill_value=0.0)
 
 
-def _portfolio_returns(holdings: pd.DataFrame, close_panel: pd.DataFrame) -> pd.Series:
+def _portfolio_returns(
+    holdings: pd.DataFrame,
+    close_panel: pd.DataFrame,
+    commission_rate: float = 0.0,
+    slippage_rate: float = 0.0,
+    stamp_duty_rate: float = 0.0,
+) -> pd.Series:
     """Compute daily portfolio returns from holdings and close prices.
 
-    ``close_panel`` is date × asset close prices.  Returns are computed as
-    the weighted average of individual stock daily returns, with the weights
-    fixed between rebalances (forward-looking holdings applied to same-day returns).
+    ``holdings`` is date × asset weights, already shifted for T+1 (signal at t
+    → trade at t+1).  Transaction costs are applied to turnover (weight changes)
+    at each rebalance: commission+slippage on both buys and sells, stamp duty on
+    sells only.
     """
     if holdings.empty or close_panel.empty:
         return pd.Series(dtype=float)
@@ -249,9 +260,16 @@ def _portfolio_returns(holdings: pd.DataFrame, close_panel: pd.DataFrame) -> pd.
     close_panel = close_panel.loc[common_dates]
 
     daily_ret = close_panel.pct_change(fill_method=None).fillna(0.0)
-    # shift holdings by one day so that today's return is earned on yesterday's holdings
-    holdings_shifted = holdings.shift(1).fillna(0.0)
-    portfolio_ret = (holdings_shifted * daily_ret).sum(axis=1)
+    portfolio_ret = (holdings * daily_ret).sum(axis=1)
+
+    # Transaction costs: turnover = |weight change|, costs drag returns
+    if commission_rate > 0 or slippage_rate > 0 or stamp_duty_rate > 0:
+        holdings_diff = holdings.diff().fillna(holdings)  # first day = full position
+        turnover = holdings_diff.abs().sum(axis=1)
+        sells = (-holdings_diff.clip(upper=0)).sum(axis=1)
+        cost = turnover * (commission_rate + slippage_rate) + sells * stamp_duty_rate
+        portfolio_ret = portfolio_ret - cost
+
     # first day has no return (no prior holdings)
     if len(portfolio_ret) > 0:
         portfolio_ret.iloc[0] = 0.0
@@ -355,6 +373,9 @@ def compose_factors(config: ComposeConfig | None = None) -> ComposeResult:
     if holdings.empty:
         log.warning("选股结果为空。")
         return result
+    # Shift holdings by 1 day for T+1: signal at date t → trade at date t+1
+    # Exported holdings reflect actual trading dates, not signal dates
+    holdings = holdings.shift(1).fillna(0.0)
     result.holdings = holdings
     log.info(
         f"选股完成：{holdings.shape[0]} 个交易日，每期最多 {config.top_n} 只，调仓频率 {config.rebalance_freq} 日"
@@ -377,7 +398,13 @@ def compose_factors(config: ComposeConfig | None = None) -> ComposeResult:
     else:
         close_panel = pd.DataFrame()
 
-    returns = _portfolio_returns(holdings, close_panel)
+    returns = _portfolio_returns(
+        holdings,
+        close_panel,
+        commission_rate=config.commission_rate,
+        slippage_rate=config.slippage_rate,
+        stamp_duty_rate=config.stamp_duty_rate,
+    )
     if returns.empty:
         log.warning("组合收益序列为空。")
         return result

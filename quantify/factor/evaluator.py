@@ -133,7 +133,9 @@ def _ic_frame(factor_data: pd.DataFrame, ret_col: str, method: str) -> pd.Series
     """Per-date cross-sectional correlation between factor and a return column."""
 
     def _corr(group: pd.DataFrame) -> float:
-        return group["factor"].corr(group[ret_col], method=method)
+        if len(group) < 3:  # Need at least 3 stocks for meaningful correlation
+            return np.nan
+        return group["factor"].corr(group[ret_col], method=method, min_periods=3)
 
     return factor_data.groupby(level="date", group_keys=False).apply(_corr).dropna()
 
@@ -293,6 +295,7 @@ def _compute_factor_data(
         quantiles=quantiles,
         periods=tuple(periods),
         max_loss=thresholds.max_alphalens_loss,
+        filter_zscore=None,  # Disable lookahead-biased outlier filtering
     )
     return factor_data, coverage, int(len(factor_data))
 

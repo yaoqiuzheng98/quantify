@@ -83,6 +83,10 @@ class EventDrivenResult:
             "",
             "--- Friction Cost ---",
             f"  Return drag: {vm.get('total_return_pct', 0) - m.get('total_return_pct', 0):.2f}%",
+            f"  Commission: {m.get('total_commission', 0):.2f}",
+            f"  Slippage: {m.get('total_slippage', 0):.2f}",
+            f"  Stamp duty: {m.get('total_tax', 0):.2f}",
+            "  Note: Additional divergence from lot rounding, T+1, and price limits is expected.",
         ]
         return "\n".join(lines)
 

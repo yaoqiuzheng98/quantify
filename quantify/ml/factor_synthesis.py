@@ -553,30 +553,29 @@ def _generate_ml_strategy_source(
 
     has_fundamentals = bool(fundamental_fields)
 
-    source = f'''from jqdata import *
+    source = f"""from jqdata import *
 import builtins
 sum = builtins.sum
 max = builtins.max
 min = builtins.min
 abs = builtins.abs
 round = builtins.round
-import json
 import numpy as np
 
 from quantify.ml.strategy_runtime import RuntimeContext
 
-_MODEL_NAME = "{model_name}"
-_UNIVERSE = "{jq_universe}"
+_MODEL_NAME = {repr(model_name)}
+_UNIVERSE = {repr(jq_universe)}
 _TOP_N = {top_n}
 _REBALANCE_DAYS = {rebalance_days}
-_FACTOR_EXPRS = json.loads('{exprs_json}')
+_FACTOR_EXPRS = {exprs_json}
 
 _rt = None
 
 def initialize(context):
     set_option("use_real_price", True)
     set_option("avoid_future_data", True)
-    set_benchmark("{jq_universe}")
+    set_benchmark({repr(jq_universe)})
     set_order_cost(OrderCost(
         open_tax=0, close_tax=0,
         open_commission=0.0005, close_commission=0.0005,
@@ -615,7 +614,7 @@ def rebalance(context):
         stocks=stocks,
         attribute_history_fn=attribute_history,
         context=context,
-'''
+"""
 
     if has_fundamentals:
         source += """        get_fundamentals_fn=get_fundamentals,

@@ -490,7 +490,7 @@ $open $high $low $close $volume $amount $vwap $factor
 $turn(换手率) $pe $pb $ps $total_mv $circ_mv
 ```
 
-常用算子：`Ref/Mean/Sum/Std/Var/Max/Min/Delta/Slope/Rsquare/Resi/WMA/EMA/Rank/Quantile/Corr/Cov/Abs/Log/Sign/Greater/Less/CSRank/CSZScore` 等。示例：
+常用算子：`Ref/Mean/Sum/Std/Var/Max/Min/Delta/Slope/Rsquare/Resi/WMA/EMA/Rank/Quantile/Corr/Cov/Abs/Log/Sign/Greater/Less` 等。（注：`CSRank/CSZScore` 等截面算子仅 GP 内部使用，Qlib 表达式求值器不支持。）示例：
 
 ```
 Mean($close, 5) / Mean($close, 20)                       # 均线比值(动量)
