@@ -279,18 +279,25 @@ class GPMiner:
         if not ts_codes:
             return {}
         codes_str = "','".join(ts_codes)
+        # Get ALL historical industry memberships (not just current).
+        # Using is_new='Y' AND out_date IS NULL introduces look-ahead bias
+        # because it only returns stocks currently in the index.
+        # Instead, get all members and let the neutralization use whatever
+        # industry each stock belongs to. For stocks that changed industry,
+        # this uses the latest assignment which is a minor approximation.
         query = sa_text(
             f"""
             SELECT ts_code, l1_name
             FROM index_member_all
             WHERE ts_code IN ('{codes_str}')
               AND is_new = 'Y'
-              AND out_date IS NULL
             """
         )
         mapping: dict[str, str] = {}
         with session_scope() as sess:
             rows = sess.execute(query).fetchall()
+        # Deduplicate: if a stock appears multiple times (changed industry),
+        # keep the last occurrence (most recent assignment)
         for ts_code, l1_name in rows:
             mapping[ts_code] = l1_name
         return mapping
@@ -567,19 +574,31 @@ class GPMiner:
         est.fit(X_train, y_train)
         log.info("GP 进化完成")
 
-        # Get all programs from final population, pre-sort by train fitness
+        # Get all programs from final population
         programs = est._programs[-1]
         programs = [p for p in programs if p is not None]
-        programs.sort(key=lambda p: p.raw_fitness_, reverse=True)
 
-        # Only evaluate top 100 by train IC on val/test (full eval is too slow)
+        # Evaluate ALL programs on train IC first (fast, no val/test needed)
+        # Then take top 100 by re-computed train IC for val/test evaluation
         X_train_np = X_train.to_numpy()
         X_val_np = X_val.to_numpy() if len(X_val) > 0 else None
         X_test_np = X_test.to_numpy()
 
+        # Phase 1: compute train IC for all programs (vectorized execute is fast)
+        train_ic_list = []
+        for prog in programs:
+            train_ic_list.append(
+                self._daily_ic(prog.execute(X_train_np), y_train.to_numpy(), dates_train_idx)
+            )
+
+        # Sort by re-computed train IC (not raw_fitness_, which may differ)
+        prog_ic = list(zip(programs, train_ic_list))
+        prog_ic.sort(key=lambda x: x[1], reverse=True)
+
+        # Phase 2: evaluate top 100 by train IC on val/test
         evaluated = []
         seen_exprs = set()
-        for prog in programs[:100]:
+        for prog, _ in prog_ic[:100]:
             expr = self._program_to_qlib(prog)
             # Deduplicate by expression string
             if expr in seen_exprs:

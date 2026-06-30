@@ -262,15 +262,36 @@ class MLSynthesizer:
         expressions = self._select_factors()
         # Add GP-discovered expressions (injected from CLI pipeline)
         if self._extra_expressions:
-            # Avoid duplicates
-            existing = set(expressions)
-            for expr in self._extra_expressions:
-                if expr not in existing:
-                    expressions.append(expr)
-                    existing.add(expr)
-            log.info(f"加入 {len(self._extra_expressions)} 个 GP 因子，总因子数={len(expressions)}")
+            import re
 
-        # 2. Build dataset
+            existing = set(expressions)
+            added = 0
+            for expr in self._extra_expressions:
+                # Strip CSRank() and Neu() wrappers — Qlib doesn't support these
+                # as expression operators. ML can learn cross-sectional relationships.
+                cleaned = expr
+                while True:
+                    m = re.match(r"^(CSRank|Neu)\((.+)\)$", cleaned.strip())
+                    if not m:
+                        break
+                    cleaned = m.group(2)
+                if cleaned not in existing:
+                    expressions.append(cleaned)
+                    existing.add(cleaned)
+                    added += 1
+            if added:
+                log.info(f"加入 {added} 个 GP 因子（已剥离 CSRank/Neu 包装），总因子数={len(expressions)}")
+
+        # 2. Load factor panels once (for correlation filter + dataset building)
+        from quantify.ml.data import load_factor_panels
+
+        panels = load_factor_panels(expressions, cfg.universe, cfg.start_date, cfg.end_date)
+
+        # Apply correlation filter (uses the already-loaded panels, no reload)
+        if len(expressions) > 1:
+            expressions = self._filter_correlated(expressions, panels)
+
+        # Build dataset with filtered expressions
         dataset = build_dataset(
             expressions,
             universe=cfg.universe,
@@ -280,25 +301,6 @@ class MLSynthesizer:
             test_ratio=cfg.test_ratio,
         )
         self._dataset = dataset
-
-        # Apply correlation filter on loaded panels
-        # (panels are already loaded in build_dataset, but we need to reload for filtering)
-        # Skip if only 1 factor
-        if len(expressions) > 1:
-            from quantify.ml.data import load_factor_panels
-
-            panels = load_factor_panels(expressions, cfg.universe, cfg.start_date, cfg.end_date)
-            expressions = self._filter_correlated(expressions, panels)
-            # Rebuild dataset with filtered factors
-            dataset = build_dataset(
-                expressions,
-                universe=cfg.universe,
-                start_date=cfg.start_date,
-                end_date=cfg.end_date,
-                forward_period=cfg.forward_period,
-                test_ratio=cfg.test_ratio,
-            )
-            self._dataset = dataset
 
         if dataset.n_train < 100 or dataset.n_test < 50:
             raise RuntimeError(
@@ -310,9 +312,10 @@ class MLSynthesizer:
         log.info(f"训练 {cfg.model_type} 模型...")
         model = self._build_model()
 
-        # Handle NaN in features: fill with cross-sectional median
-        X_train = dataset.X_train.fillna(dataset.X_train.median()).fillna(0)
-        X_test = dataset.X_test.fillna(dataset.X_train.median()).fillna(0)
+        # Features should already be NaN-free (data.py does per-date median imputation)
+        # But keep a safety net: fill any remaining NaN with 0 (no data leakage)
+        X_train = dataset.X_train.fillna(0.0)
+        X_test = dataset.X_test.fillna(0.0)
         # Drop any remaining NaN targets (shouldn't happen after _stack filtering)
         y_train = dataset.y_train
         valid_y = y_train.notna()
@@ -355,11 +358,15 @@ class MLSynthesizer:
         train_scores = self._rebuild_panel(train_pred, dataset, is_train=True)
         test_scores = self._rebuild_panel(test_pred, dataset, is_train=False)
         # Cross-sectional z-score per date (normalizes score distribution across dates)
-        train_scores = train_scores.sub(train_scores.mean(axis=1), axis=0).div(
-            train_scores.std(axis=1).replace(0, 1.0), axis=0
+        train_scores = (
+            train_scores.sub(train_scores.mean(axis=1), axis=0)
+            .div(train_scores.std(axis=1).replace(0, 1.0), axis=0)
+            .fillna(0.0)
         )
-        test_scores = test_scores.sub(test_scores.mean(axis=1), axis=0).div(
-            test_scores.std(axis=1).replace(0, 1.0), axis=0
+        test_scores = (
+            test_scores.sub(test_scores.mean(axis=1), axis=0)
+            .div(test_scores.std(axis=1).replace(0, 1.0), axis=0)
+            .fillna(0.0)
         )
 
         # 6. Load forward returns and close prices for IC + backtest

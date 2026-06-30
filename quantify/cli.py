@@ -1133,11 +1133,9 @@ def ml_run(
     dl_hidden: int = typer.Option(64, "--dl-hidden", help="DL隐藏层维度"),
     # 两阶段验证
     skip_validate: bool = typer.Option(False, "--skip-validate", help="跳过两阶段回测验证"),
-    validate_model: str = typer.Option(
-        "auto", "--validate-model", help="验证哪个模型: auto(取最优)/ml/gp/dl"
-    ),
+    validate_model: str = typer.Option("auto", "--validate-model", help="验证哪个模型: auto(取最优)/ml/dl"),
 ) -> None:
-    """一键全流程：ML合成 + GP发现 + DL选股 + 两阶段回测验证。
+    """一键全流程：GP发现 + ML合成 + DL选股 + 两阶段回测验证。
 
     默认跑全部4个阶段，可用 --skip-ml/--skip-gp/--skip-dl/--skip-validate 跳过。
     """

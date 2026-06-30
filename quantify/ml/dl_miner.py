@@ -139,12 +139,14 @@ def _build_model(config: DLConfig, n_features: int, n_factors: int = 0):
                 nn.Linear(hidden_dim // 2, 1),
             )
 
+        def extract_features(self, x):
+            """Extract time-series features before the prediction head."""
+            out, _ = self.lstm(x)
+            return out[:, -1, :]  # (batch, hidden_dim)
+
         def forward(self, x):
             # x: (batch, seq_len, input_dim)
-            out, _ = self.lstm(x)
-            # Use last hidden state
-            out = out[:, -1, :]
-            return self.head(out).squeeze(-1)
+            return self.head(self.extract_features(x)).squeeze(-1)
 
     class TransformerModel(nn.Module):
         def __init__(self, input_dim, hidden_dim, num_layers, n_heads, dropout, max_seq_len=512):
@@ -167,14 +169,16 @@ def _build_model(config: DLConfig, n_features: int, n_factors: int = 0):
                 nn.Linear(hidden_dim // 2, 1),
             )
 
-        def forward(self, x):
-            # x: (batch, seq_len, input_dim)
+        def extract_features(self, x):
+            """Extract time-series features before the prediction head."""
             seq_len = x.size(1)
             x = self.input_proj(x) + self.pos_encoding[:, :seq_len, :]
             x = self.encoder(x)
-            # Mean pooling over sequence
-            x = x.mean(dim=1)
-            return self.head(x).squeeze(-1)
+            return x.mean(dim=1)  # (batch, hidden_dim)
+
+        def forward(self, x):
+            # x: (batch, seq_len, input_dim)
+            return self.head(self.extract_features(x)).squeeze(-1)
 
     class HybridModel(nn.Module):
         """LSTM/Transformer for time series + MLP for cross-sectional factors."""
@@ -201,15 +205,8 @@ def _build_model(config: DLConfig, n_features: int, n_factors: int = 0):
 
         def forward(self, x_ts, x_factor):
             # x_ts: (batch, seq_len, input_dim), x_factor: (batch, n_factors)
-            # Extract ts features (before head)
-            if isinstance(self.ts_model, LSTMModel):
-                out, _ = self.ts_model.lstm(x_ts)
-                ts_feat = out[:, -1, :]  # (batch, hidden_dim)
-            else:  # TransformerModel
-                seq_len = x_ts.size(1)
-                proj = self.ts_model.input_proj(x_ts) + self.ts_model.pos_encoding[:, :seq_len, :]
-                enc = self.ts_model.encoder(proj)
-                ts_feat = enc.mean(dim=1)  # (batch, hidden_dim)
+            # Extract ts features via the public API (no internal attribute access)
+            ts_feat = self.ts_model.extract_features(x_ts)  # (batch, hidden_dim)
             fac_feat = self.factor_mlp(x_factor)  # (batch, factor_dim)
             combined = torch.cat([ts_feat, fac_feat], dim=1)
             return self.head(combined).squeeze(-1)

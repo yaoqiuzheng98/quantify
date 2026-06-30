@@ -45,7 +45,8 @@ def vectorized_backtest(
     rebalance_days: int = 5,
     weight_method: str = "equal",
     commission_rate: float = 0.001,
-    slippage_rate: float = 0.001,
+    slippage_rate: float = 0.002,
+    stamp_duty_rate: float = 0.0005,
 ) -> VectorBacktestResult:
     """Run a vectorized backtest from daily stock scores.
 
@@ -64,7 +65,9 @@ def vectorized_backtest(
     commission_rate : float
         Round-trip commission rate (default 0.1% = buy 0.05% + sell 0.05%).
     slippage_rate : float
-        Round-trip slippage rate (default 0.1%).
+        Round-trip slippage rate (default 0.2%, aligned with TwoStageConfig).
+    stamp_duty_rate : float
+        Sell-side stamp duty (default 0.05%, A-share only).
     """
     # Align
     common_dates = sorted(set(scores.index) & set(close_prices.index))
@@ -85,7 +88,7 @@ def vectorized_backtest(
             # Select top-N stocks by SHIFTED score (yesterday's signal)
             day_scores = scores_shifted.loc[dt].dropna()
             if len(day_scores) == 0:
-                current_holdings = None
+                # First day after shift has no data — skip, will use next rebalance
                 continue
 
             top_stocks = day_scores.nlargest(min(top_n, len(day_scores)))
@@ -107,6 +110,10 @@ def vectorized_backtest(
         if current_holdings is not None:
             holdings.loc[dt, current_holdings.index] = current_holdings.values
 
+    # Validate: if no holdings were ever set, the backtest is meaningless
+    if (holdings != 0).sum().sum() == 0:
+        raise ValueError("回测无有效持仓 — scores 在 shift(1) 后全为 NaN，请检查数据是否只有1天")
+
     # Compute daily portfolio returns
     daily_ret = close_prices.pct_change(fill_method=None).fillna(0.0)
     # Holdings are already based on shifted scores, so no additional shift needed
@@ -116,10 +123,12 @@ def vectorized_backtest(
 
     # ── Transaction costs ──
     # Compute turnover: |weight_t - weight_{t-1}| for each stock, sum across stocks
-    turnover = holdings.diff().abs().sum(axis=1).fillna(0.0)
-    # Round-trip cost = commission + slippage, applied to turnover
-    tc_rate = commission_rate + slippage_rate
-    portfolio_ret = portfolio_ret - turnover * tc_rate
+    holdings_diff = holdings.diff().fillna(0.0)
+    turnover = holdings_diff.abs().sum(axis=1)
+    # Stamp duty only on sells (weight decrease): sum of negative diffs
+    sells = (-holdings_diff.clip(upper=0)).sum(axis=1)
+    # Round-trip cost = commission + slippage on turnover + stamp duty on sells
+    portfolio_ret = portfolio_ret - turnover * (commission_rate + slippage_rate) - sells * stamp_duty_rate
 
     cumulative = (1 + portfolio_ret).cumprod()
     metrics = _compute_metrics(portfolio_ret, cumulative)
@@ -141,11 +150,16 @@ def _compute_metrics(returns: pd.Series, cumulative: pd.Series) -> dict:
     total_return = float(cumulative.iloc[-1] - 1) if len(cumulative) else 0.0
     n_days = len(returns)
     # Use calendar days for annualization (aligned with JoinQuant/main engine)
+    # Handle both datetime and string indices
     if n_days > 1:
-        calendar_days = (
-            (returns.index[-1] - returns.index[0]).days if hasattr(returns.index[0], "days") else n_days
-        )
-        # Fallback: estimate 1.4 calendar days per trading day
+        idx_start = returns.index[0]
+        idx_end = returns.index[-1]
+        if isinstance(idx_start, str):
+            calendar_days = (pd.to_datetime(idx_end) - pd.to_datetime(idx_start)).days
+        elif hasattr(idx_start, "year"):  # datetime/Timestamp
+            calendar_days = (idx_end - idx_start).days
+        else:
+            calendar_days = int(n_days * 365 / 250)
         if calendar_days <= 0:
             calendar_days = int(n_days * 365 / 250)
     else:
