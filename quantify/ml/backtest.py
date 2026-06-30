@@ -44,8 +44,8 @@ def vectorized_backtest(
     top_n: int = 20,
     rebalance_days: int = 5,
     weight_method: str = "equal",
-    commission_rate: float = 0.001,
-    slippage_rate: float = 0.002,
+    commission_rate: float = 0.0005,
+    slippage_rate: float = 0.001,
     stamp_duty_rate: float = 0.0005,
 ) -> VectorBacktestResult:
     """Run a vectorized backtest from daily stock scores.
@@ -63,9 +63,10 @@ def vectorized_backtest(
     weight_method : str
         "equal" or "score" (proportional to score).
     commission_rate : float
-        Round-trip commission rate (default 0.1% = buy 0.05% + sell 0.05%).
+        Per-side commission rate (default 0.05%, aligned with TwoStageConfig).
+        Applied to both buy and sell turnover.
     slippage_rate : float
-        Round-trip slippage rate (default 0.2%, aligned with TwoStageConfig).
+        Per-side slippage rate (default 0.1%, aligned with TwoStageConfig).
     stamp_duty_rate : float
         Sell-side stamp duty (default 0.05%, A-share only).
     """

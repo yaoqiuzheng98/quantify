@@ -76,6 +76,7 @@ def save_model(model, factor_exprs: list[str], config: dict, name: str) -> Path:
         "config": config,
         "model_type": model_type,
         "model_file": model_path.name,
+        "best_iteration": getattr(model, "best_iteration", None),
     }
     with open(meta_path, "w") as f:
         json.dump(meta, f, ensure_ascii=False, indent=2)
@@ -112,6 +113,10 @@ def load_model(name: str) -> dict:
         else:
             with open(model_path, "rb") as f:
                 model = pickle.load(f)
+        # Restore best_iteration (lost during native save_model/load_model)
+        best_iter = meta.get("best_iteration")
+        if best_iter is not None and hasattr(model, "best_iteration"):
+            model.best_iteration = best_iter
         return {
             "model": model,
             "factor_exprs": meta["factor_exprs"],
@@ -436,7 +441,8 @@ class RuntimeContext:
             log.warning(f"模型预测失败: {e}")
             return {}
 
-        return {code: float(pred) for code, pred in zip([v[0] for v in valid], predictions, strict=False)}
+        scores = {code: float(pred) for code, pred in zip([v[0] for v in valid], predictions, strict=False)}
+        return self._normalize_scores(scores)
 
     def _compute_scores_slow_stocks(
         self, valid, fund_data, price_fields, ohlcv_needed, count
@@ -486,7 +492,8 @@ class RuntimeContext:
         except Exception as e:
             log.warning(f"模型预测失败: {e}")
             return {}
-        return {code: float(pred) for code, pred in zip(valid_stocks, predictions, strict=False)}
+        scores = {code: float(pred) for code, pred in zip(valid_stocks, predictions, strict=False)}
+        return self._normalize_scores(scores)
 
     def _compute_scores_slow(
         self,
@@ -577,7 +584,20 @@ class RuntimeContext:
             log.warning(f"模型预测失败: {e}")
             return {}
 
-        return {code: float(pred) for code, pred in zip(valid_stocks, predictions, strict=False)}
+        scores = {code: float(pred) for code, pred in zip(valid_stocks, predictions, strict=False)}
+        return self._normalize_scores(scores)
+
+    def _normalize_scores(self, scores: dict[str, float]) -> dict[str, float]:
+        """Apply cross-sectional z-score normalization to align with training."""
+        if not scores:
+            return scores
+        vals = np.array(list(scores.values()), dtype=float)
+        mu = vals.mean()
+        sigma = vals.std()
+        if sigma == 0:
+            sigma = 1.0
+        normalized = (vals - mu) / sigma
+        return dict(zip(scores.keys(), normalized, strict=False))
 
     def select_top_stocks(self, scores: dict[str, float]) -> dict[str, float]:
         """Select top-N stocks by score, equal weight.

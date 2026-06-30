@@ -328,10 +328,16 @@ class MLSynthesizer:
         # Carve a validation set from the END of training data (chronological)
         fit_kwargs = {}
         if cfg.model_type in ("xgboost", "lightgbm"):
-            # Use last 15% of training data as validation (chronological split)
-            val_split = int(len(X_train) * 0.85)
-            X_tr, X_val = X_train.iloc[:val_split], X_train.iloc[val_split:]
-            y_tr, y_val = y_train.iloc[:val_split], y_train.iloc[val_split:]
+            # Split by date boundary to avoid cutting in the middle of a date's rows.
+            # X_train has MultiIndex (date, asset) stacked in chronological order.
+            unique_dates = X_train.index.get_level_values("date").unique()
+            split_idx = int(len(unique_dates) * 0.85)
+            split_date = unique_dates[split_idx]
+            date_level = X_train.index.get_level_values("date")
+            X_tr = X_train[date_level < split_date]
+            X_val = X_train[date_level >= split_date]
+            y_tr = y_train[date_level < split_date]
+            y_val = y_train[date_level >= split_date]
             fit_kwargs["eval_set"] = [(X_val, y_val.fillna(0))]
             if cfg.model_type == "lightgbm":
                 import lightgbm as lgb

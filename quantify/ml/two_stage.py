@@ -117,6 +117,8 @@ class TwoStageBacktest:
                 # Normalize weights to sum to 1.0 (in case of rounding drift)
                 w_sum = nonzero.sum()
                 if w_sum > 0:
+                    if abs(w_sum - 1.0) > 0.01:
+                        log.info(f"权重归一化: {dt} sum={w_sum:.3f} → 1.0")
                     nonzero = nonzero / w_sum
                 holdings_dict[str(dt)] = {str(stock): float(w) for stock, w in nonzero.items()}
 

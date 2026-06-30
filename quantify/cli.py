@@ -1154,27 +1154,28 @@ def ml_run(
             typer.echo("=" * 60)
             typer.echo("Phase 1: GP 因子发现")
             typer.echo("=" * 60)
-            gp_cfg = GPConfig(
-                universe=universe,
-                start_date=start_date,
-                end_date=end_date,
-                forward_period=forward_period,
-                population=gp_population,
-                generations=gp_generations,
-            )
-            miner = GPMiner(gp_cfg)
-            gp_result = miner.run()
-            typer.echo(f"\nGP 发现 {len(gp_result.expressions)} 个表达式:")
-            for i, (expr, tr, te) in enumerate(
-                zip(gp_result.expressions, gp_result.fitness, gp_result.test_fitness, strict=False)
-            ):
-                typer.echo(f"  #{i + 1}: train_IC={tr:.4f} test_IC={te:.4f}  {expr[:100]}")
-            gp_expressions = list(gp_result.expressions)
+            try:
+                gp_cfg = GPConfig(
+                    universe=universe,
+                    start_date=start_date,
+                    end_date=end_date,
+                    forward_period=forward_period,
+                    population=gp_population,
+                    generations=gp_generations,
+                )
+                miner = GPMiner(gp_cfg)
+                gp_result = miner.run()
+                typer.echo(f"\nGP 发现 {len(gp_result.expressions)} 个表达式:")
+                for i, (expr, tr, te) in enumerate(
+                    zip(gp_result.expressions, gp_result.fitness, gp_result.test_fitness, strict=False)
+                ):
+                    typer.echo(f"  #{i + 1}: train_IC={tr:.4f} test_IC={te:.4f}  {expr[:100]}")
+                gp_expressions = list(gp_result.expressions)
 
-            if gp_save:
-                from quantify.database.factor_store import FactorRecord, save_factor
-                from quantify.factor.evaluator import evaluate_expression
-                from quantify.factor.pipeline import _normalize_expr, metrics_to_json
+                if gp_save:
+                    from quantify.database.factor_store import FactorRecord, save_factor
+                    from quantify.factor.evaluator import evaluate_expression
+                    from quantify.factor.pipeline import _normalize_expr, metrics_to_json
 
                 seen = set()
                 for i, expr in enumerate(gp_result.expressions):
@@ -1203,6 +1204,9 @@ def ml_run(
                     )
                     save_factor(record)
                     typer.echo(f"  入库: {record.name} IC={evaluation.ic_mean:.4f}")
+            except Exception as gp_exc:
+                typer.echo(f"⚠️ GP 阶段失败: {gp_exc}，跳过 GP 因子，继续 ML 阶段", err=True)
+                gp_expressions = []
 
         # ── Phase 2: ML 因子合成 (uses GP-discovered factors as additional features) ──
         if not skip_ml:
@@ -1228,7 +1232,7 @@ def ml_run(
             results.append(
                 (
                     f"ML-{ml_model}",
-                    ml_result.test_ic.get("ic_mean", 0),
+                    ml_result.test_ic.get("rank_ic_mean", ml_result.test_ic.get("ic_mean", 0)),
                     ml_result.test_backtest,
                 )
             )
@@ -1257,7 +1261,7 @@ def ml_run(
             results.append(
                 (
                     f"DL-{dl_model}",
-                    dl_result.test_ic.get("ic_mean", 0),
+                    dl_result.test_ic.get("rank_ic_mean", dl_result.test_ic.get("ic_mean", 0)),
                     dl_result.test_backtest,
                 )
             )
@@ -1269,11 +1273,16 @@ def ml_run(
             typer.echo("=" * 60)
 
             # 选哪个模型去验证
+            all_ics = [r[1] for r in results]
+            if all(ic <= 0 for ic in all_ics):
+                typer.echo(
+                    "⚠️ 警告: 所有模型 test IC ≤ 0，无有效预测信号。两阶段验证仍将运行但结果可能无意义。"
+                )
             if validate_model == "auto":
-                # 取 test IC 最高的
-                results.sort(key=lambda x: abs(x[1]), reverse=True)
+                # Sort by raw IC (not abs) — positive IC is good, negative is bad
+                results.sort(key=lambda x: x[1], reverse=True)
                 chosen_name, chosen_ic, chosen_bt = results[0]
-                typer.echo(f"自动选择最优模型: {chosen_name} (test IC={chosen_ic:.4f})")
+                typer.echo(f"自动选择最优模型: {chosen_name} (test rank_IC={chosen_ic:.4f})")
             elif validate_model == "ml" and any(r[0].startswith("ML") for r in results):
                 chosen_name, chosen_ic, chosen_bt = next(r for r in results if r[0].startswith("ML"))
                 typer.echo(f"验证 ML 模型: {chosen_name}")

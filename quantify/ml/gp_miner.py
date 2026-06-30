@@ -410,6 +410,7 @@ class GPMiner:
 
         # Update terminal list to include csrank_* and neu_* terminals
         all_terminal_names = terminal_names + csrank_names + industry_names
+        self._all_terminal_names = all_terminal_names  # cached for _program_to_qlib
         log.info(
             f"GP 终端: {len(atomics)} 原子 + {len(csrank_names)} CSRank + {len(industry_names)} 行业中性 = {len(all_terminal_names)}"
         )
@@ -662,11 +663,15 @@ class GPMiner:
         if self._terminal_exprs:
             # Map by order: atomics first, then csrank_*, then neu_*
             atomics = self.config.atomic_factors
-            all_names = (
-                [name for name, _ in atomics]
-                + [f"csrank_{name}" for name, _ in atomics]
-                + [f"neu_{name}" for name, _ in atomics if f"neu_{name}" in self._terminal_exprs]
-            )
+            # Use cached terminal names (stored during _load_training_data)
+            if hasattr(self, "_all_terminal_names"):
+                all_names = self._all_terminal_names
+            else:
+                all_names = (
+                    [name for name, _ in atomics]
+                    + [f"csrank_{name}" for name, _ in atomics]
+                    + [f"neu_{name}" for name, _ in atomics if f"neu_{name}" in self._terminal_exprs]
+                )
             terminal_map = {f"X{i}": self._terminal_exprs[name] for i, name in enumerate(all_names)}
         else:
             terminal_map = {f"X{i}": expr for i, (_, expr) in enumerate(atomics)}
