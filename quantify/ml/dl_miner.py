@@ -147,10 +147,11 @@ def _build_model(config: DLConfig, n_features: int, n_factors: int = 0):
             return self.head(out).squeeze(-1)
 
     class TransformerModel(nn.Module):
-        def __init__(self, input_dim, hidden_dim, num_layers, n_heads, dropout):
+        def __init__(self, input_dim, hidden_dim, num_layers, n_heads, dropout, max_seq_len=512):
             super().__init__()
             self.input_proj = nn.Linear(input_dim, hidden_dim)
-            self.pos_encoding = nn.Parameter(torch.randn(1, 512, hidden_dim) * 0.02)
+            # Dynamic position encoding sized to max sequence length
+            self.pos_encoding = nn.Parameter(torch.randn(1, max_seq_len, hidden_dim) * 0.02)
             encoder_layer = nn.TransformerEncoderLayer(
                 d_model=hidden_dim,
                 nhead=n_heads,
@@ -220,7 +221,12 @@ def _build_model(config: DLConfig, n_features: int, n_factors: int = 0):
         return ts_model
     if config.model_type == "transformer":
         ts_model = TransformerModel(
-            n_features, config.hidden_dim, config.num_layers, config.n_heads, config.dropout
+            n_features,
+            config.hidden_dim,
+            config.num_layers,
+            config.n_heads,
+            config.dropout,
+            max_seq_len=config.lookback,
         )
         if n_factors > 0:
             return HybridModel(ts_model, n_factors, config.factor_dim, config.hidden_dim, config.dropout)
@@ -435,11 +441,21 @@ class DLMiner:
         n_features = X_train.shape[-1]
         n_factors = F_train.shape[-1] if F_train is not None else 0
 
+        # Set random seeds for reproducibility
+        torch.manual_seed(cfg.random_state)
+        np.random.seed(cfg.random_state)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed(cfg.random_state)
+
         model = _build_model(cfg, n_features, n_factors).to(device)
         optimizer = torch.optim.Adam(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
         criterion = nn.MSELoss()
+        # Learning rate scheduler: reduce LR by half on plateau
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer, mode="min", factor=0.5, patience=5, verbose=False
+        )
 
-        # DataLoaders
+        # DataLoaders — shuffle=False for time series (preserve temporal order)
         if n_factors > 0:
             train_ds = TensorDataset(
                 torch.from_numpy(X_train).float(),
@@ -460,7 +476,7 @@ class DLMiner:
                 torch.from_numpy(X_val).float(),
                 torch.from_numpy(y_val).float(),
             )
-        train_loader = DataLoader(train_ds, batch_size=cfg.batch_size, shuffle=True, drop_last=True)
+        train_loader = DataLoader(train_ds, batch_size=cfg.batch_size, shuffle=False, drop_last=False)
         val_loader = DataLoader(val_ds, batch_size=cfg.batch_size, shuffle=False)
 
         train_history = []
@@ -488,6 +504,8 @@ class DLMiner:
                     pred = model(xb)
                 loss = criterion(pred, yb)
                 loss.backward()
+                # Gradient clipping to prevent exploding gradients
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 optimizer.step()
                 train_losses.append(loss.item())
 
@@ -510,6 +528,9 @@ class DLMiner:
             val_loss = np.mean(val_losses)
             train_history.append(train_loss)
             val_history.append(val_loss)
+
+            # Step the LR scheduler based on validation loss
+            scheduler.step(val_loss)
 
             if val_loss < best_val:
                 best_val = val_loss

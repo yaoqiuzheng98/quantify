@@ -216,7 +216,8 @@ def build_dataset(
     # Load forward returns
     fwd = load_forward_returns(universe, start_date, end_date, forward_period)
 
-    # Align dates and assets
+    # Align dates and assets — use intersection of dates (all factors must have data)
+    # but for assets, use intersection with forward returns (factors may cover different stocks)
     common_dates = sorted(set.intersection(*[set(p.index) for p in panels.values()]) & set(fwd.index))
     if not common_dates:
         raise RuntimeError("因子面板与前瞻收益无交集日期")
@@ -237,6 +238,9 @@ def build_dataset(
 
         Preserves a (date, asset) MultiIndex so predictions can be reshaped
         back into (date × asset) panels without reloading data.
+        Uses median imputation for missing factor values instead of dropping
+        entire rows — this preserves valid training data when one factor has
+        sparse coverage.
         """
         X_rows = []
         y_rows = []
@@ -246,11 +250,15 @@ def build_dataset(
             y_dt = fwd.loc[dt, common_assets]
             # Factor values
             x_dt = pd.DataFrame({expr: panels[expr].loc[dt, common_assets] for expr in feature_names})
-            # Drop rows where y is NaN or any X is NaN
-            valid = y_dt.notna() & x_dt.notna().all(axis=1)
+            # Only require y to be non-NaN; fill missing X with cross-sectional median
+            valid = y_dt.notna()
             if valid.sum() == 0:
                 continue
-            X_rows.append(x_dt.loc[valid])
+            x_valid = x_dt.loc[valid]
+            # Fill NaN features with cross-sectional median, then 0 for any remaining
+            x_valid = x_valid.fillna(x_valid.median())
+            x_valid = x_valid.fillna(0.0)
+            X_rows.append(x_valid)
             y_rows.append(y_dt.loc[valid])
             idx.extend([(dt, a) for a in y_dt.index[valid]])
 

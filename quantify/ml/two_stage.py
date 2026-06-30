@@ -103,6 +103,10 @@ class TwoStageBacktest:
         The strategy embeds the holdings as a dict: {date_str: {stock: weight}}.
         On each trading day, it checks if there's a target portfolio for that
         date and rebalances to match it.
+
+        Note: holdings from vectorized backtest are already shifted by 1 day
+        (scores.shift(1) in backtest.py), so the T+1 constraint is already
+        baked into the holdings dates. No additional shift is needed here.
         """
         # Build holdings dict: only non-zero weights, grouped by date
         holdings_dict: dict[str, dict[str, float]] = {}
@@ -110,6 +114,10 @@ class TwoStageBacktest:
             row = holdings.loc[dt]
             nonzero = row[row > 0.001]  # filter dust
             if len(nonzero) > 0:
+                # Normalize weights to sum to 1.0 (in case of rounding drift)
+                w_sum = nonzero.sum()
+                if w_sum > 0:
+                    nonzero = nonzero / w_sum
                 holdings_dict[str(dt)] = {str(stock): float(w) for stock, w in nonzero.items()}
 
         # Serialize as Python literal (compact)
@@ -179,8 +187,8 @@ def rebalance(context):
         if code not in target:
             order_target_value(code, 0)
 
-    # Buy / adjust target positions
-    total_value = context.portfolio.total_value * 0.95
+    # Buy / adjust target positions (use 100% of total value, no idle cash)
+    total_value = context.portfolio.total_value
     for code, weight in target.items():
         try:
             order_target_value(code, total_value * weight)

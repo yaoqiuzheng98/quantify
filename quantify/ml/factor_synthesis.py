@@ -102,9 +102,10 @@ class MLSynthesizer:
 
     def __init__(self, config: MLSynthConfig | None = None) -> None:
         self.config = config or MLSynthConfig()
+        self._extra_expressions: list[str] = []  # GP-discovered factors injected from CLI
 
     def _select_factors(self) -> list[str]:
-        """Select factors from the library based on |ICIR| threshold."""
+        """Select factors from the library based on |ICIR| threshold + correlation filter."""
         factors = list_factors()
         # Only use single factors (not composed)
         single = [f for f in factors if (f.factor_type or "single") == "single"]
@@ -114,7 +115,6 @@ class MLSynthesizer:
         # Filter by |ICIR| and sort
         qualified = [f for f in single if f.icir is not None and abs(f.icir) >= self.config.min_icir]
         if not qualified:
-            # Fall back to all single factors if none pass the threshold
             log.warning(f"无因子满足 |ICIR|>={self.config.min_icir}，使用全部单因子")
             qualified = single
 
@@ -123,6 +123,38 @@ class MLSynthesizer:
         expressions = [f.expression for f in selected]
         log.info(f"从因子库选取 {len(expressions)} 个因子 (from {len(single)} single factors)")
         return expressions
+
+    @staticmethod
+    def _filter_correlated(expressions: list[str], panels: dict, threshold: float = 0.85) -> list[str]:
+        """Remove highly correlated factors (keep the one that appears first)."""
+        if len(expressions) <= 1:
+            return expressions
+        # Stack all factor panels into a single DataFrame
+        all_data = pd.DataFrame()
+        for expr in expressions:
+            panel = panels[expr]
+            # Flatten to 1D (date, stock) → single column
+            stacked = panel.stack()
+            all_data[expr] = stacked
+
+        corr_matrix = all_data.corr().abs()
+        # Select factors with correlation < threshold
+        selected = []
+        dropped = set()
+        for expr in expressions:
+            if expr in dropped:
+                continue
+            selected.append(expr)
+            # Drop factors highly correlated with this one
+            for other in expressions:
+                if other == expr or other in dropped or other in selected:
+                    continue
+                if corr_matrix.loc[expr, other] > threshold:
+                    dropped.add(other)
+
+        if len(dropped) > 0:
+            log.info(f"相关性过滤: 移除 {len(dropped)} 个高相关因子 (threshold={threshold})")
+        return selected
 
     def _build_model(self) -> object:
         """Build the ML model based on config.model_type."""
@@ -143,6 +175,7 @@ class MLSynthesizer:
                 min_child_weight=params.get("min_child_weight", 10),
                 random_state=42,
                 n_jobs=-1,
+                early_stopping_rounds=20,
             )
 
         if model_type == "lightgbm":
@@ -227,6 +260,15 @@ class MLSynthesizer:
 
         # 1. Select factors
         expressions = self._select_factors()
+        # Add GP-discovered expressions (injected from CLI pipeline)
+        if self._extra_expressions:
+            # Avoid duplicates
+            existing = set(expressions)
+            for expr in self._extra_expressions:
+                if expr not in existing:
+                    expressions.append(expr)
+                    existing.add(expr)
+            log.info(f"加入 {len(self._extra_expressions)} 个 GP 因子，总因子数={len(expressions)}")
 
         # 2. Build dataset
         dataset = build_dataset(
@@ -238,6 +280,25 @@ class MLSynthesizer:
             test_ratio=cfg.test_ratio,
         )
         self._dataset = dataset
+
+        # Apply correlation filter on loaded panels
+        # (panels are already loaded in build_dataset, but we need to reload for filtering)
+        # Skip if only 1 factor
+        if len(expressions) > 1:
+            from quantify.ml.data import load_factor_panels
+
+            panels = load_factor_panels(expressions, cfg.universe, cfg.start_date, cfg.end_date)
+            expressions = self._filter_correlated(expressions, panels)
+            # Rebuild dataset with filtered factors
+            dataset = build_dataset(
+                expressions,
+                universe=cfg.universe,
+                start_date=cfg.start_date,
+                end_date=cfg.end_date,
+                forward_period=cfg.forward_period,
+                test_ratio=cfg.test_ratio,
+            )
+            self._dataset = dataset
 
         if dataset.n_train < 100 or dataset.n_test < 50:
             raise RuntimeError(
@@ -260,17 +321,46 @@ class MLSynthesizer:
             X_train = X_train[valid_y]
             y_train = y_train[valid_y]
 
-        # Train model (no early stopping — let it run full n_estimators)
-        model.fit(X_train, y_train)
-        log.info("模型训练完成")
+        # Train with early stopping for tree models
+        # Carve a validation set from the END of training data (chronological)
+        fit_kwargs = {}
+        if cfg.model_type in ("xgboost", "lightgbm"):
+            # Use last 15% of training data as validation (chronological split)
+            val_split = int(len(X_train) * 0.85)
+            X_tr, X_val = X_train.iloc[:val_split], X_train.iloc[val_split:]
+            y_tr, y_val = y_train.iloc[:val_split], y_train.iloc[val_split:]
+            fit_kwargs["eval_set"] = [(X_val, y_val.fillna(0))]
+            if cfg.model_type == "lightgbm":
+                import lightgbm as lgb
+
+                fit_kwargs["callbacks"] = [
+                    lgb.early_stopping(20),
+                    lgb.log_evaluation(0),
+                ]
+            log.info(f"Early stopping: train={len(X_tr)}, val={len(X_val)}")
+        else:
+            X_tr, y_tr = X_train, y_train
+
+        model.fit(X_tr, y_tr, **fit_kwargs)
+        if hasattr(model, "best_iteration") and model.best_iteration is not None:
+            log.info(f"模型训练完成: best_iteration={model.best_iteration}")
+        else:
+            log.info("模型训练完成")
 
         # 4. Predict
         train_pred = model.predict(X_train)
         test_pred = model.predict(X_test)
 
-        # 5. Rebuild (date × asset) score panels
+        # 5. Rebuild (date × asset) score panels with cross-sectional z-score normalization
         train_scores = self._rebuild_panel(train_pred, dataset, is_train=True)
         test_scores = self._rebuild_panel(test_pred, dataset, is_train=False)
+        # Cross-sectional z-score per date (normalizes score distribution across dates)
+        train_scores = train_scores.sub(train_scores.mean(axis=1), axis=0).div(
+            train_scores.std(axis=1).replace(0, 1.0), axis=0
+        )
+        test_scores = test_scores.sub(test_scores.mean(axis=1), axis=0).div(
+            test_scores.std(axis=1).replace(0, 1.0), axis=0
+        )
 
         # 6. Load forward returns and close prices for IC + backtest
         fwd_returns = load_forward_returns(

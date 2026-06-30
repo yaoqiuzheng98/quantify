@@ -3,9 +3,9 @@
 Lightweight portfolio simulation: given daily stock scores, select top-N,
 equal-weight (or score-weighted), compute portfolio returns and metrics.
 
-Does NOT go through the event-driven BacktestEngine — no trading friction,
-no T+1, no price limits.  Designed for fast iteration before validating
-winners in the full engine.
+Includes basic transaction costs (commission + slippage) for more realistic
+estimates.  Does NOT model T+1, price limits, or lot rounding — use the
+full BacktestEngine (two_stage.py) for final validation.
 """
 
 from __future__ import annotations
@@ -44,6 +44,8 @@ def vectorized_backtest(
     top_n: int = 20,
     rebalance_days: int = 5,
     weight_method: str = "equal",
+    commission_rate: float = 0.001,
+    slippage_rate: float = 0.001,
 ) -> VectorBacktestResult:
     """Run a vectorized backtest from daily stock scores.
 
@@ -59,6 +61,10 @@ def vectorized_backtest(
         Rebalance every N trading days.
     weight_method : str
         "equal" or "score" (proportional to score).
+    commission_rate : float
+        Round-trip commission rate (default 0.1% = buy 0.05% + sell 0.05%).
+    slippage_rate : float
+        Round-trip slippage rate (default 0.1%).
     """
     # Align
     common_dates = sorted(set(scores.index) & set(close_prices.index))
@@ -66,13 +72,18 @@ def vectorized_backtest(
     scores = scores.loc[common_dates, common_assets]
     close_prices = close_prices.loc[common_dates, common_assets]
 
+    # ── Fix look-ahead bias: shift scores by 1 day ──
+    # Scores at time t are based on data available at close of day t.
+    # You can only trade at day t+1, so use yesterday's scores to select today's portfolio.
+    scores_shifted = scores.shift(1)
+
     holdings = pd.DataFrame(0.0, index=scores.index, columns=scores.columns)
     current_holdings: pd.Series | None = None
 
     for i, dt in enumerate(common_dates):
         if i % rebalance_days == 0:
-            # Select top-N stocks by score
-            day_scores = scores.loc[dt].dropna()
+            # Select top-N stocks by SHIFTED score (yesterday's signal)
+            day_scores = scores_shifted.loc[dt].dropna()
             if len(day_scores) == 0:
                 current_holdings = None
                 continue
@@ -94,16 +105,21 @@ def vectorized_backtest(
             current_holdings = weights
 
         if current_holdings is not None:
-            for stock, w in current_holdings.items():
-                holdings.loc[dt, stock] = w
+            holdings.loc[dt, current_holdings.index] = current_holdings.values
 
     # Compute daily portfolio returns
     daily_ret = close_prices.pct_change(fill_method=None).fillna(0.0)
-    # Shift holdings by 1 day: today's return earned on yesterday's holdings
-    holdings_shifted = holdings.shift(1).fillna(0.0)
-    portfolio_ret = (holdings_shifted * daily_ret).sum(axis=1)
-    # First day has no return
+    # Holdings are already based on shifted scores, so no additional shift needed
+    portfolio_ret = (holdings * daily_ret).sum(axis=1)
+    # First day has no return (no prior signal)
     portfolio_ret.iloc[0] = 0.0
+
+    # ── Transaction costs ──
+    # Compute turnover: |weight_t - weight_{t-1}| for each stock, sum across stocks
+    turnover = holdings.diff().abs().sum(axis=1).fillna(0.0)
+    # Round-trip cost = commission + slippage, applied to turnover
+    tc_rate = commission_rate + slippage_rate
+    portfolio_ret = portfolio_ret - turnover * tc_rate
 
     cumulative = (1 + portfolio_ret).cumprod()
     metrics = _compute_metrics(portfolio_ret, cumulative)
@@ -117,12 +133,28 @@ def vectorized_backtest(
 
 
 def _compute_metrics(returns: pd.Series, cumulative: pd.Series) -> dict:
-    """Compute standard backtest metrics from daily returns."""
+    """Compute standard backtest metrics from daily returns.
+
+    Aligned with main BacktestEngine: annual return uses 365 calendar days,
+    volatility uses 250 trading days, risk-free rate = 4%.
+    """
     total_return = float(cumulative.iloc[-1] - 1) if len(cumulative) else 0.0
     n_days = len(returns)
-    n_years = n_days / 250
+    # Use calendar days for annualization (aligned with JoinQuant/main engine)
+    if n_days > 1:
+        calendar_days = (
+            (returns.index[-1] - returns.index[0]).days if hasattr(returns.index[0], "days") else n_days
+        )
+        # Fallback: estimate 1.4 calendar days per trading day
+        if calendar_days <= 0:
+            calendar_days = int(n_days * 365 / 250)
+    else:
+        calendar_days = 250
 
-    annual_return = float((cumulative.iloc[-1] ** (1 / n_years) - 1)) if n_years > 0 else 0.0
+    n_years = calendar_days / 365 if calendar_days > 0 else 1.0
+    annual_return = (
+        float((cumulative.iloc[-1] ** (1 / n_years) - 1)) if n_years > 0 and len(cumulative) else 0.0
+    )
 
     volatility = float(returns.std() * np.sqrt(250)) if n_days > 1 else 0.0
     sharpe = float((annual_return - 0.04) / volatility) if volatility > 0 else 0.0
@@ -152,15 +184,22 @@ def compute_ic(
 ) -> dict:
     """Compute daily IC and Rank IC between scores and forward returns.
 
+    Scores are shifted by 1 day to avoid look-ahead bias: a score at time t
+    can only be used for trading at t+1, so we correlate t-1's score with
+    t's forward return.
+
     Returns dict with ic_mean, ic_std, icir, rank_ic_mean, rank_icir.
     """
     common_dates = sorted(set(scores.index) & set(forward_returns.index))
     common_assets = sorted(set(scores.columns) & set(forward_returns.columns))
 
+    # Shift scores by 1 day to avoid look-ahead bias
+    scores_shifted = scores.shift(1)
+
     ic_series = []
     rank_ic_series = []
     for dt in common_dates:
-        s = scores.loc[dt, common_assets]
+        s = scores_shifted.loc[dt, common_assets]
         r = forward_returns.loc[dt, common_assets]
         valid = s.notna() & r.notna()
         if valid.sum() < 10:

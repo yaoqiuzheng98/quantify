@@ -1148,38 +1148,13 @@ def ml_run(
 
     results: list[tuple[str, float, object]] = []  # (name, test_ic, vector_bt)
     ml_synth = None  # ref to MLSynthesizer for reusable strategy generation
+    gp_expressions: list[str] = []  # GP-discovered expressions to feed into ML
 
     try:
-        # ── Phase 1: ML 因子合成 ──
-        if not skip_ml:
-            typer.echo("=" * 60)
-            typer.echo("Phase 1: ML 因子合成")
-            typer.echo("=" * 60)
-            ml_cfg = MLSynthConfig(
-                universe=universe,
-                start_date=start_date,
-                end_date=end_date,
-                forward_period=forward_period,
-                top_n=top_n,
-                rebalance_days=rebalance,
-                test_ratio=test_ratio,
-                model_type=ml_model,
-            )
-            ml_synth = MLSynthesizer(ml_cfg)
-            ml_result = ml_synth.run()
-            typer.echo(ml_result.summary())
-            results.append(
-                (
-                    f"ML-{ml_model}",
-                    ml_result.test_ic.get("ic_mean", 0),
-                    ml_result.test_backtest,
-                )
-            )
-
-        # ── Phase 2: GP 因子发现 ──
+        # ── Phase 1: GP 因子发现 (run first so results can feed into ML) ──
         if not skip_gp:
-            typer.echo("\n" + "=" * 60)
-            typer.echo("Phase 2: GP 因子发现")
+            typer.echo("=" * 60)
+            typer.echo("Phase 1: GP 因子发现")
             typer.echo("=" * 60)
             gp_cfg = GPConfig(
                 universe=universe,
@@ -1196,6 +1171,7 @@ def ml_run(
                 zip(gp_result.expressions, gp_result.fitness, gp_result.test_fitness, strict=False)
             ):
                 typer.echo(f"  #{i + 1}: train_IC={tr:.4f} test_IC={te:.4f}  {expr[:100]}")
+            gp_expressions = list(gp_result.expressions)
 
             if gp_save:
                 from quantify.database.factor_store import FactorRecord, save_factor
@@ -1229,6 +1205,35 @@ def ml_run(
                     )
                     save_factor(record)
                     typer.echo(f"  入库: {record.name} IC={evaluation.ic_mean:.4f}")
+
+        # ── Phase 2: ML 因子合成 (uses GP-discovered factors as additional features) ──
+        if not skip_ml:
+            typer.echo("\n" + "=" * 60)
+            typer.echo("Phase 2: ML 因子合成" + (" (含 GP 因子)" if gp_expressions else ""))
+            typer.echo("=" * 60)
+            ml_cfg = MLSynthConfig(
+                universe=universe,
+                start_date=start_date,
+                end_date=end_date,
+                forward_period=forward_period,
+                top_n=top_n,
+                rebalance_days=rebalance,
+                test_ratio=test_ratio,
+                model_type=ml_model,
+            )
+            ml_synth = MLSynthesizer(ml_cfg)
+            # Inject GP expressions as extra features
+            if gp_expressions:
+                ml_synth._extra_expressions = gp_expressions
+            ml_result = ml_synth.run()
+            typer.echo(ml_result.summary())
+            results.append(
+                (
+                    f"ML-{ml_model}",
+                    ml_result.test_ic.get("ic_mean", 0),
+                    ml_result.test_backtest,
+                )
+            )
 
         # ── Phase 3: DL 端到端选股 ──
         if not skip_dl:

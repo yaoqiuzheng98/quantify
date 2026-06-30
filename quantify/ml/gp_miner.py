@@ -209,17 +209,22 @@ class GPConfig:
     p_hoist_mutation: float = 0.05
     p_point_mutation: float = 0.1
     max_depth: int = 5
-    init_depth: tuple[int, int] = (2, 4)
+    init_depth: tuple[int, int] = (2, 6)
     # Fitness
     metric: str = "ic"  # "ic" or "rank_ic"
     # Data
     test_ratio: float = 0.3
+    val_ratio: float = 0.15  # validation set ratio (from train)
     # How many top expressions to return
     top_k: int = 10
     # Atomic factors to use as terminals (defaults to ATOMIC_FACTORS)
     atomic_factors: list[tuple[str, str]] = field(default_factory=lambda: list(ATOMIC_FACTORS))
     # Random seed
     random_state: int = 42
+    # Cross-sectional standardize features (z-score per day)
+    standardize: bool = True
+    # Multi-period forward returns for fitness (IC averaged across periods)
+    forward_periods: tuple[int, ...] = (5,)  # (1, 5, 10) for multi-period
 
 
 @dataclass
@@ -313,7 +318,9 @@ class GPMiner:
         result = result.reindex(columns=panel.columns, index=panel.index)
         return result.fillna(0.0)
 
-    def _load_training_data(self) -> tuple[pd.DataFrame, pd.Series, pd.DataFrame, pd.Series]:
+    def _load_training_data(
+        self,
+    ) -> tuple[pd.DataFrame, pd.Series, pd.DataFrame, pd.Series, pd.DataFrame, pd.Series]:
         """Load pre-computed atomic factor panels and forward returns.
 
         Returns stacked (date, stock) datasets: each row = one observation,
@@ -400,14 +407,24 @@ class GPMiner:
             f"GP 终端: {len(atomics)} 原子 + {len(csrank_names)} CSRank + {len(industry_names)} 行业中性 = {len(all_terminal_names)}"
         )
 
-        # Chronological split
-        split_idx = int(len(common_dates) * (1 - cfg.test_ratio))
-        dates_train = common_dates[:split_idx]
-        dates_test = common_dates[split_idx:]
+        # Chronological split: train → val → test
+        n_dates = len(common_dates)
+        n_test = int(n_dates * cfg.test_ratio)
+        n_val = int(n_dates * cfg.val_ratio)
+        n_train = n_dates - n_test - n_val
+        dates_train = common_dates[:n_train]
+        dates_val = common_dates[n_train : n_train + n_val]
+        dates_test = common_dates[n_train + n_val :]
 
         def _stack(dates):
+            """Stack cross-sectional data for given dates.
+
+            Returns X with (date, asset) MultiIndex so we can group by date
+            for daily IC computation.
+            """
             X_rows = []
             y_rows = []
+            idx = []
             for dt in dates:
                 y_dt = fwd.loc[dt, common_assets]
                 x_dt = pd.DataFrame(
@@ -418,20 +435,80 @@ class GPMiner:
                     continue
                 X_rows.append(x_dt.loc[valid])
                 y_rows.append(y_dt.loc[valid])
+                idx.extend([(dt, a) for a in y_dt.index[valid]])
             if not X_rows:
-                return pd.DataFrame(columns=all_terminal_names), pd.Series(dtype=float)
+                return (
+                    pd.DataFrame(columns=all_terminal_names),
+                    pd.Series(dtype=float),
+                    pd.Index([]),
+                )
             X = pd.concat(X_rows, ignore_index=True)
             y = pd.concat(y_rows, ignore_index=True)
             # Clip extreme values to prevent overflow in GP arithmetic
             X = X.clip(-_CLIP_RANGE, _CLIP_RANGE).fillna(0.0)
             y = y.fillna(0.0)
-            return X, y
+            dates_idx = pd.Index([d for d, _ in idx])
+            return X, y, dates_idx
 
-        X_train, y_train = _stack(dates_train)
-        X_test, y_test = _stack(dates_test)
+        X_train, y_train, dates_train_idx = _stack(dates_train)
+        X_val, y_val, dates_val_idx = _stack(dates_val)
+        X_test, y_test, dates_test_idx = _stack(dates_test)
 
-        log.info(f"GP 数据: train={len(X_train)}, test={len(X_test)}, terminals={len(all_terminal_names)}")
-        return X_train, y_train, X_test, y_test
+        # Cross-sectional standardization (z-score per day)
+        if cfg.standardize:
+
+            def _standardize(X, dates_idx):
+                if X.empty:
+                    return X
+                X_std = X.copy()
+                for dt in dates_idx.unique():
+                    mask = dates_idx == dt
+                    row = X_std[mask]
+                    mu = row.mean()
+                    sigma = row.std().replace(0, 1.0)
+                    X_std[mask] = (row - mu) / sigma
+                return X_std.fillna(0.0)
+
+            X_train = _standardize(X_train, dates_train_idx)
+            X_val = _standardize(X_val, dates_val_idx)
+            X_test = _standardize(X_test, dates_test_idx)
+
+        log.info(
+            f"GP 数据: train={len(X_train)}, val={len(X_val)}, test={len(X_test)}, "
+            f"terminals={len(all_terminal_names)}"
+        )
+        # Store date indices for daily IC computation
+        self._dates_train_idx = dates_train_idx
+        self._dates_val_idx = dates_val_idx
+        self._dates_test_idx = dates_test_idx
+        return X_train, y_train, X_val, y_val, X_test, y_test
+
+    @staticmethod
+    def _daily_ic(y_pred: np.ndarray, y: np.ndarray, dates_idx: pd.Index) -> float:
+        """Compute mean daily Spearman rank IC (cross-sectional IC averaged over dates).
+
+        This is the correct IC metric for factor evaluation: each day's
+        cross-sectional rank correlation between predicted scores and actual
+        returns, averaged across all dates.
+        """
+        from scipy.stats import spearmanr
+
+        if len(y_pred) != len(dates_idx):
+            return 0.0
+        ics = []
+        for dt in dates_idx.unique():
+            mask = dates_idx == dt
+            yp = y_pred[mask]
+            ya = y[mask]
+            valid = np.isfinite(yp) & np.isfinite(ya)
+            if valid.sum() < 10:
+                continue
+            if np.std(yp[valid]) < 1e-12 or np.std(ya[valid]) < 1e-12:
+                continue
+            corr, _ = spearmanr(yp[valid], ya[valid])
+            if np.isfinite(corr):
+                ics.append(float(corr))
+        return float(np.mean(ics)) if ics else 0.0
 
     def run(self) -> GPResult:
         """Run GP evolution and return top-k expressions.
@@ -439,7 +516,7 @@ class GPMiner:
         Returns
         -------
         GPResult
-            Top-k expressions with train/test fitness.
+            Top-k expressions with train/val/test fitness.
         """
         from gplearn.fitness import make_fitness
         from gplearn.genetic import SymbolicRegressor
@@ -450,26 +527,19 @@ class GPMiner:
             f"atoms={len(cfg.atomic_factors)}"
         )
 
-        # Load data
-        X_train, y_train, X_test, y_test = self._load_training_data()
+        # Load data (now includes validation set)
+        X_train, y_train, X_val, y_val, X_test, y_test = self._load_training_data()
         if len(X_train) < 500:
             raise RuntimeError(f"训练数据太少: {len(X_train)} rows")
 
         # Build function set (cross-sectional only)
         function_set = self._build_function_set()
 
-        # Fitness: Spearman rank IC
-        def _ic_metric(y, y_pred, w):
-            from scipy.stats import spearmanr
+        # Fitness: mean daily Spearman rank IC (correct cross-sectional IC)
+        dates_train_idx = self._dates_train_idx
 
-            mask = np.isfinite(y_pred) & np.isfinite(y)
-            if mask.sum() < 10:
-                return 0.0
-            yp = y_pred[mask]
-            if np.std(yp) < 1e-12 or np.std(y[mask]) < 1e-12:
-                return 0.0
-            corr, _ = spearmanr(yp, y[mask])
-            return float(corr) if np.isfinite(corr) else 0.0
+        def _ic_metric(y, y_pred, w):
+            return self._daily_ic(y_pred, y, dates_train_idx)
 
         ic_fitness = make_fitness(function=_ic_metric, greater_is_better=True, wrap=False)
 
@@ -485,39 +555,62 @@ class GPMiner:
             p_point_mutation=cfg.p_point_mutation,
             init_depth=cfg.init_depth,
             const_range=None,  # no constants — pure factor combinations
-            parsimony_coefficient=0.01,  # penalize complex trees
+            parsimony_coefficient=0.001,  # light complexity penalty
             max_samples=1.0,
             n_jobs=-1,
             verbose=1,
             random_state=cfg.random_state,
-            stopping_criteria=0.05,  # stop if IC > 0.05
+            stopping_criteria=0.03,  # stop if daily IC > 0.03
         )
 
         log.info("开始 GP 进化...")
         est.fit(X_train, y_train)
         log.info("GP 进化完成")
 
-        # Get top-k programs by fitness from final population
+        # Get all programs from final population, pre-sort by train fitness
         programs = est._programs[-1]
         programs = [p for p in programs if p is not None]
         programs.sort(key=lambda p: p.raw_fitness_, reverse=True)
 
-        top_programs = programs[: cfg.top_k]
+        # Only evaluate top 100 by train IC on val/test (full eval is too slow)
+        X_train_np = X_train.to_numpy()
+        X_val_np = X_val.to_numpy() if len(X_val) > 0 else None
+        X_test_np = X_test.to_numpy()
+
+        evaluated = []
+        seen_exprs = set()
+        for prog in programs[:100]:
+            expr = self._program_to_qlib(prog)
+            # Deduplicate by expression string
+            if expr in seen_exprs:
+                continue
+            seen_exprs.add(expr)
+
+            train_ic = self._daily_ic(prog.execute(X_train_np), y_train.to_numpy(), dates_train_idx)
+            val_ic = (
+                self._daily_ic(prog.execute(X_val_np), y_val.to_numpy(), self._dates_val_idx)
+                if X_val_np is not None
+                else 0.0
+            )
+            test_ic = self._daily_ic(prog.execute(X_test_np), y_test.to_numpy(), self._dates_test_idx)
+            evaluated.append((prog, expr, train_ic, val_ic, test_ic))
+
+        # Sort by validation IC (primary), then train IC (tiebreaker)
+        evaluated.sort(key=lambda x: (x[3], x[2]), reverse=True)
+
+        top = evaluated[: cfg.top_k]
 
         expressions = []
         train_fitness = []
         test_fitness = []
-
-        for prog in top_programs:
-            expr = self._program_to_qlib(prog)
+        for _, expr, tr_ic, val_ic, te_ic in top:
             expressions.append(expr)
-            train_fitness.append(prog.raw_fitness_)
-            test_pred = prog.execute(X_test.to_numpy())
-            test_ic = self._compute_ic(test_pred, y_test.to_numpy())
-            test_fitness.append(test_ic)
+            train_fitness.append(tr_ic)
+            test_fitness.append(te_ic)
 
         for i, (expr, tr, te) in enumerate(zip(expressions, train_fitness, test_fitness, strict=False)):
-            log.info(f"  GP #{i + 1}: train_IC={tr:.4f} test_IC={te:.4f}  {expr[:80]}")
+            val_ic = top[i][3] if i < len(top) else 0.0
+            log.info(f"  GP #{i + 1}: train_IC={tr:.4f} val_IC={val_ic:.4f} test_IC={te:.4f}  {expr[:80]}")
 
         return GPResult(
             expressions=expressions,
@@ -591,19 +684,6 @@ class GPMiner:
             return f"{qlib_name}({', '.join(converted_args)})"
 
         return convert(raw_str)
-
-    def _compute_ic(self, pred: np.ndarray, actual: np.ndarray) -> float:
-        """Compute Spearman rank IC between predictions and actual returns."""
-        from scipy.stats import spearmanr
-
-        mask = np.isfinite(pred) & np.isfinite(actual)
-        if mask.sum() < 10:
-            return 0.0
-        p, a = pred[mask], actual[mask]
-        if np.std(p) < 1e-12 or np.std(a) < 1e-12:
-            return 0.0
-        corr, _ = spearmanr(p, a)
-        return float(corr) if np.isfinite(corr) else 0.0
 
 
 def _split_args(s: str) -> list[str]:
