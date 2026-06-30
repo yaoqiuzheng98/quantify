@@ -1171,42 +1171,46 @@ def ml_run(
                 ):
                     typer.echo(f"  #{i + 1}: train_IC={tr:.4f} test_IC={te:.4f}  {expr[:100]}")
                 gp_expressions = list(gp_result.expressions)
+            except Exception as gp_exc:
+                typer.echo(f"⚠️ GP 挖掘失败: {gp_exc}，跳过 GP 因子，继续 ML 阶段", err=True)
+                gp_expressions = []
 
-                if gp_save:
+            # Save GP factors to library (outside try/except — failure here shouldn't discard expressions)
+            if gp_expressions and gp_save:
+                try:
                     from quantify.database.factor_store import FactorRecord, save_factor
                     from quantify.factor.evaluator import evaluate_expression
                     from quantify.factor.pipeline import _normalize_expr, metrics_to_json
 
-                seen = set()
-                for i, expr in enumerate(gp_result.expressions):
-                    norm = _normalize_expr(expr)
-                    if norm in seen:
-                        continue
-                    seen.add(norm)
-                    evaluation = evaluate_expression(
-                        expr, universe=universe, start_date=start_date, end_date=end_date
-                    )
-                    record = FactorRecord(
-                        name=f"gp_factor_{i + 1}",
-                        expression=expr,
-                        hypothesis="GP evolved factor",
-                        category="gp",
-                        universe=universe or "all",
-                        ic_mean=evaluation.ic_mean,
-                        ic_std=evaluation.ic_std,
-                        icir=evaluation.icir,
-                        rank_ic_mean=evaluation.rank_ic_mean,
-                        rank_icir=evaluation.rank_icir,
-                        coverage=evaluation.coverage,
-                        status="passed" if evaluation.passed else "evaluated",
-                        factor_type="single",
-                        metrics_json=metrics_to_json(evaluation.to_dict()),
-                    )
-                    save_factor(record)
-                    typer.echo(f"  入库: {record.name} IC={evaluation.ic_mean:.4f}")
-            except Exception as gp_exc:
-                typer.echo(f"⚠️ GP 阶段失败: {gp_exc}，跳过 GP 因子，继续 ML 阶段", err=True)
-                gp_expressions = []
+                    seen = set()
+                    for i, expr in enumerate(gp_result.expressions):
+                        norm = _normalize_expr(expr)
+                        if norm in seen:
+                            continue
+                        seen.add(norm)
+                        evaluation = evaluate_expression(
+                            expr, universe=universe, start_date=start_date, end_date=end_date
+                        )
+                        record = FactorRecord(
+                            name=f"gp_factor_{i + 1}",
+                            expression=expr,
+                            hypothesis="GP evolved factor",
+                            category="gp",
+                            universe=universe or "all",
+                            ic_mean=evaluation.ic_mean,
+                            ic_std=evaluation.ic_std,
+                            icir=evaluation.icir,
+                            rank_ic_mean=evaluation.rank_ic_mean,
+                            rank_icir=evaluation.rank_icir,
+                            coverage=evaluation.coverage,
+                            status="passed" if evaluation.passed else "evaluated",
+                            factor_type="single",
+                            metrics_json=metrics_to_json(evaluation.to_dict()),
+                        )
+                        save_factor(record)
+                        typer.echo(f"  入库: {record.name} IC={evaluation.ic_mean:.4f}")
+                except Exception as save_exc:
+                    typer.echo(f"⚠️ GP 因子入库失败: {save_exc}", err=True)
 
         # ── Phase 2: ML 因子合成 (uses GP-discovered factors as additional features) ──
         if not skip_ml:
@@ -1333,7 +1337,7 @@ def ml_run(
             typer.echo("\n" + "=" * 60)
             typer.echo("全流程汇总")
             typer.echo("=" * 60)
-            typer.echo(f"{'模型':<20} {'Test IC':>10} {'向量化收益':>12} {'Sharpe':>8}")
+            typer.echo(f"{'模型':<20} {'Test RankIC':>12} {'向量化收益':>12} {'Sharpe':>8}")
             typer.echo("-" * 52)
             for name, ic, bt in results:
                 typer.echo(f"{name:<20} {ic:>10.4f} {bt.total_return:>11.2f}% {bt.sharpe:>8.2f}")

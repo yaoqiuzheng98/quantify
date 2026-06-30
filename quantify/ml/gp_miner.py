@@ -579,21 +579,23 @@ class GPMiner:
         programs = est._programs[-1]
         programs = [p for p in programs if p is not None]
 
-        # Evaluate ALL programs on train IC first (fast, no val/test needed)
-        # Then take top 100 by re-computed train IC for val/test evaluation
         X_train_np = X_train.to_numpy()
         X_val_np = X_val.to_numpy() if len(X_val) > 0 else None
         X_test_np = X_test.to_numpy()
 
-        # Phase 1: compute train IC for all programs (vectorized execute is fast)
+        # Phase 1: Pre-filter by gplearn's raw_fitness_ (fast, no computation needed)
+        # Then compute accurate train IC only for top 200 to avoid O(n×dates) spearmanr cost
+        programs.sort(key=lambda p: p.raw_fitness_, reverse=True)
+        candidates = programs[:200]
+
         train_ic_list = []
-        for prog in programs:
+        for prog in candidates:
             train_ic_list.append(
                 self._daily_ic(prog.execute(X_train_np), y_train.to_numpy(), dates_train_idx)
             )
 
-        # Sort by re-computed train IC (not raw_fitness_, which may differ)
-        prog_ic = list(zip(programs, train_ic_list))
+        # Sort by re-computed train IC (more accurate than raw_fitness_)
+        prog_ic = list(zip(candidates, train_ic_list))
         prog_ic.sort(key=lambda x: x[1], reverse=True)
 
         # Phase 2: evaluate top 100 by train IC on val/test

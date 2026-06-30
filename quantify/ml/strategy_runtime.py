@@ -25,6 +25,22 @@ from quantify.utils.logger import log
 
 from .qlib_eval import parse_expression
 
+
+def _find_unsupported_ops(node, supported: set[str]) -> set[str]:
+    """Recursively find unsupported operator names in a parsed expression AST."""
+    from .qlib_eval import _Func, _Neg
+
+    unsupported = set()
+    if isinstance(node, _Neg):
+        unsupported |= _find_unsupported_ops(node.expr, supported)
+    elif isinstance(node, _Func):
+        if node.name not in supported:
+            unsupported.add(node.name)
+        for arg in node.args:
+            unsupported |= _find_unsupported_ops(arg, supported)
+    return unsupported
+
+
 # ---------------------------------------------------------------------------
 # Model storage
 # ---------------------------------------------------------------------------
@@ -246,6 +262,40 @@ class RuntimeContext:
 
         # Pre-parse expressions for speed
         self._parsed = [parse_expression(e) for e in self.factor_exprs]
+
+        # Validate operators are supported at runtime (fail fast, not at first rebalance)
+        from .qlib_eval import _UNARY_OPS, _ROLLING_BINARY, _ROLLING_UNARY
+
+        _SUPPORTED = (
+            {
+                "Add",
+                "Sub",
+                "Mul",
+                "Div",
+                "Power",
+                "Gt",
+                "Lt",
+                "And",
+                "Or",
+                "If",
+                "Ref",
+                "Delta",
+                "EMA",
+                "WMA",
+                "Slope",
+                "Resi",
+                "Quantile",
+            }
+            | set(_UNARY_OPS)
+            | set(_ROLLING_UNARY)
+            | set(_ROLLING_BINARY)
+        )
+        for expr, node in zip(self.factor_exprs, self._parsed, strict=False):
+            unsupported = _find_unsupported_ops(node, _SUPPORTED)
+            if unsupported:
+                raise ValueError(
+                    f"因子表达式包含运行时不支持的算子 {unsupported}: {expr}. 支持列表: {sorted(_SUPPORTED)}"
+                )
 
         # Determine which fields are needed
         self._needed_fields = _extract_fields(self.factor_exprs)
