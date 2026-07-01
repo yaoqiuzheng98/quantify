@@ -84,10 +84,30 @@ def _resolve_universe(strategy_source: str, start_date: date, end_date: date) ->
     因此需先把指数(如 000300.XSHG)在 [start, end] 内的成分**并集**预加载进来；
     策略内部仍按调仓日做点到点选股，选股口径不受影响。未用 ``get_index_stocks``
     的策略行为完全不变。
+
+    同理，若策略用了 ``get_all_securities("etf")``（运行时动态取全量 ETF），
+    这里把 ``fund_basic`` 中 ``market='E'`` 且在 [start, end] 内有上市记录的
+    ETF 全量预加载进来，避免引擎因源码无静态代码而报"未解析到标的"。
     """
     codes = _extract_codes_from_source(strategy_source)
+
+    if "get_all_securities" in strategy_source:
+        from quantify.backtest.joinquant import JoinQuantCompat
+
+        compat = JoinQuantCompat()
+        # 用 start_date 作为 point-in-time，取该日仍在上市的 ETF；
+        # 再叠加 end_date 视角（防止 start_date 时尚未上市、但区间内上市的 ETF 漏加载）。
+        pool = set(codes)
+        for d in (start_date, end_date):
+            try:
+                df = compat.get_all_securities("etf", date=d)
+                pool.update(df.index.tolist())
+            except Exception:
+                pass
+        codes = list(pool)
+
     if "get_index_stocks" not in strategy_source:
-        return codes
+        return normalize_codes(codes)
     resolved: list[str] = []
     for code in codes:
         if classify_asset(code) == "index":
