@@ -369,45 +369,85 @@ class JoinQuantCompat:
         }
         return pd.DataFrame(data) if df else data
 
-    def get_all_securities(self, types: str = "etf", date: Any = None) -> list[str]:
-        """JoinQuant-style ``get_all_securities``, returns all securities of the given type.
+    def get_all_securities(self, types: str = "etf", date: Any = None) -> pd.DataFrame:
+        """JoinQuant-style ``get_all_securities``.
+
+        Returns a :class:`pandas.DataFrame` whose **index** is the security code
+        (JoinQuant format ``.XSHG``/``.XSHE``) and whose columns are
+        ``display_name``, ``name``, ``start_date``, ``end_date``, ``type`` —
+        matching the JoinQuant API exactly (no liquidity / listing-age filter).
 
         Parameters
         ----------
         types:
-            Asset class: ``"etf"`` (default).  Only ETF is supported for now.
+            Asset class. Currently supports ``"etf"`` (returns all ETFs in
+            ``fund_basic`` with ``market='E'``) and ``"stock"`` (returns all
+            A-share stocks in ``stock_basic``).
         date:
-            Ignored for now (returns all codes that have data in the local DB).
-
-        Returns
-        -------
-        list[str]
-            Codes in JoinQuant format (``.XSHG`` / ``.XSHE``).
+            Optional date (``datetime``/``date``/``str`` ``YYYY-MM-DD``).
+            When given, only securities listed on or before *date* and not yet
+            delisted (or delisted after *date*) are returned — matching
+            JoinQuant's point-in-time semantics.  When ``None`` all currently
+            listed securities are returned.
         """
-        if types != "etf":
-            raise NotImplementedError(f"get_all_securities only supports 'etf', got {types!r}")
         from quantify.database.engine import session_scope
         from sqlalchemy import text as sa_text
 
-        sql = """
-            SELECT d.ts_code
-            FROM fund_basic b
-            JOIN (
-                SELECT ts_code,
-                       COUNT(*)               AS n,
-                       AVG(amount)            AS avg_amt
-                FROM fund_daily
-                GROUP BY ts_code
-            ) d ON d.ts_code = b.ts_code
-            WHERE b.fund_type = '股票型'
-              AND b.status    = 'L'
-              AND d.n         >= 250
-              AND d.avg_amt   >= 5000
-            ORDER BY d.avg_amt DESC
-        """
+        if isinstance(types, (list, tuple, set)):
+            # JoinQuant accepts a list of types; we union the results.
+            frames = [self.get_all_securities(t, date) for t in types]
+            return pd.concat(frames) if frames else pd.DataFrame(
+                columns=["display_name", "name", "start_date", "end_date", "type"]
+            )
+
+        if date is not None:
+            date_val = pd.Timestamp(date).date()
+        else:
+            date_val = None
+
+        if types == "etf":
+            sql = """
+                SELECT ts_code, name, list_date, delist_date
+                FROM fund_basic
+                WHERE market = 'E'
+            """
+            type_label = "etf"
+        elif types == "stock":
+            sql = """
+                SELECT ts_code, name, list_date, delist_date
+                FROM stock_basic
+            """
+            type_label = "stock"
+        else:
+            raise NotImplementedError(
+                f"get_all_securities only supports 'etf'/'stock', got {types!r}"
+            )
+
         with session_scope() as sess:
             rows = sess.execute(sa_text(sql)).fetchall()
-        return [to_joinquant_code(r[0]) for r in rows]
+
+        codes, records = [], []
+        for ts_code, name, list_date, delist_date in rows:
+            if date_val is not None:
+                if list_date is not None and list_date > date_val:
+                    continue
+                if delist_date is not None and delist_date <= date_val:
+                    continue
+            code = to_joinquant_code(ts_code)
+            codes.append(code)
+            records.append({
+                "display_name": name or "",
+                "name": (name or "").encode("ascii", "ignore").decode() or code.split(".")[0],
+                "start_date": pd.Timestamp(list_date) if list_date else pd.NaT,
+                "end_date": pd.Timestamp(delist_date) if delist_date else pd.NaT,
+                "type": type_label,
+            })
+        df = pd.DataFrame(
+            records,
+            columns=["display_name", "name", "start_date", "end_date", "type"],
+            index=codes,
+        )
+        return df
 
     def get_index_stocks(self, index_symbol: str, date: Any = None) -> list[str]:
         """JoinQuant-style index membership, backed by the ``index_weight`` table.
