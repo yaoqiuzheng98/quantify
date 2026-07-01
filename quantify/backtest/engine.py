@@ -38,37 +38,31 @@ class SplitEvent:
     ratio: float
 
 
-def _group_to_bars(df: pd.DataFrame) -> dict[str, list[Bar]]:
-    """Convert a DataFrame of OHLCV rows into per-code Bar lists.
+def _load_df_into_proxy(df: pd.DataFrame, data_proxy: DataProxy) -> list[str]:
+    """Load an OHLCV DataFrame into DataProxy using fast numpy array conversion.
 
-    The ``split_ratio`` column is precomputed by the data source (NAV-based for
-    ETFs, ``stk_div`` for stocks), so this is a pure structural conversion.
+    Replaces the old ``_group_to_bars`` + ``data_proxy._load`` pair.  Avoids
+    creating any ``Bar`` objects — the DataFrame is split by ``ts_code`` and each
+    group is handed directly to ``DataProxy._load_df`` which converts columns to
+    numpy arrays in one vectorised pass.
+
+    Returns the list of ``ts_code`` values that were loaded (preserving the order
+    they first appear in ``df``).
     """
-    bars: dict[str, list[Bar]] = {}
-    for ts_code, group in df.groupby("ts_code"):
-        bars[ts_code] = [
-            Bar(
-                ts_code=ts_code,
-                date=row.date.date() if hasattr(row.date, "date") else row.date,
-                open=float(row.open),
-                high=float(row.high),
-                low=float(row.low),
-                close=float(row.close),
-                volume=float(row.volume),
-                amount=float(row.amount),
-                pre_close=float(row.pre_close),
-                pct_chg=float(row.pct_chg),
-                adj_factor=float(row.adj_factor),
-                split_ratio=float(row.split_ratio),
-            )
-            for row in group.itertuples(index=False)
-        ]
-    return bars
+    loaded: list[str] = []
+    # Ensure date column is datetime so _load_df can call .dt.date
+    if not pd.api.types.is_datetime64_any_dtype(df["date"]):
+        df = df.copy()
+        df["date"] = pd.to_datetime(df["date"])
+    for ts_code, group in df.groupby("ts_code", sort=False):
+        data_proxy._load_df(str(ts_code), group.reset_index(drop=True))
+        loaded.append(str(ts_code))
+    return loaded
 
 
 def _position_value_at_close(
     portfolio: Portfolio,
-    all_bars: dict[str, list[Bar]],
+    data_proxy: DataProxy,
     next_indices: dict[str, int],
     bar_date: date,
 ) -> float:
@@ -77,15 +71,16 @@ def _position_value_at_close(
     for code, position in portfolio.positions.items():
         if position.amount == 0:
             continue
-        bars = all_bars.get(code, [])
         idx = next_indices.get(code, -1)
         price = position.current_price
         # Only mark to the bar at ``idx`` when it is *today's* bar. If the code
         # has no data on ``bar_date`` (e.g. suspended/missing day), ``idx`` may
         # point at a *future* bar whose close already reflects a share split not
         # yet applied to the holding — using it would distort the equity curve.
-        if 0 <= idx < len(bars) and bars[idx].date == bar_date:
-            price = bars[idx].close
+        if idx >= 0 and data_proxy.get_date(code, idx) == bar_date:
+            arrays = data_proxy._arrays.get(code)
+            if arrays is not None and idx < len(arrays["close"]):
+                price = float(arrays["close"][idx])
         total += position.amount * price
     return total
 
@@ -308,9 +303,10 @@ class BacktestEngine:
 
         log.info(f"Loaded {len(raw_df)} OHLCV rows")
 
-        # 3. Convert to Bar structures
-        all_bars = _group_to_bars(raw_df)
-        log.info(f"  {len(all_bars)} codes with bar data")
+        # 3. Load into DataProxy (fast numpy path — no Bar objects created)
+        data_proxy = DataProxy()
+        all_codes = _load_df_into_proxy(raw_df, data_proxy)
+        log.info(f"  {len(all_codes)} codes with bar data")
 
         dividend_events = self.data_source.load_dividends(self.ts_codes, self.start_date, self.end_date)
         dividends_by_record: dict[date, list[DividendEvent]] = {}
@@ -319,27 +315,27 @@ class BacktestEngine:
             dividends_by_record.setdefault(event.record_date, []).append(event)
             dividends_by_pay.setdefault(event.pay_date, []).append(event)
 
-        # Extract share-split events from bars (split_ratio != 1.0).
+        # Extract share-split events from DataProxy arrays (split_ratio != 1.0).
         split_events: list[SplitEvent] = []
-        for code, bars in all_bars.items():
-            for bar in bars:
-                if abs(bar.split_ratio - 1.0) > 1e-6:
-                    split_events.append(SplitEvent(ts_code=code, ex_date=bar.date, ratio=bar.split_ratio))
+        for code in all_codes:
+            sr_arr = data_proxy._split_ratios.get(code)
+            dates = data_proxy._dates.get(code, [])
+            if sr_arr is not None:
+                for i, ratio in enumerate(sr_arr):
+                    if abs(float(ratio) - 1.0) > 1e-6:
+                        split_events.append(SplitEvent(ts_code=code, ex_date=dates[i], ratio=float(ratio)))
 
-        # 4. Build unified date index (sorted union of all bar dates)
+        # 4. Build unified date index from DataProxy date lists
         unified_dates = sorted(
             {
-                bar.date
-                for bars in all_bars.values()
-                for bar in bars
-                if self.start_date <= bar.date <= self.end_date
+                d
+                for code in all_codes
+                for d in data_proxy._dates.get(code, [])
+                if self.start_date <= d <= self.end_date
             }
         )
 
-        # 5. Set up backtest context
-        data_proxy = DataProxy()
-        for code, bars in all_bars.items():
-            data_proxy._load(code, bars)
+        # 5. Set up backtest context (DataProxy already populated above)
 
         portfolio = Portfolio(initial_cash=self.initial_cash, cash=self.initial_cash)
         broker = Broker(
@@ -385,7 +381,7 @@ class BacktestEngine:
 
         # 7. Main event loop — bar by bar
         equity_records: list[dict] = []
-        next_indices = {code: 0 for code in all_bars}
+        next_indices = {code: 0 for code in all_codes}
         dividend_entitlements: dict[DividendEvent, int] = {}
         dividend_payments: list[DividendPayment] = []
 
@@ -397,16 +393,18 @@ class BacktestEngine:
             context.current_dt = datetime(bar_date.year, bar_date.month, bar_date.day)
             strategy_log.set_date(bar_date.isoformat())
 
-            # Advance data proxy to this date
-            for code, bars in all_bars.items():
+            # Advance data proxy to this date (pointer-chase through sorted date list)
+            for code in all_codes:
+                dates = data_proxy._dates.get(code)  # noqa: SLF001
+                if not dates:
+                    data_proxy._current_idx[code] = -1  # noqa: SLF001
+                    continue
                 idx = next_indices[code]
-                while idx < len(bars) and bars[idx].date < bar_date:
+                n = len(dates)
+                while idx < n and dates[idx] < bar_date:
                     idx += 1
                 next_indices[code] = idx
-                if idx < len(bars) and bars[idx].date == bar_date:
-                    data_proxy._current_idx[code] = idx  # noqa: SLF001
-                else:
-                    data_proxy._current_idx[code] = -1  # noqa: SLF001
+                data_proxy._current_idx[code] = idx if (idx < n and dates[idx] == bar_date) else -1  # noqa: SLF001
 
             # T+1 解锁：新交易日开盘前，把上一日买入而锁定的股数全部释放为可卖。
             # 个股买入时 broker 累加 locked_amount，隔夜即可卖出，符合 A 股 T+1。
@@ -422,11 +420,10 @@ class BacktestEngine:
             for code, pos in list(portfolio.positions.items()):
                 if pos.amount == 0:
                     continue
-                idx = next_indices[code]
-                bars = all_bars.get(code, [])
-                if not (0 <= idx < len(bars) and bars[idx].date == bar_date):
+                idx = next_indices.get(code, -1)
+                if idx < 0 or data_proxy.get_date(code, idx) != bar_date:
                     continue
-                ratio = bars[idx].split_ratio
+                ratio = data_proxy.get_split_ratio(code, idx)
                 if ratio and abs(ratio - 1.0) > 1e-6:
                     pos.amount = int(round(pos.amount * ratio))
                     pos.avg_cost = pos.avg_cost / ratio
@@ -479,7 +476,7 @@ class BacktestEngine:
                     dividend_entitlements[event] = position.amount
 
             # Record daily snapshot
-            position_value = _position_value_at_close(portfolio, all_bars, next_indices, bar_date)
+            position_value = _position_value_at_close(portfolio, data_proxy, next_indices, bar_date)
             equity_records.append(
                 {
                     "date": bar_date,

@@ -369,6 +369,46 @@ class JoinQuantCompat:
         }
         return pd.DataFrame(data) if df else data
 
+    def get_all_securities(self, types: str = "etf", date: Any = None) -> list[str]:
+        """JoinQuant-style ``get_all_securities``, returns all securities of the given type.
+
+        Parameters
+        ----------
+        types:
+            Asset class: ``"etf"`` (default).  Only ETF is supported for now.
+        date:
+            Ignored for now (returns all codes that have data in the local DB).
+
+        Returns
+        -------
+        list[str]
+            Codes in JoinQuant format (``.XSHG`` / ``.XSHE``).
+        """
+        if types != "etf":
+            raise NotImplementedError(f"get_all_securities only supports 'etf', got {types!r}")
+        from quantify.database.engine import session_scope
+        from sqlalchemy import text as sa_text
+
+        sql = """
+            SELECT d.ts_code
+            FROM fund_basic b
+            JOIN (
+                SELECT ts_code,
+                       COUNT(*)               AS n,
+                       AVG(amount)            AS avg_amt
+                FROM fund_daily
+                GROUP BY ts_code
+            ) d ON d.ts_code = b.ts_code
+            WHERE b.fund_type = '股票型'
+              AND b.status    = 'L'
+              AND d.n         >= 250
+              AND d.avg_amt   >= 5000
+            ORDER BY d.avg_amt DESC
+        """
+        with session_scope() as sess:
+            rows = sess.execute(sa_text(sql)).fetchall()
+        return [to_joinquant_code(r[0]) for r in rows]
+
     def get_index_stocks(self, index_symbol: str, date: Any = None) -> list[str]:
         """JoinQuant-style index membership, backed by the ``index_weight`` table.
 
@@ -554,6 +594,7 @@ class JoinQuantCompat:
             "run_weekly": self.run_weekly,
             "run_monthly": self.run_monthly,
             "attribute_history": self.attribute_history,
+            "get_all_securities": self.get_all_securities,
             "get_index_stocks": self.get_index_stocks,
             "get_industry": self.get_industry,
             "get_fundamentals": self.get_fundamentals,

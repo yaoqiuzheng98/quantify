@@ -6,7 +6,15 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
 
+import numpy as np
+import pandas as pd
+
 from .codes import to_tushare_code
+
+# Fields that are price-based and require adj_factor adjustment
+_PRICE_FIELDS = frozenset({"open", "high", "low", "close", "pre_close"})
+# All OHLCV fields stored as numpy arrays
+_ARRAY_FIELDS = ("open", "high", "low", "close", "pre_close", "volume", "amount", "pct_chg")
 
 # ---------------------------------------------------------------------------
 # Portfolio
@@ -166,79 +174,172 @@ class Bar:
 
 
 class DataProxy:
-    """Access current and historical market data within a strategy."""
+    """Access current and historical market data within a strategy.
+
+    Internally stores data as numpy arrays for O(1) slicing in ``history()``,
+    which is the hot path when strategies call ``attribute_history`` on many codes.
+    The old ``list[Bar]`` storage is gone; Bar objects are reconstructed on demand
+    only for ``current()`` (called only on held positions, not on all codes).
+    """
 
     def __init__(self) -> None:
-        self._bars: dict[str, list[Bar]] = {}
+        # Per-code numpy arrays: ts_code -> {field: np.ndarray}
+        self._arrays: dict[str, dict[str, np.ndarray]] = {}
+        # adj_factor array (separate because it's used in every price history call)
+        self._adj: dict[str, np.ndarray] = {}
+        # Date list for each code (used by engine for date-pointer advance)
+        self._dates: dict[str, list[date]] = {}
+        # split_ratio array (used by engine for corporate-action adjustments)
+        self._split_ratios: dict[str, np.ndarray] = {}
+        # ts_code of the Bar object (needed to reconstruct Bar in current())
         self._current_idx: dict[str, int] = {}
 
+    # ------------------------------------------------------------------
+    # Loading
+    # ------------------------------------------------------------------
+
     def _load(self, ts_code: str, bars: list[Bar]) -> None:
+        """Load from a ``list[Bar]`` — kept for backward compatibility."""
         ts_code = to_tushare_code(ts_code)
-        self._bars[ts_code] = bars
+        if not bars:
+            return
+        n = len(bars)
+        arrays: dict[str, np.ndarray] = {}
+        for f in _ARRAY_FIELDS:
+            arrays[f] = np.fromiter((getattr(b, f, 0.0) for b in bars), dtype=np.float64, count=n)
+        self._arrays[ts_code] = arrays
+        self._adj[ts_code] = np.fromiter((b.adj_factor for b in bars), dtype=np.float64, count=n)
+        self._dates[ts_code] = [b.date for b in bars]
+        self._split_ratios[ts_code] = np.fromiter((b.split_ratio for b in bars), dtype=np.float64, count=n)
         self._current_idx[ts_code] = -1
+
+    def _load_df(self, ts_code: str, group: pd.DataFrame) -> None:
+        """Fast load path: build numpy arrays directly from a DataFrame group.
+
+        Skips ``Bar`` object creation entirely — avoids iterating over rows in
+        Python and constructing per-row dataclass instances.  Equivalent to
+        ``_load`` but ~10× faster for large groups.
+        """
+        ts_code = to_tushare_code(ts_code)
+        if group.empty:
+            return
+        n = len(group)
+        arrays: dict[str, np.ndarray] = {}
+        for f in _ARRAY_FIELDS:
+            col = group[f] if f in group.columns else pd.Series(np.zeros(n))
+            arrays[f] = col.to_numpy(dtype=np.float64, na_value=0.0)
+        self._arrays[ts_code] = arrays
+        adj_col = group["adj_factor"] if "adj_factor" in group.columns else pd.Series(np.ones(n))
+        self._adj[ts_code] = adj_col.to_numpy(dtype=np.float64, na_value=1.0)
+        # dates: convert once to Python date objects (engine uses them for pointer advance)
+        self._dates[ts_code] = group["date"].dt.date.tolist()
+        split_col = group["split_ratio"] if "split_ratio" in group.columns else pd.Series(np.ones(n))
+        self._split_ratios[ts_code] = split_col.to_numpy(dtype=np.float64, na_value=1.0)
+        self._current_idx[ts_code] = -1
+
+    # ------------------------------------------------------------------
+    # Engine interface
+    # ------------------------------------------------------------------
 
     def _advance(self, ts_code: str) -> None:
         ts_code = to_tushare_code(ts_code)
         if ts_code in self._current_idx:
             self._current_idx[ts_code] += 1
 
+    def get_date(self, ts_code: str, idx: int) -> date | None:
+        """Return the date at position ``idx`` for ``ts_code``."""
+        dates = self._dates.get(ts_code)
+        if dates is None or idx < 0 or idx >= len(dates):
+            return None
+        return dates[idx]
+
+    def get_split_ratio(self, ts_code: str, idx: int) -> float:
+        """Return the split_ratio at position ``idx`` for ``ts_code``."""
+        sr = self._split_ratios.get(ts_code)
+        if sr is None or idx < 0 or idx >= len(sr):
+            return 1.0
+        return float(sr[idx])
+
+    def code_count(self, ts_code: str) -> int:
+        """Total number of bars loaded for ``ts_code``."""
+        dates = self._dates.get(ts_code)
+        return len(dates) if dates else 0
+
+    # ------------------------------------------------------------------
+    # Strategy interface
+    # ------------------------------------------------------------------
+
     def current(self, ts_code: str, field: str | None = None) -> float | Bar | None:
         ts_code = to_tushare_code(ts_code)
-        bars = self._bars.get(ts_code, [])
         idx = self._current_idx.get(ts_code, -1)
-        if idx < 0 or idx >= len(bars):
+        arrays = self._arrays.get(ts_code)
+        if idx < 0 or arrays is None:
             return None
-        bar = bars[idx]
+        n = len(next(iter(arrays.values())))
+        if idx >= n:
+            return None
         # Strategy code runs at the open: only the open price is known for the current bar.
+        open_price = float(arrays["open"][idx])
+        pre_close = float(arrays["pre_close"][idx])
+        bar_date = self._dates[ts_code][idx] if self._dates.get(ts_code) else None
         visible_bar = Bar(
-            ts_code=bar.ts_code,
-            date=bar.date,
-            open=bar.open,
-            high=bar.open,
-            low=bar.open,
-            close=bar.open,
+            ts_code=ts_code,
+            date=bar_date,
+            open=open_price,
+            high=open_price,
+            low=open_price,
+            close=open_price,
             volume=0.0,
             amount=0.0,
-            pre_close=bar.pre_close,
+            pre_close=pre_close,
             pct_chg=0.0,
         )
         if field is None:
             return visible_bar
         return getattr(visible_bar, field, None)
 
-    def history(self, ts_code: str, count: int, field: str = "close") -> list[float]:
+    def history(self, ts_code: str, count: int, field: str = "close") -> np.ndarray:
+        """Return up to ``count`` historical bars of ``field``, front-adjusted.
+
+        Returns a numpy array (compatible with ``pd.DataFrame`` and standard
+        pandas/numpy operations).  The hot path uses O(1) array slicing instead
+        of the old O(count) Python loop with ``getattr``.
+        """
         ts_code = to_tushare_code(ts_code)
-        bars = self._bars.get(ts_code, [])
         idx = self._current_idx.get(ts_code, -1)
-        if idx < 0 or idx >= len(bars):
-            return []
-        end = idx - 1
+        arrays = self._arrays.get(ts_code)
+        if idx < 0 or arrays is None:
+            return np.array([], dtype=np.float64)
+        end = idx - 1  # history is up to yesterday (strategy runs at open)
         if end < 0:
-            return []
+            return np.array([], dtype=np.float64)
         start = max(0, end - count + 1)
+
+        arr = arrays.get(field)
+        if arr is None:
+            return np.array([], dtype=np.float64)
+
+        slice_ = arr[start : end + 1]
 
         # Price fields are front-adjusted (前复权) to the current bar's basis so
         # that dividend/ex-rights gaps don't create spurious returns — matching
         # JoinQuant's ``attribute_history`` under ``use_real_price=True``.
-        # Non-price fields (volume/amount/pct_chg) are returned as-is.
-        price_fields = {"open", "high", "low", "close", "pre_close"}
-        if field not in price_fields:
-            return [getattr(bars[i], field, 0.0) for i in range(start, end + 1)]
+        if field in _PRICE_FIELDS:
+            adj = self._adj.get(ts_code)
+            if adj is not None and idx < len(adj):
+                base_factor = adj[idx]
+                if base_factor <= 0.0:
+                    base_factor = 1.0
+                slice_ = slice_ * adj[start : end + 1] / base_factor
 
-        base_factor = getattr(bars[idx], "adj_factor", 1.0) or 1.0
-        out: list[float] = []
-        for i in range(start, end + 1):
-            raw = getattr(bars[i], field, 0.0)
-            factor = getattr(bars[i], "adj_factor", 1.0) or 1.0
-            out.append(raw * factor / base_factor)
-        return out
+        return slice_
 
     @property
     def today(self) -> date | None:
-        for code, bars in self._bars.items():
-            idx = self._current_idx.get(code, -1)
-            if 0 <= idx < len(bars):
-                return bars[idx].date
+        for code, idx in self._current_idx.items():
+            dates = self._dates.get(code)
+            if dates and 0 <= idx < len(dates):
+                return dates[idx]
         return None
 
 

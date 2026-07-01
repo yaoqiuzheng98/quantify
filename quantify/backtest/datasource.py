@@ -22,6 +22,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import date
 
+import numpy as np
 import pandas as pd
 from sqlalchemy import select
 
@@ -106,7 +107,7 @@ class MarketDataSource(ABC):
 def _compute_split_ratios_from_nav(
     group: pd.DataFrame,
     div_map: dict[str, float] | None = None,
-) -> list[float]:
+) -> np.ndarray:
     """Per-bar ETF share-split ratios for one code (1.0 on non-split days).
 
     On an ex-date, ``adj_factor`` jumps. The jump conflates cash dividends and
@@ -122,52 +123,46 @@ def _compute_split_ratios_from_nav(
 
     The ``div_map`` maps ``ex_date`` strings to per-share ``div_cash``. Falls back
     to **1.0** when the residual is within ±0.5 % of 1.0 (noise).
+
+    Vectorised numpy implementation — replaces the old row-by-row Python loop.
     """
+    _NOISE = 0.005
     n = len(group)
-    ratios = [1.0] * n
-    adj = group["adj_factor"].tolist()
-    close = group["close"].tolist()
-    dates = group["date"].tolist()
-    unit = group["unit_nav"].tolist() if "unit_nav" in group.columns else [None] * n
-    accum = group["accum_nav"].tolist() if "accum_nav" in group.columns else [None] * n
+    ratios = np.ones(n, dtype=np.float64)
+    if n < 2:
+        return ratios
 
-    _NOISE_THRESHOLD = 0.005
+    adj = pd.to_numeric(group["adj_factor"], errors="coerce").fillna(1.0).to_numpy(dtype=np.float64)
+    close_arr = pd.to_numeric(group["close"], errors="coerce").fillna(0.0).to_numpy(dtype=np.float64)
 
-    def _au(i: int) -> float | None:
-        try:
-            u = float(unit[i])
-            a = float(accum[i])
-        except (TypeError, ValueError):
-            return None
-        if not (u > 0) or not (a > 0):
-            return None
-        return a / u
+    # Vectorised adj_ratio: cur / prev (shift by 1)
+    prev_adj = adj[:-1]
+    cur_adj = adj[1:]
+    # Mask rows where adj_factor actually jumped (and prev > 0)
+    jump_mask = (prev_adj > 0) & (np.abs(cur_adj - prev_adj) >= 1e-9)
+    adj_ratios = np.where(prev_adj > 0, cur_adj / np.where(prev_adj > 0, prev_adj, 1.0), 1.0)
 
-    for i in range(1, n):
-        prev_adj = float(adj[i - 1]) if adj[i - 1] else 1.0
-        cur_adj = float(adj[i]) if adj[i] else 1.0
-        if prev_adj <= 0 or abs(cur_adj - prev_adj) < 1e-9:
-            continue
-        adj_ratio = cur_adj / prev_adj
+    if div_map:
+        # Only process rows with dividends (sparse — usually very few)
+        dates = group["date"].dt.strftime("%Y-%m-%d").tolist()
+        for i in np.where(jump_mask)[0]:
+            real_i = int(i) + 1  # offset: adj_ratios[i] corresponds to group row i+1
+            date_str = dates[real_i]
+            div_cash = div_map.get(date_str, 0.0)
+            if div_cash > 0:
+                prev_close = close_arr[real_i - 1]
+                if prev_close > 0:
+                    dividend_ratio = prev_close / (prev_close - div_cash)
+                    ratio = adj_ratios[i] / dividend_ratio
+                else:
+                    ratio = 1.0
+                adj_ratios[i] = ratio
+        # Re-apply noise filter
+        valid = jump_mask & (adj_ratios > 0) & (np.abs(adj_ratios - 1.0) > _NOISE)
+    else:
+        valid = jump_mask & (adj_ratios > 0) & (np.abs(adj_ratios - 1.0) > _NOISE)
 
-        # Check for a cash dividend on this date.
-        date_str = str(dates[i])[:10] if dates[i] is not None else ""
-        div_cash = (div_map or {}).get(date_str, 0.0)
-
-        if div_cash > 0:
-            prev_close = float(close[i - 1]) if close[i - 1] and close[i - 1] > 0 else 0.0
-            if prev_close > 0:
-                dividend_ratio = prev_close / (prev_close - div_cash)
-                ratio = adj_ratio / dividend_ratio
-            else:
-                ratio = 1.0
-        else:
-            # No dividend → any adj_factor jump is a pure share split.
-            # adj_factor ratio matches JQ's behavior (includes ex-date market move).
-            ratio = adj_ratio
-
-        if ratio > 0 and abs(ratio - 1.0) > _NOISE_THRESHOLD:
-            ratios[i] = ratio
+    ratios[1:] = np.where(valid, adj_ratios, 1.0)
     return ratios
 
 
