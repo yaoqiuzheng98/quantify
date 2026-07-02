@@ -119,8 +119,18 @@ def _select_factors(
     max_factors: int,
     min_icir: float,
 ) -> list[FactorRecord]:
-    """Pick top factors by |ICIR|, respecting the min_icir floor."""
-    eligible = [f for f in factors if f.icir is not None and abs(f.icir) >= min_icir]
+    """Pick top factors by |ICIR|, respecting the min_icir floor.
+
+    Only ``factor_type='single'`` factors are eligible — composed factors have
+    placeholder expressions (``COMPOSED(...)``) that cannot be evaluated by Qlib.
+    """
+    eligible = [
+        f
+        for f in factors
+        if f.icir is not None
+        and abs(f.icir) >= min_icir
+        and (f.factor_type is None or f.factor_type == "single")
+    ]
     eligible.sort(key=lambda f: abs(f.icir or 0), reverse=True)
     return eligible[:max_factors]
 
