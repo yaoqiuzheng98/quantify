@@ -29,6 +29,7 @@ from sqlalchemy import select
 from quantify.database.engine import session_scope
 from quantify.database.models import (
     AdjFactor,
+    DailyBasic,
     EtfAdjFactor,
     EtfDaily,
     EtfDividend,
@@ -53,6 +54,7 @@ OHLCV_COLUMNS = [
     "pct_chg",
     "adj_factor",
     "split_ratio",
+    "turnover_rate",
 ]
 
 
@@ -84,6 +86,9 @@ def _finalize_ohlcv(df: pd.DataFrame) -> pd.DataFrame:
     if "split_ratio" not in df.columns:
         df["split_ratio"] = 1.0
     df["split_ratio"] = pd.to_numeric(df["split_ratio"], errors="coerce").fillna(1.0)
+    if "turnover_rate" not in df.columns:
+        df["turnover_rate"] = 0.0
+    df["turnover_rate"] = pd.to_numeric(df["turnover_rate"], errors="coerce").fillna(0.0)
     df = df.sort_values(["ts_code", "date"]).reset_index(drop=True)
     return df[OHLCV_COLUMNS]
 
@@ -357,12 +362,18 @@ class StockDataSource(MarketDataSource):
                     StockDaily.amount,
                     StockDaily.pre_close,
                     StockDaily.pct_chg,
+                    DailyBasic.turnover_rate,
                     AdjFactor.adj_factor,
                 )
                 .outerjoin(
                     AdjFactor,
                     (AdjFactor.ts_code == StockDaily.ts_code)
                     & (AdjFactor.trade_date == StockDaily.trade_date),
+                )
+                .outerjoin(
+                    DailyBasic,
+                    (DailyBasic.ts_code == StockDaily.ts_code)
+                    & (DailyBasic.trade_date == StockDaily.trade_date),
                 )
                 .where(StockDaily.ts_code.in_(ts_codes))
                 .where(StockDaily.trade_date >= start_str)
@@ -384,6 +395,7 @@ class StockDataSource(MarketDataSource):
                 "amount",
                 "pre_close",
                 "pct_chg",
+                "turnover_rate",
                 "adj_factor",
             ],
         )
