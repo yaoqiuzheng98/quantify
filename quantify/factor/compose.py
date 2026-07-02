@@ -20,6 +20,7 @@ Flow
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -49,6 +50,7 @@ class ComposeConfig:
     commission_rate: float = 0.0005  # 0.05% per side
     slippage_rate: float = 0.001  # 0.1% per side
     stamp_duty_rate: float = 0.0005  # 0.05% sell-side only
+    save_to_db: bool = True  # save composite factor + strategy to DB
 
 
 @dataclass
@@ -430,7 +432,113 @@ def compose_factors(config: ComposeConfig | None = None) -> ComposeResult:
         f"夏普={m.get('sharpe', 0):.3f}  最大回撤={m.get('max_drawdown', 0):.2%}  "
         f"日胜率={m.get('win_rate', 0):.2%}"
     )
+
+    # 8. Save composite factor + generate strategy (if --save)
+    if getattr(config, "save_to_db", False):
+        _save_compose_result(selected, weights, config, result, score)
+
     return result
+
+
+def _save_compose_result(
+    selected: list[FactorRecord],
+    weights: dict[str, float],
+    config: ComposeConfig,
+    result: ComposeResult,
+    score: pd.DataFrame,
+) -> None:
+    """Save the composite factor to factor_library and a strategy to strategy table."""
+    import hashlib
+    import json as _json
+
+    from quantify.database.factor_store import FactorRecord as FR, save_factor, update_backtest_metrics
+    from quantify.database.strategy_store import save_strategy
+    from quantify.factor.expr_codegen import CodegenError
+
+    # Evaluate the composite factor IC/ICIR from the score panel
+    eval_metrics = _evaluate_composite_panel(
+        score, config.universe, config.start_date, config.end_date
+    )
+
+    parent_ids = ",".join(str(f.id) for f in selected if f.id is not None)
+    comp_name = f"composed_stats_{hashlib.sha1(parent_ids.encode()).hexdigest()[:6]}"
+    universe_str = config.universe if isinstance(config.universe, str) else "custom"
+
+    # Save composite factor
+    comp_record = FR(
+        name=comp_name,
+        expression=f"COMPOSED({parent_ids}, {config.weight})",
+        hypothesis=f"Statistical composition of {len(selected)} single factors via {config.weight} weighting",
+        category="composed",
+        universe=universe_str,
+        start_date=config.start_date,
+        end_date=config.end_date,
+        periods="1,5,10",
+        ic_mean=eval_metrics.get("ic_mean"),
+        ic_std=eval_metrics.get("ic_std"),
+        icir=eval_metrics.get("icir"),
+        rank_ic_mean=eval_metrics.get("rank_ic_mean"),
+        rank_icir=eval_metrics.get("rank_icir"),
+        coverage=None,
+        status="composed",
+        factor_type="composed",
+        parent_factor_ids=parent_ids,
+        metrics_json=_json.dumps(eval_metrics, default=str),
+    )
+    saved_factor = save_factor(comp_record)
+    log.info(f"  ✓ 合成因子入库: [{saved_factor.id}] {comp_name}  IC={eval_metrics.get('ic_mean', 'NA')}  IR={eval_metrics.get('icir', 'NA')}")
+
+    # Generate strategy source
+    try:
+        strategy_source = _generate_compose_strategy_source(selected, weights, config)
+    except CodegenError as e:
+        log.warning(f"  策略生成失败（表达式转换不支持）: {e}")
+        return
+
+    # Run backtest with the real engine
+    from quantify.backtest.engine import BacktestEngine
+    from quantify.backtest.universe import index_constituents_union
+
+    universe_str_cfg = config.universe if isinstance(config.universe, str) else "000300.SH"
+    bt_codes = index_constituents_union(universe_str_cfg, config.start_date, config.end_date)
+
+    bt_metrics: dict = {}
+    try:
+        eng = BacktestEngine(
+            strategy_source=strategy_source,
+            ts_codes=bt_codes,
+            start_date=config.start_date,
+            end_date=config.end_date,
+            initial_cash=1_000_000,
+            benchmark_code=universe_str_cfg,
+        )
+        bt_result = eng.run()
+        bt_metrics = {
+            "total_return_pct": bt_result.metrics.total_return_pct,
+            "annual_return_pct": bt_result.metrics.annual_return_pct,
+            "max_drawdown_pct": bt_result.metrics.max_drawdown_pct,
+            "sharpe_ratio": getattr(bt_result.metrics, "sharpe_ratio", 0),
+            "trade_count": bt_result.metrics.trade_count,
+        }
+        log.info(
+            f"  ✓ 策略回测: 总收益={bt_metrics['total_return_pct']:.2f}%  "
+            f"年化={bt_metrics['annual_return_pct']:.2f}%  回撤={bt_metrics['max_drawdown_pct']:.2f}%"
+        )
+    except Exception as e:
+        log.warning(f"  策略回测失败: {e}")
+
+    # Save strategy
+    factor_summary = ", ".join(f"{f.name}(w={weights.get(f.expression, 0):.3f})" for f in selected)
+    saved_strategy = save_strategy(
+        name=f"factor_compose_{comp_name}",
+        source=strategy_source,
+        description=f"factor compose 统计合成策略：{len(selected)}因子{config.weight}加权，"
+        f"选top-{config.top_n}，{config.rebalance_freq}日调仓。因子: {factor_summary}",
+    )
+    log.info(f"  ✓ 策略入库: #{saved_strategy.id} factor_compose_{comp_name}")
+
+    # Link strategy back to factor
+    update_backtest_metrics(saved_factor.id, saved_strategy.id, _json.dumps(bt_metrics, default=str))
 
 
 # ---------------------------------------------------------------------------
@@ -629,3 +737,221 @@ def _evaluate_composite_panel(
         "rank_icir": rank_icir,
         "n_days": len(ic_arr),
     }
+
+
+# ---------------------------------------------------------------------------
+# Strategy source generation (no LLM — pure codegen from factor expressions)
+# ---------------------------------------------------------------------------
+
+
+def _generate_compose_strategy_source(
+    selected: list[FactorRecord],
+    weights: dict[str, float],
+    config: ComposeConfig,
+) -> str:
+    """Generate a JoinQuant-format strategy source string from the selected factors.
+
+    Each factor's Qlib expression is translated to Python (numpy) code via
+    :mod:`quantify.factor.expr_codegen`. The strategy computes all factor
+    values per stock, cross-sectional z-scores them, aligns direction with
+    ``sign(ic_mean)``, weight-combines, and picks top-N stocks.
+    """
+    from quantify.factor.expr_codegen import HELPER_FUNCS, CodegenError, expression_to_python
+
+    universe_str = config.universe if isinstance(config.universe, str) else "000300.SH"
+    jq_index = universe_str.replace(".SH", ".XSHG").replace(".SZ", ".XSHE")
+
+    # Qlib field name → Python variable name in the strategy
+    # ($open → "open" in codegen, but "open" is a Python builtin → use "open_")
+    FIELD_TO_VAR = {
+        "close": "close",
+        "open": "open_",
+        "high": "high",
+        "low": "low",
+        "volume": "volume",
+        "amount": "amount",
+        "turnover_rate": "turnover_rate",
+        "turn": "turnover_rate",   # Qlib uses $turn, our DB uses turnover_rate
+        "vwap": "vwap",
+    }
+
+    # Determine which fields are needed
+    needed_fields: set[str] = set()
+    factor_snippets: list[str] = []
+    factor_weights: list[float] = []
+    factor_directions: list[bool] = []
+
+    for i, fac in enumerate(selected):
+        expr = fac.expression
+        try:
+            py_expr = expression_to_python(expr)
+        except CodegenError as e:
+            log.warning(f"  因子 {fac.name} 无法转换: {e}，跳过")
+            continue
+
+        # Replace field names: Qlib uses $turn → codegen produces "turn",
+        # but our variable is "turnover_rate". Also "open" → "open_".
+        for qlib_field, var_name in FIELD_TO_VAR.items():
+            if qlib_field != var_name:
+                # Word-boundary replace to avoid partial matches (e.g. "open" in "open_")
+                py_expr = re.sub(rf'\b{re.escape(qlib_field)}\b', var_name, py_expr)
+
+        # Detect fields needed for attribute_history
+        for fld in FIELD_TO_VAR.values():
+            if fld in py_expr:
+                needed_fields.add(fld)
+
+        w = weights.get(fac.expression, 0.0)
+        direction = (fac.ic_mean or 0) >= 0  # True = keep, False = flip
+
+        # The expression produces a numpy array (rolling window per bar).
+        # We only need the latest value (last element) for today's signal.
+        factor_snippets.append(f'            f{i}_arr = {py_expr}\n            f{i} = f{i}_arr[-1] if f{i}_arr is not None and len(f{i}_arr) > 0 and not np.isnan(f{i}_arr[-1]) else np.nan')
+        factor_weights.append(w)
+        factor_directions.append(direction)
+
+    if not factor_snippets:
+        raise CodegenError("No factor could be translated to Python code")
+
+    # Build field list for attribute_history — map variable names back to field names
+    # For attribute_history, field names must match the engine's field names
+    ATTR_FIELD_MAP = {
+        "close": "close",
+        "open_": "open",
+        "high": "high",
+        "low": "low",
+        "volume": "volume",
+        "amount": "amount",
+        "turnover_rate": "turnover_rate",
+        "vwap": "vwap",
+    }
+    fields_list = sorted(needed_fields, key=lambda f: list(ATTR_FIELD_MAP.keys()).index(f))
+    fields_str = ", ".join(f'"{ATTR_FIELD_MAP[f]}"' for f in fields_list)
+
+    # Determine lookback: max window in expressions + buffer
+    # Default to 30 which covers most rolling windows
+    lookback = 30
+
+    weights_list_str = repr(factor_weights)
+    directions_list_str = repr(factor_directions)
+    n_factors = len(factor_snippets)
+
+    strategy = f'''from jqdata import *
+import builtins
+sum = builtins.sum
+max = builtins.max
+min = builtins.min
+abs = builtins.abs
+round = builtins.round
+import numpy as np
+import pandas as pd
+{HELPER_FUNCS}
+
+
+def initialize(context):
+    set_option("use_real_price", True)
+    set_option("avoid_future_data", True)
+    set_benchmark("{jq_index}")
+    set_order_cost(OrderCost(
+        open_tax=0, close_tax=0,
+        open_commission=0.0003, close_commission=0.0003,
+        min_commission=0.5,
+    ), type="stock")
+    set_slippage(PriceRelatedSlippage(0.002))
+
+    context.top_n = {config.top_n}
+    context.rebalance_days = {config.rebalance_freq}
+    context.day_count = 0
+    context.weights = {weights_list_str}
+    context.directions = {directions_list_str}
+    context.n_factors = {n_factors}
+    context.lookback = {lookback}
+
+    run_daily(rebalance, time="open")
+
+
+def _zscore(x):
+    mean = np.mean(x)
+    std = np.std(x, ddof=1)
+    if std == 0:
+        return np.zeros_like(x)
+    return (x - mean) / std
+
+
+def rebalance(context):
+    context.day_count += 1
+    if context.day_count % context.rebalance_days != 0:
+        return
+
+    stocks = get_index_stocks("{jq_index}")
+    if not stocks:
+        log.warning(f"{{context.current_dt.date()}} 股票池为空")
+        return
+
+    fields = [{fields_str}]
+    factor_data = [dict() for _ in range(context.n_factors)]
+
+    for code in stocks:
+        try:
+            attr = attribute_history(code, context.lookback, "1d", fields)
+            if len(attr) < context.lookback:
+                continue
+
+            close = attr["close"].values.astype(float) if "close" in fields else None
+            open_ = attr["open"].values.astype(float) if "open" in fields else None
+            high = attr["high"].values.astype(float) if "high" in fields else None
+            low = attr["low"].values.astype(float) if "low" in fields else None
+            volume = attr["volume"].values.astype(float) if "volume" in fields else None
+            amount = attr["amount"].values.astype(float) if "amount" in fields else None
+            turnover_rate = attr["turnover_rate"].values.astype(float) if "turnover_rate" in fields else None
+            vwap = attr["vwap"].values.astype(float) if "vwap" in fields else None
+
+{chr(10).join(factor_snippets)}
+
+            vals = [{", ".join(f"f{i}" for i in range(n_factors))}]
+            for i, val in enumerate(vals):
+                if val is not None and not np.isnan(val) and not np.isinf(val):
+                    factor_data[i][code] = val
+
+        except Exception:
+            continue
+
+    # Intersection of stocks with all factor values
+    valid = set(factor_data[0].keys())
+    for i in range(1, context.n_factors):
+        valid &= set(factor_data[i].keys())
+    if len(valid) < context.top_n:
+        log.warning(f"{{context.current_dt.date()}} 有效股票不足: {{len(valid)}}")
+        return
+
+    codes_list = list(valid)
+    n = len(codes_list)
+
+    # Cross-sectional z-score + direction align + weight-combine
+    composite = np.zeros(n)
+    for i in range(context.n_factors):
+        arr = np.array([factor_data[i][c] for c in codes_list])
+        z = _zscore(arr)
+        if not context.directions[i]:
+            z = -z
+        composite += context.weights[i] * z
+
+    # Select top-N
+    sorted_idx = np.argsort(-composite)
+    target = set()
+    for i in range(min(context.top_n, n)):
+        target.add(codes_list[sorted_idx[i]])
+
+    log.info(f"{{context.current_dt.date()}} 有效={{n}} 持仓={{len(target)}}")
+
+    # Rebalance: sell first, then buy
+    for code in list(context.portfolio.positions.keys()):
+        if code not in target:
+            order_target_value(code, 0)
+    if target:
+        weight = context.portfolio.total_value / len(target) * 0.95
+        for code in target:
+            order_target_value(code, weight)
+'''
+    return strategy
+

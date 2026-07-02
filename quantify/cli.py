@@ -896,7 +896,7 @@ def factor_compose(
     max_corr: float = typer.Option(0.7, "--max-corr", help="因子间最大允许相关性"),
     export: Optional[str] = typer.Option(None, "--export", help="导出持仓矩阵到 CSV 路径"),
 ) -> None:
-    """从因子库选因子合成组合并做简单回测。"""
+    """从因子库选因子合成组合并做简单回测，自动入库因子+策略。"""
     from quantify.factor.compose import ComposeConfig, compose_factors
 
     config = ComposeConfig(
