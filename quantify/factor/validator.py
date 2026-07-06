@@ -67,12 +67,17 @@ QLIB_OPERATORS: frozenset[str] = frozenset(
         # pair rolling (two series, window)
         "Corr",
         "Cov",
-        # NOTE: Qlib evaluates each instrument's series independently, so there are
-        # NO cross-sectional operators (e.g. CSRank/CSZScore) — they are not in
-        # qlib.data.ops and fail at eval. Cross-sectional scoring is handled
-        # downstream by the evaluator (per-day IC/RankIC), which is invariant to
-        # per-day rank/affine transforms anyway, so wrapping is both impossible
-        # here and pointless for the metrics. Do not re-add them to this allowlist.
+        # cross-sectional operators (NOT native Qlib — handled in Python by
+        # the evaluator after Qlib computes the inner expression per-stock).
+        # CSRank:  daily cross-sectional percentile rank (0..1) across stocks.
+        # CSZScore: daily cross-sectional z-score ((value - mean) / std).
+        # Neu:     industry-neutralize (subtract SW L1 industry mean per day).
+        # These must be the OUTERMOST operator — Qlib evaluates the inner
+        # expression per-stock, then the evaluator applies the cross-sectional
+        # transform on the (date, asset) panel in Python.
+        "CSRank",
+        "CSZScore",
+        "Neu",
     }
 )
 

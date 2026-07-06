@@ -13,6 +13,12 @@ Supported operators (subset of Qlib):
   - Pair rolling: Corr, Cov
   - Conditional: If
 
+Cross-sectional operators (CSRank, CSZScore, Neu) are NOT supported here
+because they require all stocks' data simultaneously — they cannot be
+computed per-stock.  When a cross-sectional expression is encountered,
+``expression_to_python`` raises ``CodegenError`` with a message indicating
+that the caller should use the cross-sectional strategy path instead.
+
 Unsupported operators raise ``CodegenError`` so the caller can skip the factor.
 """
 
@@ -47,7 +53,7 @@ def _tokenize(expr: str) -> list[tuple[str, str]]:
     while pos < len(expr):
         m = _TOKEN_RE.match(expr, pos)
         if not m:
-            raise CodegenError(f"Cannot tokenize at position {pos}: {expr[pos:pos+20]}")
+            raise CodegenError(f"Cannot tokenize at position {pos}: {expr[pos : pos + 20]}")
         kind = m.lastgroup
         val = m.group()
         if kind != "WS":
@@ -85,7 +91,7 @@ class _Parser:
     def parse(self) -> tuple:
         node = self._parse_expr()
         if self.pos != len(self.tokens):
-            raise CodegenError(f"Trailing tokens at {self.pos}: {self.tokens[self.pos:]}")
+            raise CodegenError(f"Trailing tokens at {self.pos}: {self.tokens[self.pos :]}")
         return node
 
     def _parse_expr(self) -> tuple:
@@ -129,9 +135,21 @@ class _Parser:
 
 # Binary operators that map to Python infix
 _BINOP_MAP = {
-    "Add": "+", "Sub": "-", "Mul": "*", "Div": "/", "Power": "**",
-    "Greater": ">", "Less": "<", "Gt": ">", "Ge": ">=", "Lt": "<",
-    "Le": "<=", "Eq": "==", "Ne": "!=", "And": "&", "Or": "|",
+    "Add": "+",
+    "Sub": "-",
+    "Mul": "*",
+    "Div": "/",
+    "Power": "**",
+    "Greater": ">",
+    "Less": "<",
+    "Gt": ">",
+    "Ge": ">=",
+    "Lt": "<",
+    "Le": "<=",
+    "Eq": "==",
+    "Ne": "!=",
+    "And": "&",
+    "Or": "|",
 }
 
 # Rolling operators: (python_func_name, n_args, window_is_last_arg)
@@ -159,12 +177,15 @@ _ROLLING_OPS = {
 }
 
 _PAIR_OPS = {
-    "Corr": ("_rolling_corr", 3, True),   # Corr(x, y, N)
+    "Corr": ("_rolling_corr", 3, True),  # Corr(x, y, N)
     "Cov": ("_rolling_cov", 3, True),
 }
 
 _UNARY_OPS = {
-    "Abs": "np.abs", "Sign": "np.sign", "Log": "np.log", "Not": "~",
+    "Abs": "np.abs",
+    "Sign": "np.sign",
+    "Log": "np.log",
+    "Not": "~",
 }
 
 
@@ -239,6 +260,13 @@ def _ast_to_py(node: tuple) -> str:
             window = _ast_to_py(args[2])
             return f"{py_func}({x}, {y}, {window})"
 
+        # Cross-sectional operators — cannot be computed per-stock
+        if name in ("CSRank", "CSZScore", "Neu"):
+            raise CodegenError(
+                f"截面算子 {name} 不能逐只股票计算，需要整个股票池的因子值一起做截面变换。"
+                f"请在策略中对所有股票的因子值用 pandas 做截面操作（rank/zscore/行业中性化）。"
+            )
+
         raise CodegenError(f"Unsupported operator: {name}")
 
     raise CodegenError(f"Unknown AST node: {node}")
@@ -277,13 +305,50 @@ def expression_to_python(expr: str) -> str:
     ``low``, ``volume``, ``amount``, ``turnover_rate`` (numpy arrays) and
     helper functions ``_ref``, ``_rolling_mean``, etc.
 
-    Raises ``CodegenError`` if the expression cannot be translated.
+    Raises ``CodegenError`` if the expression cannot be translated
+    (including cross-sectional operators — use :func:`strip_cross_sectional`
+    first to extract the inner expression).
     """
     tokens = _tokenize(expr)
     parser = _Parser(tokens)
     ast = parser.parse()
     ast = _transform_binops(ast)
     return _ast_to_py(ast)
+
+
+# ── Cross-sectional helpers ────────────────────────────────────────────────
+
+_CROSS_SECTIONAL_OPS = ("CSRank", "CSZScore", "Neu")
+
+
+def is_cross_sectional(expr: str) -> bool:
+    """Return True if *expr* is wrapped in a cross-sectional operator."""
+    expr = expr.strip()
+    return any(expr.startswith(f"{op}(") and expr.endswith(")") for op in _CROSS_SECTIONAL_OPS)
+
+
+def strip_cross_sectional(expr: str) -> tuple[str, str | None]:
+    """If *expr* is wrapped in CSRank/CSZScore/Neu, return (inner, op_name).
+
+    Otherwise return (expr, None).  Only strips the OUTERMOST wrapper.
+    """
+    expr = expr.strip()
+    for op in _CROSS_SECTIONAL_OPS:
+        if expr.startswith(f"{op}(") and expr.endswith(")"):
+            # Verify the outer paren matches the last char
+            depth = 0
+            for i, ch in enumerate(expr):
+                if ch == "(":
+                    depth += 1
+                elif ch == ")":
+                    depth -= 1
+                    if depth == 0 and i != len(expr) - 1:
+                        break
+            else:
+                inner = expr[len(op) + 1 : -1].strip()
+                if inner:
+                    return inner, op
+    return expr, None
 
 
 # ── Helper function source code (to be included in generated strategy) ────

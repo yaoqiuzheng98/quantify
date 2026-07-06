@@ -51,9 +51,31 @@ _SYSTEM_PROMPT = """你是一名顶尖的量化研究员，精通 Qlib 因子表
   - 双序列+窗口 `Op($x, $y, N)`: **仅 Corr、Cov** 两个
   - 三参数: `If($cond, $a, $b)`、`Quantile($x, N, qscore)`
 
+# ⭐ 截面算子（重要！强烈推荐使用）
+除了上述时序算子，系统还支持三个**截面算子**，用于在横截面上（同一天所有股票之间）做变换。
+截面算子**必须是最外层**，包裹一个完整的时序表达式：
+
+- `CSRank(expr)` — 截面百分位排名：将 expr 的值在当天所有股票中排名，归一化到 0~1。**对异常值鲁棒，强烈推荐用于截面选股。**
+  - 示例: `CSRank(Mean($close, 5) / Mean($close, 20))` — 截面排名的短期/长期均线比值
+  - 示例: `CSRank(Corr($close, $volume, 20))` — 截面排名的量价相关性
+  - 示例: `CSRank(Delta($close, 5) / Ref($close, 5))` — 截面排名的 5 日收益率
+
+- `CSZScore(expr)` — 截面 Z 分标准化：(值 - 当天均值) / 当天标准差。适用于因子值分布接近正态的场景。
+  - 示例: `CSZScore(Std($close, 20))` — 截面标准化的 20 日波动率
+
+- `Neu(expr)` — 行业中性化：减去当天同行业（申万一级）均值，消除行业 beta。**对行业暴露度大的因子尤其重要。**
+  - 示例: `Neu(Delta($close, 5) / Ref($close, 5))` — 行业中性化的 5 日收益率
+  - 示例: `Neu(Mean($turn, 20))` — 行业中性化的 20 日平均换手率
+
+**截面算子使用规则：**
+1. 截面算子**必须是最外层**，只能包裹一个时序表达式，不能嵌套（如 `CSRank(CSRank(...))` 无意义）
+2. 截面算子内部不能再用截面算子（如 `CSRank(Neu(...))` 不支持）
+3. **不要**在截面算子外部再做算术运算（如 `CSRank(a) + CSRank(b)` 不支持），应把组合逻辑放到内部时序表达式中
+4. 截面算子大大提升因子的截面区分度，**建议优先尝试 CSRank 包裹的因子**
+
 # 因子设计要求
 1. 截面有效：用相对/标准化形式（比值、差分、滚动 zscore、rank），避免量纲依赖的裸价格。
-2. **只输出单标的时序表达式**：上面所有算子都在“单只股票的时间序列”上计算（如 Rank/Std 都是滚动窗口口径），**没有任何截面算子**（不存在 CSRank/CSZScore 之类，写了会报错）。截面标准化与横截面 IC 由下游评估器按日自动处理，且对每日单调/仿射变换不变，因此无需、也不要在表达式里做截面归一。
+2. **截面算子优先**：用 CSRank/CSZScore/Neu 包裹时序表达式，直接获得截面区分度。截面算子内部用相对/标准化形式（比值、差分、滚动 zscore、时序 rank）。
 3. 避免未来函数：只用历史数据（Ref/Mean/Std 等滚动算子天然满足）。
 4. 多样性：动量、反转、波动率、量价、流动性、估值、资金流等不同维度都可探索。
 5. 不要重复给定的「已有因子」。每个因子配一句简短的经济学/行为金融逻辑（hypothesis）。
@@ -61,8 +83,8 @@ _SYSTEM_PROMPT = """你是一名顶尖的量化研究员，精通 Qlib 因子表
 # 输出格式（严格 JSON，不要任何额外文字、不要 markdown 代码块）
 {{"factors": [
   {{"name": "简短英文名", "expression": "Qlib表达式", "hypothesis": "一句话逻辑", "category": "momentum|reversal|volatility|volume_price|liquidity|value|other"}}
-]}}
-"""
+]
+}}"""
 
 
 def _system_prompt() -> str:
@@ -372,10 +394,92 @@ def _strategy_user_prompt(
             f"$turn 波动率 → 用 `get_fundamentals` 取 `valuation.turnover_ratio`。"
         )
 
+    # 检测因子是否使用了截面算子，给出实现指导
+    cs_ops = _detect_cross_sectional_ops(factor_expression)
+    if cs_ops:
+        guidance = _cross_sectional_strategy_guidance(cs_ops, factor_expression)
+        parts.append(guidance)
+
     if feedback:
         parts.append(f"\n## 上一版策略回测反馈（请据此优化）\n{feedback}")
     parts.append("\n请根据以上因子编写完整的聚宽格式策略脚本。只输出 ```python``` 代码块。")
     return "\n".join(parts)
+
+
+_CROSS_SECTIONAL_OPS = {"CSRank", "CSZScore", "Neu"}
+
+
+def _detect_cross_sectional_ops(expression: str) -> list[str]:
+    """Detect cross-sectional operator usage in a factor expression."""
+    found = []
+    for op in _CROSS_SECTIONAL_OPS:
+        if f"{op}(" in expression:
+            found.append(op)
+    return found
+
+
+def _cross_sectional_strategy_guidance(cs_ops: list[str], expression: str) -> str:
+    """Build strategy implementation guidance for cross-sectional operators.
+
+    Since JoinQuant doesn't have native CSRank/CSZScore/Neu APIs, the LLM
+    must implement them in the strategy code using pandas operations on
+    the cross-sectional DataFrame of all stocks in the universe.
+    """
+    lines = [
+        "\n## ⚠️ 因子使用了截面算子 " + ", ".join(cs_ops),
+        "截面算子需要在策略中对**当天股票池内所有股票**的因子值做横截面变换。",
+        "JoinQuant 没有原生截面算子 API，请用 pandas 在策略中手动实现：",
+        "",
+    ]
+
+    if "CSRank" in cs_ops:
+        lines += [
+            "### CSRank 实现（截面百分位排名）",
+            "```python",
+            "# 1. 对股票池每只股票计算内层时序因子值，存入 dict",
+            "# 2. 转为 pandas Series，index 为股票代码",
+            "# 3. 用 .rank(pct=True) 做截面排名",
+            "factor_values = pd.Series({code: value for code, value in ...})",
+            "factor_ranked = factor_values.rank(pct=True)",
+            "# 4. 按 factor_ranked 降序选 top-N",
+            "```",
+            "",
+        ]
+
+    if "CSZScore" in cs_ops:
+        lines += [
+            "### CSZScore 实现（截面 Z 分标准化）",
+            "```python",
+            "factor_values = pd.Series({code: value for code, value in ...})",
+            "factor_zscored = (factor_values - factor_values.mean()) / factor_values.std()",
+            "```",
+            "",
+        ]
+
+    if "Neu" in cs_ops:
+        lines += [
+            "### Neu 实现（行业中性化）",
+            "```python",
+            "# 1. 获取每只股票的行业分类（用 get_industry(stocks, date) 或预建映射）",
+            "# 2. 对每个行业分组，减去该行业的因子均值",
+            'industry = get_industry(stocks, context.current_dt)  # {code: "行业名"}',
+            'df = pd.DataFrame({"factor": factor_values, "industry": [industry.get(c, "未知") for c in factor_values.index]})',
+            'df["neutral"] = df["factor"] - df.groupby("industry")["factor"].transform("mean")',
+            'factor_neutralized = df["neutral"]',
+            "```",
+            "",
+        ]
+
+    lines += [
+        "**关键点：**",
+        "1. 截面操作必须在**调仓日当天**对**整个股票池**的因子值一起做，不是逐只股票做",
+        "2. 先用 attribute_history/get_fundamentals 对每只股票计算内层时序表达式",
+        "3. 把所有股票的因子值收集到一个 pandas Series/DataFrame",
+        "4. 对这个 Series/DataFrame 做截面 rank/zscore/行业中性化",
+        "5. 用变换后的值排序选 top-N",
+    ]
+
+    return "\n".join(lines)
 
 
 # 因子表达式中可能出现的基本面字段（Qlib 支持 but 回测引擎不支持）

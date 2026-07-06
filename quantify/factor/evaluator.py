@@ -247,6 +247,153 @@ class _GateError(Exception):
         self.n_obs = n_obs
 
 
+def _strip_cross_sectional_op(expression: str) -> tuple[str, str | None]:
+    """If *expression* is wrapped in a cross-sectional operator, return
+    (inner_expression, op_name).  Otherwise return (expression, None).
+
+    Only strips the OUTERMOST operator — e.g. ``CSRank(Mean($close, 20))``
+    → ``("Mean($close, 20)", "CSRank")``.  The inner expression must be a
+    pure Qlib (per-stock time-series) expression.
+
+    Raises ``_GateError`` if the wrapping is malformed (e.g. extra tokens
+    after the closing paren).
+    """
+    expr = expression.strip()
+    for op in ("CSRank", "CSZScore", "Neu"):
+        if expr.startswith(f"{op}(") and expr.endswith(")"):
+            # Verify parentheses balance to avoid stripping ``CSRank(a) + b``
+            depth = 0
+            for i, ch in enumerate(expr):
+                if ch == "(":
+                    depth += 1
+                elif ch == ")":
+                    depth -= 1
+                    if depth == 0 and i != len(expr) - 1:
+                        # Closing paren of CSRank(...) is not the last char
+                        # → there are extra tokens after it → not a pure wrapper
+                        break
+            else:
+                # Loop completed without break → outer paren matches last char
+                inner = expr[len(op) + 1 : -1].strip()
+                if inner:
+                    return inner, op
+                raise _GateError(f"{op}() 内部表达式为空")
+    return expression, None
+
+
+def _apply_cross_sectional(
+    factor_panel: pd.DataFrame,
+    op: str,
+    instruments: list[str],
+) -> pd.DataFrame:
+    """Apply a cross-sectional transform to a (date, asset) factor panel.
+
+    ``factor_panel`` has a MultiIndex (date, asset) with the factor values
+    in a single column named ``"factor"``.
+
+    - ``CSRank``:   per-date percentile rank (0..1) across assets.
+    - ``CSZScore``: per-date z-score ((value - mean) / std) across assets.
+    - ``Neu``:      industry-neutralize — subtract the SW L1 industry mean
+                    per (date, industry) group.
+
+    Returns the transformed panel with the same shape/index.
+    """
+    # Unstack to (date × asset) for cross-sectional operations
+    panel = factor_panel.unstack("asset")
+    panel.columns = panel.columns.get_level_values(-1)  # drop 'factor' level name
+
+    if op == "CSRank":
+        transformed = panel.rank(axis=1, pct=True)
+    elif op == "CSZScore":
+        mean = panel.mean(axis=1)
+        std = panel.std(axis=1).replace(0, np.nan)
+        transformed = panel.sub(mean, axis=0).div(std, axis=0)
+    elif op == "Neu":
+        transformed = _industry_neutralize_panel(panel, instruments)
+    else:
+        raise _GateError(f"未知截面算子: {op}")
+
+    # Restack to (date, asset) Series
+    result = transformed.stack()
+    result.name = "factor"
+    result.index = result.index.set_names(["date", "asset"])
+    return result.to_frame()
+
+
+def _industry_neutralize_panel(
+    panel: pd.DataFrame,
+    instruments: list[str],
+) -> pd.DataFrame:
+    """Subtract daily industry mean from each stock's factor value.
+
+    ``panel``: (date × asset) DataFrame.
+    ``instruments``: Qlib instrument codes (e.g. ``SH600000``).
+
+    Returns a (date × asset) DataFrame with industry means subtracted.
+    """
+    from quantify.factor.qlib_data import qlib_to_ts_code
+
+    # Load SW L1 industry mapping
+    ts_codes = [qlib_to_ts_code(c) for c in instruments]
+    industry_map = _load_industry_map(ts_codes)
+    if not industry_map:
+        # No industry data → return as-is (can't neutralize)
+        log.warning("Neu: 无法加载行业映射，跳过行业中性化")
+        return panel
+
+    # Map asset columns to industry
+    col_to_industry = {}
+    for col in panel.columns:
+        ts = qlib_to_ts_code(col) if not col.endswith((".SH", ".SZ")) else col
+        if ts in industry_map:
+            col_to_industry[col] = industry_map[ts]
+
+    if not col_to_industry:
+        log.warning("Neu: 股票池中无行业匹配，跳过行业中性化")
+        return panel
+
+    # Vectorized: stack → groupby (date, industry) → subtract mean → unstack
+    long = panel.stack()
+    long.name = "value"
+    long = long.reset_index()
+    long.columns = ["date", "asset", "value"]
+    long["industry"] = long["asset"].map(col_to_industry)
+    # For stocks without industry mapping, keep original value
+    ind_mean = long.groupby(["date", "industry"])["value"].transform("mean")
+    long["neutral"] = long["value"] - ind_mean
+    long.loc[long["industry"].isna(), "neutral"] = long.loc[long["industry"].isna(), "value"]
+
+    result = long.pivot(index="date", columns="asset", values="neutral")
+    # Restore original column order
+    result = result.reindex(columns=panel.columns)
+    return result
+
+
+def _load_industry_map(ts_codes: list[str]) -> dict[str, str]:
+    """Load SW L1 industry mapping {ts_code: industry_name} from database."""
+    from sqlalchemy import text as sa_text
+
+    from quantify.database.engine import session_scope
+
+    if not ts_codes:
+        return {}
+    codes_str = "','".join(ts_codes)
+    query = sa_text(
+        f"""
+        SELECT ts_code, l1_name
+        FROM index_member_all
+        WHERE ts_code IN ('{codes_str}')
+          AND is_new = 'Y'
+        """
+    )
+    mapping: dict[str, str] = {}
+    with session_scope() as sess:
+        rows = sess.execute(query).fetchall()
+    for ts_code, l1_name in rows:
+        mapping[ts_code] = l1_name
+    return mapping
+
+
 def _compute_factor_data(
     expression: str,
     universe: str | list[str] | None,
@@ -264,7 +411,14 @@ def _compute_factor_data(
     if not instruments:
         raise _GateError("股票池为空（请先 dump-data 并确认 universe）")
 
-    raw = D.features(instruments, [expression, "$close"], start_time=start_date, end_time=end_date)
+    # ── Cross-sectional operator handling ──────────────────────────────
+    # If the expression is wrapped in CSRank/CSZScore/Neu, strip the outer
+    # op, evaluate the inner expression via Qlib (per-stock time-series),
+    # then apply the cross-sectional transform in Python on the panel.
+    inner_expr, cs_op = _strip_cross_sectional_op(expression)
+    qlib_expr = inner_expr if cs_op else expression
+
+    raw = D.features(instruments, [qlib_expr, "$close"], start_time=start_date, end_time=end_date)
     if raw is None or raw.empty:
         raise _GateError("Qlib 求值返回空（检查表达式与数据范围）")
     raw.columns = ["factor", "close"]
@@ -284,6 +438,15 @@ def _compute_factor_data(
     factor = factor_series.copy()
     factor.index = factor.index.set_names(["asset", "date"])
     factor = factor.reorder_levels(["date", "asset"]).sort_index()
+
+    # ── Apply cross-sectional transform if needed ──────────────────────
+    if cs_op:
+        factor_df = factor.to_frame(name="factor")
+        factor_df = _apply_cross_sectional(factor_df, cs_op, instruments)
+        factor = factor_df["factor"].dropna()
+        # Re-check uniqueness after transform
+        if factor.nunique() <= 1:
+            raise _GateError("截面变换后因子为常数/无区分度", coverage=coverage, n_obs=int(finite))
 
     prices = raw["close"].copy()
     prices.index = prices.index.set_names(["asset", "date"])
