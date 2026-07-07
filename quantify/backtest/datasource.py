@@ -55,6 +55,7 @@ OHLCV_COLUMNS = [
     "adj_factor",
     "split_ratio",
     "turnover_rate",
+    "vwap",
 ]
 
 
@@ -89,6 +90,12 @@ def _finalize_ohlcv(df: pd.DataFrame) -> pd.DataFrame:
     if "turnover_rate" not in df.columns:
         df["turnover_rate"] = 0.0
     df["turnover_rate"] = pd.to_numeric(df["turnover_rate"], errors="coerce").fillna(0.0)
+    # Compute vwap (元/股) = amount(千元)*10 / volume(手)
+    # Matches Qlib's qlib_data.py: vwap_raw = amount * 10.0 / vol
+    if "vwap" not in df.columns:
+        vol = pd.to_numeric(df["volume"], errors="coerce").replace(0, np.nan)
+        amt = pd.to_numeric(df["amount"], errors="coerce")
+        df["vwap"] = (amt * 10.0 / vol).fillna(0.0)
     df = df.sort_values(["ts_code", "date"]).reset_index(drop=True)
     return df[OHLCV_COLUMNS]
 

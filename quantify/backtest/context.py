@@ -12,9 +12,9 @@ import pandas as pd
 from .codes import to_tushare_code
 
 # Fields that are price-based and require adj_factor adjustment
-_PRICE_FIELDS = frozenset({"open", "high", "low", "close", "pre_close"})
+_PRICE_FIELDS = frozenset({"open", "high", "low", "close", "pre_close", "vwap"})
 # All OHLCV fields stored as numpy arrays
-_ARRAY_FIELDS = ("open", "high", "low", "close", "pre_close", "volume", "amount", "pct_chg", "turnover_rate")
+_ARRAY_FIELDS = ("open", "high", "low", "close", "pre_close", "volume", "amount", "pct_chg", "turnover_rate", "vwap")
 
 # ---------------------------------------------------------------------------
 # Portfolio
