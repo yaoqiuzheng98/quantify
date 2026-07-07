@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import sys
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -18,6 +19,23 @@ from .datasource import CompositeDataSource, DividendEvent, MarketDataSource
 from .joinquant import JoinQuantCompat, make_jqdata_module
 from .metrics import BacktestMetrics, compute_metrics
 from .reporting import build_report_payload
+
+# Matches security codes like 000300.XSHG, 600000.SH, 159915.SZ in strategy source
+_CODE_RE = re.compile(r"\b(\d{6})\.(XSHG|XSHE|SH|SZ|BJ)\b", re.IGNORECASE)
+
+
+def _extract_referenced_codes(strategy_source: str) -> list[str]:
+    """Extract all security codes referenced in strategy source code.
+
+    This catches codes used in ``attribute_history("000852.XSHG", ...)``,
+    ``set_benchmark("000300.XSHG")``, ``get_index_stocks("000300.XSHG")``,
+    and any other string literal containing a security code — ensuring the
+    engine pre-loads data for all codes the strategy will access at runtime.
+    """
+    seen: dict[str, None] = {}
+    for num, suffix in _CODE_RE.findall(strategy_source):
+        seen[f"{num}.{suffix.upper()}"] = None
+    return normalize_codes(list(seen))
 
 
 @dataclass(frozen=True)
@@ -279,6 +297,21 @@ class BacktestEngine:
         # Routes each code (ETF / stock / index) to the right tables. A custom
         # source can be injected for testing or alternative data backends.
         self.data_source = data_source or CompositeDataSource()
+
+        # Auto-inject codes referenced in strategy source but not in ts_codes.
+        # The engine only loads data for ts_codes into the DataProxy; if a
+        # strategy calls attribute_history("000852.XSHG", ...) for market
+        # timing but 000852.SH is not in ts_codes, the call returns empty
+        # arrays and the timing logic silently fails.  Scan the source for all
+        # security codes (including the benchmark) and append any missing ones
+        # so the engine pre-loads their OHLCV data.
+        referenced = set(_extract_referenced_codes(strategy_source))
+        if self.benchmark_code:
+            referenced.add(self.benchmark_code)
+        missing = referenced - set(self.ts_codes)
+        if missing:
+            self.ts_codes = normalize_codes(self.ts_codes + list(missing))
+            log.info(f"Auto-injected {len(missing)} code(s) from strategy source: {sorted(missing)}")
 
     # ------------------------------------------------------------------
     def run(self) -> BacktestResult:
