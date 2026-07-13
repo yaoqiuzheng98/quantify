@@ -545,6 +545,7 @@ class BacktestEngine:
             benchmark_df=benchmark_df,
             trades=broker.trades,
             dividends=dividend_payments,
+            splits=split_events,
             strategy_logs=strategy_log.lines,
         )
 
@@ -559,6 +560,7 @@ class BacktestResult:
         benchmark_df: pd.DataFrame | None,
         trades: list,
         dividends: list | None = None,
+        splits: list | None = None,
         strategy_logs: list[str] | None = None,
     ) -> None:
         self.metrics = metrics
@@ -566,6 +568,7 @@ class BacktestResult:
         self.benchmark_df = benchmark_df
         self.trades = trades
         self.dividends = dividends or []
+        self.splits = splits or []
         self.strategy_logs = strategy_logs or []
 
     def to_report_dict(self) -> dict:
@@ -576,6 +579,7 @@ class BacktestResult:
             self.metrics,
             self.trades,
             self.dividends,
+            self.splits,
         )
 
 
@@ -600,4 +604,5 @@ def _empty_result(initial_cash: float) -> BacktestResult:
         benchmark_df=None,
         trades=[],
         dividends=[],
+        splits=[],
     )

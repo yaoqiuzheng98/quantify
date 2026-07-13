@@ -285,12 +285,41 @@ def build_report_items(
     ]
 
 
-def _trade_records(trades: list[Any] | None) -> list[dict[str, Any]]:
+def _trade_records(
+    trades: list[Any] | None,
+    dividends: list[Any] | None = None,
+    splits: list[Any] | None = None,
+) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     # 按平均成本法跟踪每个标的的持仓,卖出时结算平仓盈亏(扣除买入费用分摊
-    # 与本次卖出费用,对齐 _realized_trade_stats 的净盈亏口径)。
+    # 与本次卖出费用,对齐 realized_trade_stats 的净盈亏口径)。
+    # 必须做 split/dividend 调整,与 realized_trade_stats 保持一致,
+    # 否则 broker 已做 split 调整的卖出股数与原始买入股数不匹配,盈亏失真。
+
+    # Build (ts_code) -> [(ex_date, div_cash)] map for cost-basis adjustment.
+    div_by_code: dict[str, list[tuple[Any, float]]] = {}
+    for d in dividends or []:
+        code = getattr(d, "ts_code", None)
+        ex_date = getattr(d, "ex_date", None) or getattr(d, "record_date", None)
+        div_cash = getattr(d, "div_cash", None)
+        if code and ex_date and div_cash:
+            div_by_code.setdefault(code, []).append((ex_date, float(div_cash)))
+
+    # Build (ts_code) -> [(ex_date, ratio)] map for share-split adjustment.
+    split_by_code: dict[str, list[tuple[Any, float]]] = {}
+    for s in splits or []:
+        code = getattr(s, "ts_code", None)
+        ex_date = getattr(s, "ex_date", None)
+        ratio = getattr(s, "ratio", None)
+        if code and ex_date and ratio and abs(ratio - 1.0) > 1e-6:
+            split_by_code.setdefault(code, []).append((ex_date, float(ratio)))
+
+    def _sort_key(t: Any) -> Any:
+        d = getattr(t, "filled_date", None)
+        return pd.Timestamp(d) if d is not None else pd.Timestamp.min
+
     positions: dict[str, dict[str, float]] = {}
-    for trade in trades or []:
+    for trade in sorted(trades or [], key=_sort_key):
         amount = int(getattr(trade, "filled_amount", 0) or getattr(trade, "amount", 0) or 0)
         price = _as_float(getattr(trade, "filled_price", None))
         trade_value = abs(amount) * price if price is not None else None
@@ -299,9 +328,31 @@ def _trade_records(trades: list[Any] | None) -> list[dict[str, Any]]:
         tax = _as_float(getattr(trade, "tax", 0.0))
         code = getattr(trade, "ts_code", "")
         trade_fees = (commission or 0.0) + (slippage or 0.0) + (tax or 0.0)
+        trade_date = getattr(trade, "filled_date", None)
 
         realized_pnl: float | None = None
         position = positions.setdefault(code, {"amount": 0.0, "cost": 0.0, "fees": 0.0})
+
+        # Apply pending share-split adjustments (multiply share count, keep total cost).
+        if code in split_by_code and trade_date is not None:
+            remaining_splits: list[tuple[Any, float]] = []
+            for ex_date, ratio in split_by_code[code]:
+                if pd.Timestamp(trade_date) >= pd.Timestamp(ex_date):
+                    position["amount"] = int(round(position["amount"] * ratio))
+                else:
+                    remaining_splits.append((ex_date, ratio))
+            split_by_code[code] = remaining_splits
+
+        # Apply pending dividend cost-basis adjustments.
+        if code in div_by_code and position["amount"] > 0 and trade_date is not None:
+            remaining_divs: list[tuple[Any, float]] = []
+            for ex_date, div_cash in div_by_code[code]:
+                if pd.Timestamp(trade_date) >= pd.Timestamp(ex_date):
+                    position["cost"] -= div_cash * position["amount"]
+                else:
+                    remaining_divs.append((ex_date, div_cash))
+            div_by_code[code] = remaining_divs
+
         current_amount = int(position["amount"])
 
         if price is not None and amount > 0:
@@ -342,6 +393,7 @@ def build_report_payload(
     metrics: Any | None = None,
     trades: list[Any] | None = None,
     dividends: list[Any] | None = None,
+    splits: list[Any] | None = None,
 ) -> dict[str, Any]:
     """Build the canonical report payload shared by Web and LLM outputs."""
     metric_values = _clean_value(metrics.to_dict()) if metrics is not None else {}
@@ -355,7 +407,7 @@ def build_report_payload(
             dividends,
         )
     ]
-    trade_records = _trade_records(trades)
+    trade_records = _trade_records(trades, dividends, splits)
 
     if equity_df.empty:
         return {
