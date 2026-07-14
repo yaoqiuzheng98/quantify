@@ -262,14 +262,29 @@ class Broker:
     def _apply_fill(self, order: Order, portfolio, base_price: float, price: float) -> bool:
         pos = portfolio.get_position(order.ts_code)
         if order.amount > 0:  # buy
-            fill_amount = self._max_affordable_buy_amount(order.amount, portfolio.cash, base_price)
-            if fill_amount <= 0:
-                log.debug(f"Insufficient cash for {order.ts_code}: have {portfolio.cash:.2f}")
-                return False
-            if fill_amount != order.amount:
-                log.debug(f"Partial fill {order.ts_code}: {order.amount} -> {fill_amount}")
-
-            total_cost, commission, slippage, exec_price = self._buy_total_cost(base_price, fill_amount)
+            if portfolio.margin_enabled:
+                # 融资融券账户：现金不足时自动透支，透支部分计入 cash_liability
+                fill_amount = self._round_to_lot(order.amount)
+                if fill_amount <= 0:
+                    return False
+                total_cost, commission, slippage, exec_price = self._buy_total_cost(base_price, fill_amount)
+                if total_cost > portfolio.cash:
+                    # 透支：借入差额
+                    borrowed = total_cost - portfolio.cash
+                    portfolio.cash_liability += borrowed
+                    portfolio.cash = 0.0
+                else:
+                    portfolio.cash -= total_cost
+            else:
+                # 普通账户：现金不足时部分成交
+                fill_amount = self._max_affordable_buy_amount(order.amount, portfolio.cash, base_price)
+                if fill_amount <= 0:
+                    log.debug(f"Insufficient cash for {order.ts_code}: have {portfolio.cash:.2f}")
+                    return False
+                if fill_amount != order.amount:
+                    log.debug(f"Partial fill {order.ts_code}: {order.amount} -> {fill_amount}")
+                total_cost, commission, slippage, exec_price = self._buy_total_cost(base_price, fill_amount)
+                portfolio.cash -= total_cost
 
             old_val = pos.amount * pos.avg_cost
             pos.avg_cost = (
@@ -282,7 +297,6 @@ class Broker:
             # Locked only for stocks; the engine clears this each new day.
             if self._enforce_t_plus_1 and self._is_stock(order.ts_code):
                 pos.locked_amount += fill_amount
-            portfolio.cash -= total_cost
             portfolio.total_commission += commission
             portfolio.total_slippage += slippage
             portfolio.trade_count += 1
@@ -313,7 +327,13 @@ class Broker:
             pos.amount -= sell_amount
             if pos.amount == 0:
                 pos.avg_cost = 0.0
-            portfolio.cash += revenue
+            # 融资账户：卖出收入优先偿还融资负债
+            if portfolio.margin_enabled and portfolio.cash_liability > 0:
+                repay = min(revenue, portfolio.cash_liability)
+                portfolio.cash_liability -= repay
+                portfolio.cash += revenue - repay
+            else:
+                portfolio.cash += revenue
             portfolio.total_commission += commission
             portfolio.total_slippage += slippage
             portfolio.total_tax += tax

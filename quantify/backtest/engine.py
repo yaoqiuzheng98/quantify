@@ -445,6 +445,12 @@ class BacktestEngine:
             for pos in portfolio.positions.values():
                 pos.locked_amount = 0
 
+            # 融资融券每日计息：interest += cash_liability × 日利率
+            # 聚宽在每日结算时自动计息，日利率 = 年化/360
+            if portfolio.margin_enabled and portfolio.cash_liability > 0:
+                daily_rate = portfolio.margin_interest_rate / 360.0
+                portfolio.interest += portfolio.cash_liability * daily_rate
+
             # 份额折算/送转股处理(对齐聚宽 use_real_price=True 的动态复权账户处理)：
             # 在除权日开盘前，按 split_ratio 调整持仓数量与成本价，使持仓市值在除权
             # 前后保持连续(只反映当日真实涨跌)。除权不涉及现金，与分红现金链路相互
@@ -509,13 +515,30 @@ class BacktestEngine:
                     dividend_entitlements[event] = position.amount
 
             # Record daily snapshot
+            # 融资账户：equity = net_value = 总资产 - 总负债（对齐聚宽 net_value 口径）
+            # 普通账户：equity = cash + position_value（= total_value，无负债）
             position_value = _position_value_at_close(portfolio, data_proxy, next_indices, bar_date)
+            total_value = portfolio.cash + position_value
+            if portfolio.margin_enabled and portfolio.total_liability > 0:
+                equity_value = total_value - portfolio.total_liability
+            else:
+                equity_value = total_value
             equity_records.append(
                 {
                     "date": bar_date,
-                    "value": portfolio.cash + position_value,
+                    "value": equity_value,
                 }
             )
+
+            # 融资融券维持担保比例检查：低于阈值时警告（不强制平仓，仅记录）
+            if portfolio.margin_enabled and portfolio.total_liability > 0:
+                mmr = portfolio.maintenance_margin_rate
+                if mmr < portfolio.maintenance_margin_limit:
+                    log.warning(
+                        f"{bar_date} 维持担保比例 {mmr:.2f} 低于阈值 "
+                        f"{portfolio.maintenance_margin_limit:.2f}，"
+                        f"总资产={portfolio.total_value:,.0f} 总负债={portfolio.total_liability:,.0f}"
+                    )
 
         cancelled = broker.cancel_pending()
         if cancelled:

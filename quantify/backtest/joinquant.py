@@ -301,6 +301,13 @@ class PriceRelatedSlippage:
     rate: float = 0.0
 
 
+@dataclass
+class SubPortfolioConfig:
+    """聚宽兼容：子账户配置。``type='stock_margin'`` 开启融资融券。"""
+    cash: float = 0.0
+    type: str = "stock"  # 'stock' | 'stock_margin' | 'futures'
+
+
 class JoinQuantCompat:
     """Expose common JoinQuant globals against the local Context object."""
 
@@ -621,15 +628,30 @@ class JoinQuantCompat:
     def set_slippage(self, slippage: PriceRelatedSlippage) -> None:
         self._require_context()._broker.set_slippage_fn(make_slippage(slippage.rate))  # noqa: SLF001
 
+    def set_subportfolios(self, configs: list) -> None:
+        """聚宽兼容：设置子账户。本地只支持单账户，但识别 ``stock_margin`` 类型
+        并开启融资融券模式（允许透支买入、每日计息）。
+        """
+        if not configs:
+            return
+        # 只取第一个子账户（本地引擎单账户模式）
+        cfg = configs[0]
+        portfolio = self._require_context().portfolio
+        if getattr(cfg, "type", None) == "stock_margin":
+            portfolio.margin_enabled = True
+            log.info("Margin trading enabled (stock_margin account)")
+
     def namespace(self) -> dict[str, Any]:
         return {
             "log": log,
             "OrderCost": OrderCost,
             "PriceRelatedSlippage": PriceRelatedSlippage,
+            "SubPortfolioConfig": SubPortfolioConfig,
             "set_option": self.set_option,
             "set_benchmark": self.set_benchmark,
             "set_order_cost": self.set_order_cost,
             "set_slippage": self.set_slippage,
+            "set_subportfolios": self.set_subportfolios,
             "run_daily": self.run_daily,
             "run_weekly": self.run_weekly,
             "run_monthly": self.run_monthly,

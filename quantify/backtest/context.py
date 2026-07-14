@@ -87,7 +87,15 @@ class PositionBook(dict[str, Position]):
 
 @dataclass
 class Portfolio:
-    """Tracks cash, positions, and total value throughout the backtest."""
+    """Tracks cash, positions, and total value throughout the backtest.
+
+    When *margin_enabled* is True (JoinQuant ``stock_margin`` account), buying
+    power exceeds cash — the broker can borrow on the investor's behalf, with
+    the borrowed amount tracked in *cash_liability* and accrued interest in
+    *interest*.  This mirrors the JoinQuant margin account semantics so that
+    strategies using ``set_subportfolios([SubPortfolioConfig(..., type='stock_margin')])``
+    run identically locally and in the cloud.
+    """
 
     initial_cash: float
     cash: float
@@ -97,20 +105,57 @@ class Portfolio:
     total_tax: float = 0.0
     trade_count: int = 0
 
+    # --- margin (融资融券) fields ---
+    margin_enabled: bool = False
+    cash_liability: float = 0.0  # 融资负债（向券商借入的资金本金）
+    interest: float = 0.0  # 累计未还利息
+    # 融资年化利率（聚宽默认 ~8.6%，日利率 = annual/360）
+    margin_interest_rate: float = 0.086
+    # 维持担保比例下限，低于此值触发强制平仓
+    maintenance_margin_limit: float = 1.30
+
     @property
     def total_value(self) -> float:
+        """总资产 = 现金 + 证券市值（含融资买入的证券）。"""
         pos_val = sum(p.market_value for p in self.positions.values())
         return self.cash + pos_val
 
     @property
+    def total_liability(self) -> float:
+        """总负债 = 融资负债 + 融券负债 + 利息（对齐聚宽）。"""
+        return self.cash_liability + self.interest
+
+    @property
+    def net_value(self) -> float:
+        """净资产 = 总资产 - 总负债。"""
+        return self.total_value - self.total_liability
+
+    @property
+    def available_cash(self) -> float:
+        """可用资金 = 现金（聚宽口径：已扣除融资负债的部分）。"""
+        return max(self.cash, 0.0)
+
+    @property
+    def maintenance_margin_rate(self) -> float:
+        """维持担保比例 = 总资产 / 总负债。"""
+        if self.total_liability <= 0:
+            return float("inf")
+        return self.total_value / self.total_liability
+
+    @property
+    def starting_cash(self) -> float:
+        """聚宽兼容：初始资金。"""
+        return self.initial_cash
+
+    @property
     def total_pnl(self) -> float:
-        return self.total_value - self.initial_cash
+        return self.net_value - self.initial_cash
 
     @property
     def total_return_pct(self) -> float:
         if self.initial_cash == 0:
             return 0.0
-        return (self.total_value / self.initial_cash - 1) * 100
+        return (self.net_value / self.initial_cash - 1) * 100
 
     def get_position(self, ts_code: str) -> Position:
         ts_code = to_tushare_code(ts_code)
